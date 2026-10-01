@@ -5,6 +5,7 @@ import type {
   SubtitleOverlayTextStyle,
 } from '../../schema/config';
 import { mixOpacity, withAlpha } from '../../utils/color-alpha';
+import { resolveOverlayFontFamily } from './overlayFontFamily';
 
 export type OverlayTextEffectPresetId = 'none' | 'soft' | 'crisp' | 'contrast' | 'glow';
 
@@ -104,7 +105,7 @@ export function buildSubtitleOverlayCssVariables(subtitles: SubtitleDraft): CSSP
     '--subtitle-overlay-border': withAlpha('#ffffff', 0.12 * backgroundAlpha),
     '--subtitle-overlay-shadow': withAlpha('#000000', 0.28 * backgroundAlpha),
     '--subtitle-overlay-blur': `${Math.round(12 * backgroundAlpha)}px`,
-    '--subtitle-overlay-font-family': subtitles.overlayFontFamily,
+    '--subtitle-overlay-font-family': resolveOverlayFontFamily(subtitles.overlayFontFamily),
     '--subtitle-overlay-text-align': align,
     '--subtitle-overlay-source-text': withAlpha(source.color, textAlpha),
     '--subtitle-overlay-source-weight': source.fontWeight,

@@ -19,16 +19,21 @@ export type SceneLaunchPlan = {
   parallelOmniPreconnect: boolean;
 };
 
+type LaunchProfile = Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'> & Partial<Pick<ResolvedRealtimeProfile, 'translationExecution' | 'invocationOperation'>>;
+
 type Input = {
   launchAttemptId?: string;
   mode: SceneMode;
   configDraft: AppConfigDraft;
   audioSnapshot: AudioRuntimeSnapshot;
   overlayVisible: boolean;
-  realtimeProfile: Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'>;
+  realtimeProfile: LaunchProfile;
+  outboundRealtimeProfile?: LaunchProfile;
   speechPatch: Partial<AppConfigDraft['speech']> & { enabled: boolean };
   secondarySubtitleTranslationEnabled: boolean;
 };
+
+
 
 export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
   // Preserve the user's selected route exactly. Legacy `none` remains valid
@@ -77,10 +82,21 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
   const parallelOmniPreconnect = false;
   stages.push('inbound-route');
   if (input.mode !== 'watch') stages.push('outbound-route');
-  if (!input.realtimeProfile.nativeTranslation) stages.push('translate-worker');
-  if (input.speechPatch.enabled
-    && (!input.realtimeProfile.nativeTranslation || input.secondarySubtitleTranslationEnabled)
-    && input.audioSnapshot.speech.dispatchState === 'idle') stages.push('speech-dispatch');
+  const inboundNeedsTextWorker = input.realtimeProfile.translationExecution === 'text-worker'
+    || (input.realtimeProfile.translationExecution === undefined && !input.realtimeProfile.nativeTranslation);
+  const outboundNeedsTextWorker = input.mode !== 'watch' && Boolean(input.outboundRealtimeProfile && (
+    input.outboundRealtimeProfile.translationExecution === 'text-worker'
+    || (input.outboundRealtimeProfile.translationExecution === undefined && !input.outboundRealtimeProfile.nativeTranslation)
+  ));
+  const needsTranslateWorker = inboundNeedsTextWorker || outboundNeedsTextWorker;
+  if (needsTranslateWorker) stages.push('translate-worker');
+  const outboundNeedsSpeech = input.mode !== 'watch' && Boolean(input.outboundRealtimeProfile && !input.outboundRealtimeProfile.nativeTranslation);
+  const needsSpeechDispatch = !input.realtimeProfile.nativeTranslation
+    || outboundNeedsSpeech
+    || input.secondarySubtitleTranslationEnabled;
+  if (input.speechPatch.enabled && needsSpeechDispatch && input.audioSnapshot.speech.dispatchState === 'idle') {
+    stages.push('speech-dispatch');
+  }
   // Watch routes create the native overlay together with capture. Starting it
   // again from the renderer is both duplicate work and outside route rollback.
   if (input.mode !== 'watch' && !input.overlayVisible) stages.push('subtitle-overlay');

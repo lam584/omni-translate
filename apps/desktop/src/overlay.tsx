@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import SubtitleOverlayPage from './pages/SubtitleOverlayPage';
 import { DesktopApiProvider } from './runtime/desktop-api-context';
 import { bootstrapDesktopRuntimeBridge } from './runtime/desktop-runtime';
+import { installContextMenuGuard } from './runtime/context-menu-guard';
 import './i18n/config';
 import './styles/overlay.css';
 
@@ -65,6 +66,8 @@ export function mountOverlayApp(rootElement: HTMLElement | null = document.getEl
     </React.StrictMode>,
   );
 }
+
+installContextMenuGuard();
 
 const rootElement = document.getElementById('root');
 if (rootElement) {

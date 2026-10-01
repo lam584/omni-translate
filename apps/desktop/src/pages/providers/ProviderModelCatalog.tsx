@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react';
 import AppIcon from '../../components/icons/AppIcon';
 import ModalDialog from '../../components/ModalDialog';
 import StatusBadge from '../../components/page/StatusBadge';
 import { useTranslation } from 'react-i18next';
-import type { ProviderScenario } from '../../schema/config';
+import type { CandidateModelGroupId } from '../../schema/config';
+import { candidateModelGroupOrder } from '../../utils/candidate-model-groups';
 import type { ProviderCapability } from '../../schema/provider-contract';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
 import { providerCapabilityLabelKey } from '../../utils/provider-model-capabilities';
@@ -20,7 +22,7 @@ type ProviderModelCatalogProps = {
   manualModelIdDraft: string;
   query: string;
   selectedScenario: ModelCatalogScenarioFilter;
-  targetScenario: ProviderScenario;
+  targetScenario: CandidateModelGroupId;
   uncategorizedModels: ProviderModelRuntime[];
   isModelAdded: (scenario: ModelCatalogScenarioFilter, modelId: string) => boolean;
   onClose: () => void;
@@ -30,14 +32,13 @@ type ProviderModelCatalogProps = {
   onQueryChange: (query: string) => void;
   onRefresh: () => void;
   onScenarioChange: (scenario: ModelCatalogScenarioFilter) => void;
-  onToggleModel: (scenario: ProviderScenario, model: ProviderModelRuntime) => void;
+  onToggleModel: (group: CandidateModelGroupId, model: ProviderModelRuntime) => void;
 };
 
 const {
   formatModelCatalogSourceLabel,
   formatScenarioLabel,
   formatTimestampLabel,
-  providerScenarioOrder,
   resolveCapabilityIconName,
   resolveModelIconName,
 } = providersPageHelpers;
@@ -106,6 +107,12 @@ export default function ProviderModelCatalog({
   onToggleModel,
 }: ProviderModelCatalogProps) {
   const { t } = useTranslation();
+  const [showProgress, setShowProgress] = useState(false);
+  useEffect(() => {
+    if (catalog.status !== 'loading') return;
+    const timer = window.setTimeout(() => setShowProgress(true), 500);
+    return () => { window.clearTimeout(timer); setShowProgress(false); };
+  }, [catalog.status, catalog.signature]);
 
   return (
     <ModalDialog aria-label={t('providers.modelCatalog.title')} className="provider-modal provider-model-modal content-card page-card compact-card" onClose={onClose} variant="provider">
@@ -130,7 +137,7 @@ export default function ProviderModelCatalog({
         </div>
 
         <div className="provider-scenario-switcher">
-          {(['all', ...providerScenarioOrder] as ModelCatalogScenarioFilter[]).map((scenario) => (
+          {(['all', ...candidateModelGroupOrder] as ModelCatalogScenarioFilter[]).map((scenario) => (
             <button
               className={selectedScenario === scenario ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'}
               key={scenario}
@@ -153,6 +160,10 @@ export default function ProviderModelCatalog({
           />
         </div>
 
+        {showProgress && catalog.status === 'loading' ? <div className="provider-catalog-progress" role="status">
+          <span>{t('providers.modelCatalog.loading')}</span>
+          <div className="provider-catalog-progress-track" role="progressbar" aria-label={t('providers.modelCatalog.loading')}><span /></div>
+        </div> : null}
         {catalog.error ? <div className="provider-inline-alert provider-inline-alert-warning">{catalog.error}</div> : null}
         {catalog.fetchedAt ? <p className="provider-setting-footnote">{t('providers.modelCatalog.lastRefresh', { time: formatTimestampLabel(catalog.fetchedAt) })}</p> : null}
 

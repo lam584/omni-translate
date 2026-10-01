@@ -125,7 +125,11 @@ pub(crate) fn run_elevated_driver_operation(
         .arg("-TargetDeviceId")
         .arg(&snapshot.target_device_id)
         .arg("-VirtualRenderDeviceId")
-        .arg(&snapshot.virtual_render_device_id)
+        .arg(if snapshot.virtual_render_device_id.trim().is_empty() {
+            "omni-virtual-speaker-default"
+        } else {
+            &snapshot.virtual_render_device_id
+        })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     let started = Instant::now();

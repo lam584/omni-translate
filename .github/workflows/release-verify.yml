@@ -2,16 +2,67 @@ name: Release Verify
 
 on:
   workflow_dispatch:
+    inputs:
+      sync_live_metadata:
+        description: "Perform active pre-release sync of Bailian model metadata"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
+  pre-release-sync:
+    name: Pre-release official Bailian metadata sync
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Actively sync Bailian model metadata with credential
+        shell: pwsh
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        run: |
+          if ($env:DASHSCOPE_API_KEY) {
+            npm run sync:bailian-models
+          } elseif ('${{ github.event.inputs.sync_live_metadata }}' -eq 'true') {
+            throw 'DASHSCOPE_API_KEY secret is required for active pre-release live Bailian metadata sync.'
+          } else {
+            npm run verify:bailian-models
+          }
+
+      - name: Archive synced Bailian model metadata artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bailian-model-metadata
+          path: contracts/bailian-model-metadata.generated.json
+          if-no-files-found: error
+          retention-days: 7
+
   verify:
     name: Windows release static verification
+    needs: pre-release-sync
     runs-on: windows-latest
     timeout-minutes: 180
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download synced Bailian model metadata artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v7.0.0
+        with:
+          name: bailian-model-metadata
+          path: contracts
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -35,6 +86,12 @@ jobs:
 
       - name: Verify contracts
         run: npm run test:contracts
+
+      - name: Verify Bailian model metadata baseline
+        run: npm run verify:bailian-models
+
+      - name: Test Bailian model metadata offline tooling
+        run: npm run test:bailian-models
 
       - name: Test watch-mode report tooling
         run: npm run test:watch-mode-report

@@ -82,11 +82,16 @@ fn apply_driver_config(snapshot: &mut BridgeRuntimeSnapshot, config: &Value) {
         extract_driver_string(config, "/driver/installPhase", &snapshot.install_phase);
     snapshot.target_device_id =
         extract_driver_string(config, "/driver/targetDeviceId", &snapshot.target_device_id);
-    snapshot.virtual_render_device_id = extract_driver_string(
+    let virtual_render_device_id = extract_driver_string(
         config,
         "/devices/virtualRenderDeviceId",
         &snapshot.virtual_render_device_id,
     );
+    snapshot.virtual_render_device_id = if virtual_render_device_id.trim().is_empty() {
+        "omni-virtual-speaker-default".to_string()
+    } else {
+        virtual_render_device_id
+    };
     snapshot.physical_playback_device_id = extract_driver_string(
         config,
         "/devices/outputDeviceId",

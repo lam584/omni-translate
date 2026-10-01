@@ -11,6 +11,15 @@ import {
 import { buildDefaultSceneModelAssignments } from '../utils/provider-draft';
 
 describe('default provider template', () => {
+  it('provides Aliyun Bailian Workspace endpoint template', () => {
+    const workspace = providerTemplates.find((template) => template.id === 'template-dashscope-workspace');
+    expect(workspace).not.toBeNull();
+    expect(workspace?.displayName).toContain('Workspace 专属接口');
+    expect(workspace?.defaultDraft.baseUrl).toBe('wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime');
+    expect(workspace?.defaultDraft.model).toBe('qwen3.8-livetranslate-flash-realtime');
+    expect(workspace?.defaultDraft.auth.reference).toBe('credential://provider/dashscope/default');
+  });
+
   it('uses Aliyun Bailian realtime as the desktop default', () => {
     expect(defaultProviderTemplate.id).toBe('template-dashscope-realtime');
     expect(defaultProviderTemplate.displayName).toContain('API');
@@ -18,6 +27,17 @@ describe('default provider template', () => {
     expect(defaultProviderTemplate.defaultDraft.model).toBe('qwen3.5-livetranslate-flash-realtime');
   });
 
+  it('offers exact workspace and DeepSeek model IDs as selectable presets without preselecting candidates', () => {
+    const workspace = providerTemplates.find((template) => template.id === 'template-dashscope-workspace')!;
+    const deepseek = providerTemplates.find((template) => template.id === 'template-deepseek')!;
+    for (const modelId of ['qwen3.8-flash', 'qwen3.8-livetranslate-flash-realtime', 'qwen3.8-omni-flash-realtime']) {
+      expect(workspace.presetModels.filter((preset) => preset.model === modelId)).toHaveLength(1);
+    }
+    expect(workspace.presetModels.find((preset) => preset.model === 'qwen3.8-flash')?.capabilities).toEqual(['text-generation']);
+    expect(deepseek.presetModels.find((preset) => preset.model === 'deepseek-v4.1-flash')?.capabilities).toEqual(['text-generation']);
+    expect('candidateModelGroups' in workspace.defaultDraft).toBe(false);
+    expect('candidateModelGroups' in deepseek.defaultDraft).toBe(false);
+  });
   it('keeps text-only DashScope presets out of speech scenarios', () => {
     const dashscope = providerTemplates.find((template) => template.id === 'template-dashscope-realtime');
     for (const modelId of ['qwen-plus', 'qwen-max', 'qwen-turbo']) {
@@ -57,12 +77,13 @@ describe('default provider template', () => {
     }
   });
 
-  it('enables only Aliyun Bailian and DeepSeek by default', () => {
+  it('enables Aliyun Bailian (generic & workspace) and DeepSeek by default', () => {
     const entries = buildProviderTemplateCatalogEntries(providerTemplates, []);
     const enabledTemplateIds = entries.filter((entry) => entry.enabled).map((entry) => entry.template.id);
 
     expect(enabledTemplateIds).toEqual([
       'template-dashscope-realtime',
+      'template-dashscope-workspace',
       'template-deepseek',
     ]);
   });
@@ -85,6 +106,13 @@ describe('default provider template', () => {
       ['game', ['qwen3.5-livetranslate-flash-realtime']],
       ['voice-room', ['qwen3.5-livetranslate-flash-realtime']],
       ['subtitle-translate', ['qwen3.6-flash']],
+    ]);
+    const workspace = providerTemplates.find((template) => template.id === 'template-dashscope-workspace');
+    expect(buildDefaultSceneModelAssignments(workspace!).map((item) => [item.scenario, item.modelIds])).toEqual([
+      ['watch', []],
+      ['game', []],
+      ['voice-room', []],
+      ['subtitle-translate', []],
     ]);
     expect(buildDefaultSceneModelAssignments(deepseek!).find((item) => item.scenario === 'subtitle-translate')?.modelIds).toEqual(['deepseek-v4-flash']);
     expect(buildDefaultSceneModelAssignments(openrouter!).find((item) => item.scenario === 'subtitle-translate')?.modelIds).toEqual(['openai/gpt-5.4-mini']);

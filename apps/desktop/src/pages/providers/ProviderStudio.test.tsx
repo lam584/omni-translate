@@ -3,8 +3,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../../mocks/app-config';
 import { providerTemplates } from '../../mocks/provider-templates';
-import type { ProviderDraft, ProviderScenario } from '../../schema/config';
+import type { ProviderDraft } from '../../schema/config';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
+import { buildProviderDraftPatchFromTemplate } from '../../utils/provider-draft';
 import ProviderStudio from './ProviderStudio';
 
 function render(element: React.ReactNode) {
@@ -47,14 +48,12 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof ProviderStudio
     secretVisible: false,
     secretStatusMessage: null as string | null,
     modelCatalogEndpoint: null as string | null,
-    sceneAssignments: structuredClone(activeProvider.sceneModelAssignments),
     modelLookup: new Map<string, ProviderModelRuntime>([
       ['qwen3.5-omni-plus-realtime', makeModel('qwen3.5-omni-plus-realtime', ['realtime-audio'])],
       ['qwen3.5-livetranslate-flash-realtime', makeModel('qwen3.5-livetranslate-flash-realtime', ['realtime-audio'])],
     ]),
     localModelCapabilityRegistry: [],
     setSecretDraft: vi.fn() as Dispatch<SetStateAction<string>>,
-    setDraggingSceneModel: vi.fn() as Dispatch<SetStateAction<{ scenario: ProviderScenario; modelId: string } | null>>,
     updateActiveProviderDraft: vi.fn(),
     onDelete: vi.fn(),
     onVerify: vi.fn().mockResolvedValue(undefined),
@@ -63,8 +62,6 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof ProviderStudio
     onOpenAdvancedSettings: vi.fn(),
     onSecretVisibilityToggle: vi.fn().mockResolvedValue(undefined),
     onSecretSave: vi.fn().mockResolvedValue(undefined),
-    onSceneModelReorder: vi.fn(),
-    onSceneModelRemove: vi.fn(),
     ...overrides,
   };
 }
@@ -86,6 +83,72 @@ describe('ProviderStudio', () => {
     root = null;
     container = null;
     vi.restoreAllMocks();
+  });
+
+  it('renders data-backed Workspace candidates without quick-preset buttons', () => {
+    const template = providerTemplates.find((item) => item.id === 'template-dashscope-workspace')!;
+    const provider = { ...structuredClone(activeProvider), templateId: template.id,
+      baseUrl: 'wss://my-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+      candidateModelGroups: buildProviderDraftPatchFromTemplate(activeProvider, template).candidateModelGroups };
+    const props = baseProps({ activeTemplate: template, activeProvider: provider, modelLookup: new Map() });
+    ({ container, root } = render(<ProviderStudio {...props} />));
+    expect(container.querySelectorAll('.provider-scene-model-item')).toHaveLength(4);
+    expect(container.textContent).toContain('qwen3.8-flash');
+    expect(container.textContent).toContain('qwen3.8-livetranslate-flash-realtime');
+    expect(container.textContent).toContain('qwen3.8-omni-flash-realtime');
+    expect(container.querySelector('[data-testid^="candidate-presets-"]')).toBeNull();
+    expect(container.querySelector('.provider-scene-grid input')).toBeNull();
+    expect(container.querySelectorAll('.provider-scene-card-header button')).toHaveLength(4);
+    expect(props.updateActiveProviderDraft).not.toHaveBeenCalled();
+
+    act(() => { root?.unmount(); root = null; });
+    container?.remove();
+    ({ container, root } = render(<ProviderStudio {...baseProps({ activeTemplate: template,
+      activeProvider: { ...provider, candidateModelGroups: [] }, modelLookup: new Map() })} />));
+    expect(container.querySelector('[data-testid^="candidate-presets-"]')).toBeNull();
+    expect(container.querySelectorAll('.provider-scene-model-item')).toHaveLength(0);
+  });
+  it('hides the generic binding editor for Bailian without changing stored protocol bindings', () => {
+    const template = providerTemplates.find((item) => item.id === 'template-dashscope-realtime')!;
+    const bindings = [{
+      modelId: 'qwen3.5-livetranslate-flash-realtime',
+      operation: 'realtime-translation',
+      profileOwnerProviderId: 'bailian',
+      manifestVersion: 1,
+      profileId: 'bailian.livetranslate.realtime.ws',
+      profileVersion: 1,
+    }];
+    const provider = {
+      ...structuredClone(activeProvider),
+      kind: 'dashscope' as const,
+      templateId: template.id,
+      model: bindings[0]!.modelId,
+      modelProtocolBindings: bindings,
+    };
+    const props = baseProps({ activeTemplate: template, activeProvider: provider });
+    const originalBindings = structuredClone(props.activeProvider.modelProtocolBindings);
+    ({ container, root } = render(<ProviderStudio {...props} />));
+
+    const bindingEditorCard = Array.from(container.querySelectorAll('.provider-panel-card'))
+      .find((card) => card.querySelector('h3')?.textContent?.includes('/'));
+    expect(bindingEditorCard).toBeUndefined();
+    expect(props.activeProvider.modelProtocolBindings).toEqual(originalBindings);
+    expect(props.updateActiveProviderDraft).not.toHaveBeenCalled();
+  });
+
+  it('keeps the generic binding editor visible for non-Bailian providers', () => {
+    const template = providerTemplates.find((item) => item.id === 'template-openai-compatible-realtime')!;
+    const provider = {
+      ...structuredClone(activeProvider),
+      kind: 'openai-compatible' as const,
+      templateId: template.id,
+      model: 'gpt-4o',
+    };
+    ({ container, root } = render(<ProviderStudio {...baseProps({ activeTemplate: template, activeProvider: provider })} />));
+
+    const bindingEditorCard = Array.from(container.querySelectorAll('.provider-panel-card'))
+      .find((card) => card.querySelector('h3')?.textContent?.includes('/'));
+    expect(bindingEditorCard).toBeInstanceOf(HTMLElement);
   });
 
   it('renders provider header with template display name and delete action', async () => {
@@ -153,26 +216,17 @@ describe('ProviderStudio', () => {
     expect(props.onSecretSave).toHaveBeenCalledTimes(1);
   });
 
-  it('renders scene model assignments with model items and capability chips', () => {
+  it('renders four empty capability-based candidate groups, ignoring old scene selections', () => {
     ({ container, root } = render(<ProviderStudio {...baseProps()} />));
-
-    const sceneCards = container.querySelectorAll('.provider-scene-card');
-    expect(sceneCards.length).toBe(4);
-
-    const watchCard = sceneCards[0];
-    expect(watchCard?.textContent).toContain('qwen3.5-livetranslate-flash-realtime');
-    const capabilityChip = watchCard?.querySelector('.provider-capability-chip');
-    expect(capabilityChip).toBeInstanceOf(HTMLElement);
+    const cards = container.querySelectorAll('.provider-scene-card');
+    expect(cards).toHaveLength(4);
+    expect(cards[0]?.textContent).toContain('文本处理与翻译');
+    expect(cards[1]?.textContent).toContain('语音识别与理解');
+    expect(cards[2]?.textContent).toContain('语音生成');
+    expect(cards[3]?.textContent).toContain('实时语音与多模态');
+    expect(container.querySelectorAll('.provider-scene-empty')).toHaveLength(4);
+    expect(container.querySelectorAll('.provider-scene-model-item')).toHaveLength(0);
   });
-
-  it('shows empty state for scenes without models', () => {
-    ({ container, root } = render(<ProviderStudio {...baseProps()} />));
-
-    const emptyStates = container.querySelectorAll('.provider-scene-empty');
-    expect(emptyStates.length).toBe(2);
-    expect(emptyStates[0]?.textContent).toContain('尚未添加模型');
-  });
-
   it('displays storage poll error alert with retry button', async () => {
     const props = baseProps({ storagePollError: 'connection refused' });
     ({ container, root } = render(<ProviderStudio {...props} />));
@@ -224,22 +278,108 @@ describe('ProviderStudio', () => {
     expect(alerts[1]?.textContent).toContain('Runtime unreachable');
   });
 
-  it('removes scene model via remove button', async () => {
-    const props = baseProps();
+  it('removes a candidate from its group without changing credentials or capabilities', async () => {
+    const provider = { ...structuredClone(activeProvider), candidateModelGroups: [
+      { group: 'realtime-multimodal' as const, modelIds: ['qwen3.5-livetranslate-flash-realtime'] },
+    ] };
+    const props = baseProps({ activeProvider: provider });
     ({ container, root } = render(<ProviderStudio {...props} />));
-
     const removeButton = container.querySelector('.provider-scene-model-actions .provider-header-icon-danger');
-    expect(removeButton).toBeInstanceOf(HTMLButtonElement);
     await click(removeButton);
-    expect(props.onSceneModelRemove).toHaveBeenCalledWith('watch', 'qwen3.5-livetranslate-flash-realtime');
+    expect(props.updateActiveProviderDraft).toHaveBeenCalledWith(expect.objectContaining({
+      candidateModelGroups: expect.arrayContaining([{ group: 'realtime-multimodal', modelIds: [] }]),
+      status: 'draft',
+    }));
   });
 
-  it('shows model catalog endpoint footnote when provided', () => {
+  it('opens the catalog for a candidate group without showing a manual ID field', async () => {
+    const props = baseProps();
+    ({ container, root } = render(<ProviderStudio {...props} />));
+    const card = container.querySelectorAll('.provider-scene-card')[2];
+    expect(card?.querySelector('input, datalist, .provider-scene-manual-row')).toBeNull();
+    await click(card?.querySelector('.provider-scene-card-header button'));
+    expect(props.onOpenModelCatalog).toHaveBeenCalledWith('audio-generation');
+  });
+  it('displays selected official metadata modalities without inferred capabilities', () => {
+    const provider = {
+      ...structuredClone(activeProvider),
+      candidateModelGroups: [{ group: 'audio-understanding' as const, modelIds: ['metadata-only-model'] }],
+      modelMetadataCache: {
+        source: 'bailian-api' as const,
+        fetchedAt: new Date().toISOString(),
+        endpoint: 'https://dashscope.aliyuncs.com',
+        models: [{
+          modelId: 'metadata-only-model', categories: ['audio'],
+          requestModalities: ['audio', 'text'], responseModalities: ['text'],
+        }, { modelId: 'unselected-official-model', categories: [], requestModalities: [], responseModalities: [] }],
+      },
+    };
+    ({ container, root } = render(<ProviderStudio {...baseProps({ activeProvider: provider, modelLookup: new Map() })} />));
+
+    const card = container.querySelectorAll('.provider-scene-card')[1];
+    expect(card?.querySelector('input, datalist')).toBeNull();
+    const selected = card?.querySelector('.provider-scene-model-item');
+    expect(selected?.textContent).toContain('metadata-only-model');
+    expect(selected?.textContent).toContain('输入：audio, text');
+    expect(selected?.textContent).toContain('输出：text');
+    expect(selected?.querySelector('.provider-capability-chip')).toBeNull();
+  });
+  it('ignores expired provider metadata in candidate suggestions and modality details', () => {
+    const provider = {
+      ...structuredClone(activeProvider),
+      candidateModelGroups: [{ group: 'audio-understanding' as const, modelIds: ['saved-model'] }],
+      modelMetadataCache: {
+        source: 'bailian-api' as const,
+        fetchedAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+        endpoint: 'https://dashscope.aliyuncs.com/api/v1/models',
+        models: [
+          { modelId: 'saved-model', categories: ['audio'], requestModalities: ['audio'], responseModalities: ['text'] },
+          { modelId: 'expired-suggestion', categories: [], requestModalities: [], responseModalities: [] },
+        ],
+      },
+    };
+    ({ container, root } = render(<ProviderStudio {...baseProps({ activeProvider: provider, modelLookup: new Map() })} />));
+    const card = container.querySelectorAll('.provider-scene-card')[1];
+    expect(Array.from(card?.querySelectorAll('datalist option') ?? []).map((option) => option.getAttribute('value'))).not.toContain('expired-suggestion');
+    expect(card?.querySelector('.provider-scene-model-item')?.textContent).toContain('saved-model');
+    expect(card?.querySelector('.provider-scene-model-item')?.textContent).not.toContain('输入：');
+  });  it('shows model catalog endpoint footnote when provided', () => {
     ({ container, root } = render(<ProviderStudio {...baseProps({
       modelCatalogEndpoint: 'https://api.example.com/v1/models',
     })} />));
 
-    const footnote = container.querySelector('.provider-setting-footnote');
-    expect(footnote?.textContent).toContain('https://api.example.com/v1/models');
+    const footnotes = Array.from(container.querySelectorAll('.provider-setting-footnote'));
+    expect(footnotes.some((note) => note.textContent?.includes('https://api.example.com/v1/models'))).toBe(true);
   });
-});
+  it('lets an empty custom platform bind a candidate model without changing platform identity', async () => {
+    const provider = { ...structuredClone(activeProvider), templateSource: 'custom' as const,
+      kind: 'openai-compatible' as const, model: '', transport: 'streaming-http' as const,
+      authRef: { ...activeProvider.authRef, headerName: 'Authorization', scheme: 'bearer' as const },
+      modelProtocolBindings: [], candidateModelGroups: [{ group: 'text-processing' as const, modelIds: ['first-model', 'second-model'] }],
+      localModelCapabilityRegistry: [{ id: 'first-capability', modelId: 'first-model', capabilities: ['text-generation' as const], source: 'manual' as const }] };
+    const template = { ...activeTemplate, id: 'template-custom-sample', source: 'custom' as const };
+    const props = baseProps({ activeProvider: provider, activeTemplate: template, localModelCapabilityRegistry: provider.localModelCapabilityRegistry });
+    ({ container, root } = render(<ProviderStudio {...props} />));
+    const card = Array.from(container.querySelectorAll('.provider-panel-card'))
+      .find((node) => node.textContent?.includes('为模型绑定操作协议'))!;
+    const selects = card.querySelectorAll<HTMLSelectElement>('select');
+    expect(selects[0]?.options).toHaveLength(2);
+    const option = Array.from(selects[1]?.options ?? []).find((item) => item.value.includes('text-translation'))!;
+    expect(option).toBeInstanceOf(HTMLOptionElement);
+    await act(async () => { selects[1]!.value = option.value; selects[1]!.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(props.updateActiveProviderDraft).toHaveBeenCalledWith(expect.objectContaining({
+      modelProtocolBindings: [expect.objectContaining({ modelId: 'first-model', operation: 'text-translation' })],
+    }));
+    expect(provider.model).toBe('');
+  });  it('shows the exact native authority for a custom DashScope platform at an official URL', () => {
+    const provider = { ...structuredClone(activeProvider), templateId: 'template-custom-bailian', templateSource: 'custom' as const,
+      kind: 'dashscope' as const, transport: 'websocket' as const, model: '', region: 'cn-beijing',
+      baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+      authRef: { ...activeProvider.authRef, headerName: 'Authorization', scheme: 'bearer' as const },
+      candidateModelGroups: [{ group: 'realtime-multimodal' as const, modelIds: ['qwen3.5-livetranslate-flash-realtime'] }],
+      modelProtocolBindings: [] };
+    const template = { ...activeTemplate, id: provider.templateId, source: 'custom' as const };
+    ({ container, root } = render(<ProviderStudio {...baseProps({ activeProvider: provider, activeTemplate: template })} />));
+    expect(container.textContent).toContain('bailian.livetranslate.realtime.ws@1');
+    expect(container.textContent).not.toContain('OpenAI API · openai.realtime');
+  });});

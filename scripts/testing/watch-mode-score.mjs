@@ -22,6 +22,7 @@ const FALLBACK_RULES = Object.freeze({
     audioToRenderFirst: { good: 2_000, bad: 8_000 },
     audioToRenderFinal: { good: 5_000, bad: 15_000 },
   },
+  latencyScoring: { badScore: 10, tailExponent: 2, aggregation: 'geometric-mean' },
   stability: { extraResponsePenalty: 5 },
   grades: [
     { grade: 'A', minimum: 90 }, { grade: 'B', minimum: 80 }, { grade: 'C', minimum: 70 },
@@ -67,6 +68,9 @@ function validateRules(rules) {
     if (!threshold || !Number.isFinite(Number(threshold.good)) || !Number.isFinite(Number(threshold.bad)) || threshold.good >= threshold.bad) {
       throw new Error(`${RULES_PATH} has invalid ${signal} latency thresholds`);
     }
+  }
+  if (!rules.latencyScoring || !Number.isFinite(rules.latencyScoring.badScore) || rules.latencyScoring.badScore <= 0 || rules.latencyScoring.badScore >= 100 || !Number.isFinite(rules.latencyScoring.tailExponent) || rules.latencyScoring.tailExponent <= 0 || rules.latencyScoring.aggregation !== 'geometric-mean') {
+    throw new Error(`${RULES_PATH} must define latencyScoring with badScore, tailExponent, and aggregation 'geometric-mean'`);
   }
   if (!Number.isFinite(Number(rules.stability?.extraResponsePenalty))) {
     throw new Error(`${RULES_PATH} must define stability.extraResponsePenalty`);
@@ -187,6 +191,14 @@ export function scoreLatencyRamp(valueMs, goodMs, badMs) {
   if (valueMs <= goodMs) return 100;
   if (valueMs >= badMs) return 0;
   return round(100 * (badMs - valueMs) / (badMs - goodMs));
+}
+
+/** Continuous v2 signal score with a linear target band and a decaying slow tail. */
+export function scoreLatencyV2(valueMs, goodMs, badMs, badScore = BENCHMARK_SCORE_V2_RULES.latencyScoring.badScore, tailExponent = BENCHMARK_SCORE_V2_RULES.latencyScoring.tailExponent) {
+  if (valueMs == null || !Number.isFinite(valueMs) || valueMs < 0) return null;
+  if (valueMs <= goodMs) return 100;
+  if (valueMs < badMs) return 100 - (100 - badScore) * (valueMs - goodMs) / (badMs - goodMs);
+  return badScore * (badMs / valueMs) ** tailExponent;
 }
 
 function latencyZone(valueMs, threshold) {
@@ -350,7 +362,7 @@ function judgeStateFor({ semanticJudge, judgeState, judgeError }) {
 function formulas(rules) {
   return {
     semantic: `(${rules.semantic.referenceWeight}% × mean(chrF2)) + (${rules.semantic.judgeWeight}% × mean(judge score))`,
-    latency: 'mean(each run’s high-confidence audio → visible-first and audio → visible-final linear-ramp scores)',
+    latency: `mean across runs of √(first × final); each signal: ≤good → 100, good–bad → linear to ${rules.latencyScoring.badScore}, >bad → ${rules.latencyScoring.badScore} × (bad / observed)^${rules.latencyScoring.tailExponent}`,
     completeness: '100 × completed runs with a final translation ÷ declared runs',
     stability: `100 × successful runs ÷ declared runs − ${rules.stability.extraResponsePenalty} points per extra response (clamped to 0–100)`,
     total: '0.40 × semantic + 0.30 × latency + 0.20 × completeness + 0.10 × stability; official only when all four dimensions have complete evidence',
@@ -427,7 +439,7 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
         audioStartOrigin: run.audioStartOrigin,
         highConfidence: run.highConfidenceAudioOrigin,
         latencyMs: firstLatency,
-        score: scoreLatencyRamp(firstLatency, firstThreshold.good, firstThreshold.bad),
+        score: firstLatency == null ? null : round(scoreLatencyV2(firstLatency, firstThreshold.good, firstThreshold.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent), 3),
         threshold: clone(firstThreshold),
         zone: latencyZone(firstLatency, firstThreshold),
       },
@@ -437,7 +449,7 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
         audioStartOrigin: run.audioStartOrigin,
         highConfidence: run.highConfidenceAudioOrigin,
         latencyMs: finalLatency,
-        score: scoreLatencyRamp(finalLatency, finalThreshold.good, finalThreshold.bad),
+        score: finalLatency == null ? null : round(scoreLatencyV2(finalLatency, finalThreshold.good, finalThreshold.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent), 3),
         threshold: clone(finalThreshold),
         zone: latencyZone(finalLatency, finalThreshold),
       },
@@ -447,15 +459,24 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
   if (!declaredRuns) latencyMissing.push('declared-runs');
   if (runs.length < declaredRuns) latencyMissing.push('run-record-for-each-declared-run');
   for (const signal of latencySignals.filter(({ score }) => score == null)) latencyMissing.push(`run-${signal.runIndex}-${signal.signal}`);
-  const latencyScores = latencySignals.flatMap(({ score }) => score == null ? [] : [score]);
-  const latencyAverage = latencyMissing.length === 0 ? average(latencyScores) : null;
+  const latencyRuns = runs.map((run) => {
+    const highConfidence = Boolean(run.highConfidenceAudioOrigin);
+    const first = highConfidence ? scoreLatencyV2(run.audioToRenderFirstMs, rules.latencyMilliseconds.audioToRenderFirst.good, rules.latencyMilliseconds.audioToRenderFirst.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent) : null;
+    const final = highConfidence ? scoreLatencyV2(run.audioToRenderFinalMs, rules.latencyMilliseconds.audioToRenderFinal.good, rules.latencyMilliseconds.audioToRenderFinal.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent) : null;
+    return { runIndex: run.runIndex, score: first == null || final == null ? null : Math.sqrt(first * final) };
+  });
+  const latencyAverage = latencyMissing.length === 0 ? average(latencyRuns.map((run) => run.score)) : null;
   const latency = {
     score: latencyAverage == null ? null : round(latencyAverage),
     status: latencyAverage == null ? 'evidence-insufficient' : 'scored',
     weight: rules.dimensionWeights.latency,
     formula: allFormulas.latency,
     missingEvidence: latencyMissing,
-    evidence: { signals: latencySignals, average: latencyAverage == null ? null : round(latencyAverage) },
+    evidence: {
+      signals: latencySignals,
+      average: latencyAverage == null ? null : round(latencyAverage),
+      runs: latencyRuns.map((run) => ({ runIndex: run.runIndex, score: run.score == null ? null : round(run.score) })),
+    },
   };
 
   const unfinished = incompleteRuns(runs, declaredRuns);
@@ -524,6 +545,7 @@ function scoreNormalized({ report, runs, declaredRuns, sourceText, referenceText
     thresholds: {
       semantic: clone(rules.semantic),
       latencyMilliseconds: clone(rules.latencyMilliseconds),
+      latencyScoring: clone(rules.latencyScoring),
       stability: clone(rules.stability),
       grades: clone(rules.grades),
     },

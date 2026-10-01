@@ -1,4 +1,5 @@
 use reqwest::blocking::Response;
+use reqwest::Url;
 use serde_json::Value;
 
 use crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection;
@@ -7,6 +8,10 @@ use super::super::contracts::{
     ProviderDraftInput, ProviderModelCatalogRuntime, ProviderModelRuntime, ProviderRuntimeError,
 };
 use super::{auth, time, transport};
+
+mod bailian_metadata;
+
+pub(crate) use bailian_metadata::fetch_bailian_metadata;
 
 /// Owns model-catalog endpoint resolution, HTTP transport, and response
 /// normalization.  Keeping this state-free service separate prevents the
@@ -54,7 +59,9 @@ fn parse_response(
             _ => transport::parse_openai_error(response),
         });
     }
-    let value: Value = response.json().map_err(transport::normalize_transport_error)?;
+    let value: Value = response
+        .json()
+        .map_err(transport::normalize_transport_error)?;
     parse_model_catalog_response(provider, &value)
 }
 
@@ -76,10 +83,7 @@ pub(crate) fn resolve_models_endpoint(
     provider: &ProviderDraftInput,
 ) -> Result<String, ProviderRuntimeError> {
     match provider.kind.as_str() {
-        "dashscope" => transport::join_url(
-            &normalize_dashscope_compatible_base_url(&provider.base_url),
-            "models",
-        ),
+        "dashscope" => resolve_dashscope_models_endpoint(provider),
         kind if is_openai_compatible_kind(kind) => transport::join_url(
             &normalize_openai_compatible_base_url(&provider.base_url),
             "models",
@@ -104,19 +108,73 @@ pub(super) fn normalize_openai_compatible_base_url(base_url: &str) -> String {
     trimmed.to_string()
 }
 
-pub(super) fn normalize_dashscope_compatible_base_url(base_url: &str) -> String {
-    if base_url.contains("/compatible-mode/v1") {
-        return base_url.trim_end_matches('/').to_string();
+fn resolve_dashscope_models_endpoint(
+    provider: &ProviderDraftInput,
+) -> Result<String, ProviderRuntimeError> {
+    let invalid = || {
+        ProviderRuntimeError::new(
+            "request.invalid",
+            "DashScope 模型目录需要与配置地域匹配的官方端点和有效路径。",
+        )
+    };
+    let mut url = Url::parse(&provider.base_url).map_err(|_| invalid())?;
+    if !matches!(url.scheme(), "https" | "wss")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
     }
 
-    if base_url.contains("/api/v1") {
-        return base_url
-            .replace("/api/v1", "/compatible-mode/v1")
-            .trim_end_matches('/')
-            .to_string();
+    let host = url.host_str().ok_or_else(invalid)?.to_ascii_lowercase();
+    let allowed = match provider.region.as_deref() {
+        Some("cn-beijing") => {
+            host == "dashscope.aliyuncs.com" || workspace_host(&host, "cn-beijing")
+        }
+        Some("ap-southeast-1") => {
+            host == "dashscope-intl.aliyuncs.com" || workspace_host(&host, "ap-southeast-1")
+        }
+        _ => false,
+    };
+    if !allowed
+        || !matches!(
+            url.path(),
+            "/api/v1"
+                | "/api/v1/"
+                | "/api/v1/models"
+                | "/compatible-mode/v1"
+                | "/compatible-mode/v1/"
+                | "/compatible-mode/v1/models"
+                | "/api-ws/v1/realtime"
+        )
+        || (url.scheme() == "wss" && url.path() != "/api-ws/v1/realtime")
+    {
+        return Err(invalid());
     }
 
-    format!("{}/compatible-mode/v1", base_url.trim_end_matches('/'))
+    if url.scheme() == "wss" {
+        url.set_scheme("https").map_err(|_| invalid())?;
+    }
+    // Preserve the configured Workspace authority rather than appending below
+    // the WebSocket route or sending its credentials to another host.
+    url.set_path("/compatible-mode/v1/models");
+    Ok(url.into())
+}
+
+fn workspace_host(host: &str, region: &str) -> bool {
+    let suffix = format!(".{region}.maas.aliyuncs.com");
+    let Some(id) = host.strip_suffix(&suffix) else {
+        return false;
+    };
+    !id.is_empty()
+        && id.len() <= 63
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 
 pub(super) fn parse_model_catalog_response(
@@ -233,7 +291,7 @@ fn push_capability(capabilities: &mut Vec<String>, capability: &str) {
 mod tests {
     use serde_json::json;
 
-    use super::parse_model_catalog_response;
+    use super::{parse_model_catalog_response, resolve_models_endpoint};
     use crate::provider::contracts::ProviderDraftInput;
 
     fn provider(kind: &str) -> ProviderDraftInput {
@@ -256,6 +314,81 @@ mod tests {
             "systemPromptTemplate": ""
         }))
         .expect("catalog provider fixture")
+    }
+
+    fn dashscope_provider(base_url: &str, region: &str) -> ProviderDraftInput {
+        let mut provider = provider("dashscope");
+        provider.base_url = base_url.to_string();
+        provider.region = Some(region.to_string());
+        provider
+    }
+
+    #[test]
+    fn workspace_websocket_catalog_uses_same_host_https_compatible_route() {
+        for (base, expected) in [
+            (
+                "wss://ws-team-beta.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+                "https://ws-team-beta.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
+            ),
+            (
+                "https://ws-team-beta.cn-beijing.maas.aliyuncs.com/api/v1",
+                "https://ws-team-beta.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
+            ),
+            (
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+            ),
+        ] {
+            assert_eq!(
+                resolve_models_endpoint(&dashscope_provider(base, "cn-beijing")).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            resolve_models_endpoint(&dashscope_provider(
+                "wss://team.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime",
+                "ap-southeast-1",
+            ))
+            .unwrap(),
+            "https://team.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models"
+        );
+    }
+
+    #[test]
+    fn dashscope_catalog_rejects_cross_region_invalid_authority_and_wrong_route() {
+        for base in [
+            "wss://team.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime",
+            "wss://team.cn-beijing.maas.aliyuncs.com.evil.test/api-ws/v1/realtime",
+            "wss://ws..cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+            "wss://ws_team.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+            "wss://team.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime/compatible-mode/v1",
+            "https://team.cn-beijing.maas.aliyuncs.com/wrong/path",
+            "https://other.example.test/api/v1",
+            "http://dashscope.aliyuncs.com/api/v1",
+            "wss://user:secret@team.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+            "wss://team.cn-beijing.maas.aliyuncs.com:8443/api-ws/v1/realtime",
+            "wss://team.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?token=secret",
+        ] {
+            assert!(
+                resolve_models_endpoint(&dashscope_provider(base, "cn-beijing")).is_err(),
+                "accepted {base}"
+            );
+        }
+        assert!(resolve_models_endpoint(&dashscope_provider(
+            "https://dashscope.aliyuncs.com/api/v1",
+            "invalid-region"
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn generic_compatible_catalog_preserves_custom_endpoint() {
+        let mut generic = provider("openai-compatible");
+        generic.base_url = "https://custom.example.test/v1/models".to_string();
+        assert_eq!(
+            resolve_models_endpoint(&generic).unwrap(),
+            "https://custom.example.test/v1/models"
+        );
     }
 
     fn dashscope_capabilities(model_id: &str) -> Vec<String> {

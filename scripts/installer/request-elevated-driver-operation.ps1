@@ -35,6 +35,10 @@ function Test-IsAdministrator {
   return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+if ([string]::IsNullOrWhiteSpace($VirtualRenderDeviceId)) {
+  $VirtualRenderDeviceId = 'omni-virtual-speaker-default'
+}
+
 $requestWasElevated = Test-IsAdministrator
 $elevationMode = if ($requestWasElevated) { 'already-elevated' } else { 'uac-runas' }
 $elevatedScript = Join-Path $PSScriptRoot 'invoke-elevated-driver-operation.ps1'
@@ -62,7 +66,8 @@ try {
     & 'powershell.exe' @arguments
     $exitCode = $LASTEXITCODE
   } else {
-    $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $arguments
+    $safeArguments = @($arguments | Where-Object { $_ -ne $null -and $_ -ne '' })
+    $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $safeArguments
     $exitCode = $process.ExitCode
   }
   if (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf)) {

@@ -80,7 +80,7 @@ export function logSceneLaunchConfig(
     log('authRef.scheme', provider.authRef.scheme);
     log('authRef.headerName', provider.authRef.headerName);
     log('customHeaders', provider.customHeaders.length > 0 ? provider.customHeaders.map((h) => `${h.name}=${h.enabled ? 'enabled' : 'disabled'}`) : '(none)');
-    log('sceneModelAssignments', provider.sceneModelAssignments.map((a) => `${a.scenario}: [${a.modelIds.join(', ')}]`));
+    log('candidateModelGroups', (provider.candidateModelGroups ?? []).map((a) => `${a.group}: [${a.modelIds.join(', ')}]`));
     log('probe.verdict', provider.probe.verdict);
     log('probe.profileId', provider.probe.profileId);
     log('probe.checkedAt', provider.probe.checkedAt);

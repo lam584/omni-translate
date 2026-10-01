@@ -160,38 +160,60 @@ function makeFieldGroups(kind: ProviderKind): ProviderTemplate['fieldGroups'] {
 function makeCustomProviderTemplatePatch(
   draft: CustomProviderTemplateDraft,
   providerId: string,
+  existing?: ProviderTemplate,
 ): Omit<ProviderTemplate, 'id' | 'source' | 'presetModels'> {
   const authReference = resolveCustomProviderAuthReference(draft.displayName, draft.authReference);
+  const model = draft.model.trim();
   const protocol = resolveCustomProviderProtocolProfileOption(draft.kind, draft.protocolProfileKey);
-  const binding = customProviderBinding(draft.kind, draft.protocolProfileKey, draft.model);
-  if (!protocol || !binding) {
+  const binding = customProviderBinding(draft.kind, draft.protocolProfileKey, model);
+  // A platform can be created before any model is configured. A populated
+  // model, however, must never acquire a protocol by inference.
+  const unbound = !model;
+  const unresolvedLegacy = existing && !draft.protocolProfileKey
+    && existing.defaultDraft.modelProtocolBindings === undefined;
+  if (!unbound && !binding && !unresolvedLegacy) {
     throw new Error('custom_provider.protocol_profile_required');
   }
+  const oldBindings = existing?.defaultDraft.modelProtocolBindings;
+  const bindings = binding
+    ? [binding, ...(oldBindings ?? []).filter((item) => (
+      item.modelId !== binding.modelId || item.operation !== binding.operation
+    ))]
+    : oldBindings ?? [];
+  const transport = binding && protocol ? protocol.transport : draft.transport;
+  const supportedTransports = [...new Set([
+    transport,
+    ...bindings.map((item) => resolveCustomProviderProtocolProfileOption(
+      draft.kind, customProviderProfileKeyFromBinding(item),
+    )?.transport).filter((value): value is ProviderTransport => value !== undefined),
+  ])];
 
   return {
     version: makeVersionStamp(),
     displayName: draft.displayName.trim(),
     description: i18n.t('customProvider.description', { platform: draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible' }),
-    protocolLabel: makeProtocolLabel(protocol.transport),
+    protocolLabel: makeProtocolLabel(transport),
     notes: i18n.t('customProvider.notes'),
-    supportedTransports: [protocol.transport],
+    supportedTransports,
     defaultDraft: {
+      ...existing?.defaultDraft,
       providerId,
       kind: draft.kind,
       displayName: draft.displayName.trim(),
-      model: draft.model.trim(),
+      model,
       baseUrl: draft.baseUrl.trim(),
-      transport: protocol.transport,
+      transport,
       auth: {
-        headerName: protocol.authHeaderName,
+        ...existing?.defaultDraft.auth,
+        headerName: binding && protocol ? protocol.authHeaderName : draft.authHeaderName.trim(),
         reference: authReference,
-        scheme: protocol.authScheme,
+        scheme: binding && protocol ? protocol.authScheme : draft.authScheme,
       },
       region: draft.region.trim() || undefined,
       streamEnabled: draft.streamEnabled,
       timeoutMs: draft.timeoutMs,
       systemPromptTemplate: draft.systemPromptTemplate.trim(),
-      modelProtocolBindings: [binding],
+      ...(unresolvedLegacy && !binding ? {} : { modelProtocolBindings: bindings }),
     },
     fieldGroups: makeFieldGroups(draft.kind),
     contractMappings: [
@@ -244,7 +266,18 @@ export function customProviderTemplateToDraft(template: ProviderTemplate): Custo
     streamEnabled: template.defaultDraft.streamEnabled,
     timeoutMs: template.defaultDraft.timeoutMs,
     systemPromptTemplate: template.defaultDraft.systemPromptTemplate,
-    protocolProfileKey: customProviderProfileKeyFromBinding(template.defaultDraft.modelProtocolBindings?.[0]),
+    protocolProfileKey: customProviderProfileKeyFromBinding(
+      template.defaultDraft.modelProtocolBindings?.find((binding) => {
+        if (binding.modelId !== template.defaultDraft.model) return false;
+        const option = resolveCustomProviderProtocolProfileOption(
+          template.defaultDraft.kind, customProviderProfileKeyFromBinding(binding),
+        );
+        return option?.transport === template.defaultDraft.transport
+          && option.authProfileId === binding.authProfileId
+          && option.authHeaderName.toLowerCase() === template.defaultDraft.auth.headerName.toLowerCase()
+          && option.authScheme === template.defaultDraft.auth.scheme;
+      }),
+    ),
   };
 }
 
@@ -253,7 +286,7 @@ export function updateCustomProviderTemplate(template: ProviderTemplate, draft: 
 
   return {
     ...template,
-    ...makeCustomProviderTemplatePatch(draft, template.defaultDraft.providerId || `provider-custom-${slug}`),
+    ...makeCustomProviderTemplatePatch(draft, template.defaultDraft.providerId || `provider-custom-${slug}`, template),
   };
 }
 
@@ -361,7 +394,9 @@ export function writeCustomProviderTemplates(templates: ProviderTemplate[]) {
   }
 
   try {
-    if (!templates.every(isValidStoredCustomProviderTemplate)) {
+    if (!templates.every((template) => isValidStoredCustomProviderTemplate(template)
+      || (isPreservableLegacyCustomProviderTemplate(template)
+        && template.defaultDraft.modelProtocolBindings === undefined))) {
       return { ok: false as const, error: 'Custom provider template protocol profile is invalid or unauthorized' };
     }
     window.localStorage.setItem(CUSTOM_PROVIDER_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
@@ -371,28 +406,33 @@ export function writeCustomProviderTemplates(templates: ProviderTemplate[]) {
   }
 }
 
-function isValidStoredCustomProviderTemplate(value: unknown): value is ProviderTemplate {
-  if (!value || typeof value !== 'object') return false;
-  const template = value as Partial<ProviderTemplate>;
-  if (
-    template.source !== 'custom'
-    || typeof template.id !== 'string'
-    || !template.id.startsWith('template-custom-')
-    || template.manifestProviderId !== undefined
-    || !template.defaultDraft
-    || template.defaultDraft.manifestProviderId !== undefined
-  ) return false;
-  const bindings = template.defaultDraft.modelProtocolBindings;
-  if (!Array.isArray(bindings) || bindings.length !== 1) return false;
-  const binding = bindings[0];
-  if (!binding || binding.modelId !== template.defaultDraft.model) return false;
-  const key = customProviderProfileKeyFromBinding(binding);
-  const option = resolveCustomProviderProtocolProfileOption(template.defaultDraft.kind, key);
-  return Boolean(
-    option
-    && option.transport === template.defaultDraft.transport
-    && option.authProfileId === binding.authProfileId
-    && option.authHeaderName.toLowerCase() === template.defaultDraft.auth.headerName.toLowerCase()
-    && option.authScheme === template.defaultDraft.auth.scheme
-  );
+function isValidStoredCustomProviderTemplate(value: unknown): boolean {
+  if (!isPreservableLegacyCustomProviderTemplate(value)) return false;
+  const draft = value.defaultDraft;
+  if (!draft.auth || typeof draft.auth.headerName !== 'string'
+    || typeof draft.auth.scheme !== 'string') return false;
+  const bindings = draft.modelProtocolBindings;
+  if (!Array.isArray(bindings)) return false;
+  if (bindings.length === 0) return !draft.model.trim();
+
+  const identities = new Set<string>();
+  let defaultBindingMatches = false;
+  for (const binding of bindings) {
+    if (!binding || typeof binding.modelId !== 'string' || !binding.modelId.trim()
+      || binding.modelId !== binding.modelId.trim()) return false;
+    const identity = JSON.stringify([binding.modelId, binding.operation]);
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+    const option = resolveCustomProviderProtocolProfileOption(
+      draft.kind, customProviderProfileKeyFromBinding(binding),
+    );
+    if (!option || option.authProfileId !== binding.authProfileId) return false;
+    if (binding.modelId === draft.model
+      && option.transport === draft.transport
+      && option.authHeaderName.toLowerCase() === draft.auth.headerName.toLowerCase()
+      && option.authScheme === draft.auth.scheme) defaultBindingMatches = true;
+  }
+  // The default model, when set, needs an exact authorized profile. Other
+  // models/operations may legitimately use different transports and auth.
+  return !draft.model.trim() || defaultBindingMatches;
 }

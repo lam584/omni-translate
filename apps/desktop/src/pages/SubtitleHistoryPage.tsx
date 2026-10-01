@@ -11,12 +11,9 @@ import {
   type HistoryStatistics,
 } from '../schema/history';
 import { useAppStore } from '../stores/app-store';
+import { describeRuntimeError } from '../utils/runtime-error-text';
 
 const EMPTY_STATS: HistoryStatistics = { sessionCount: 0, cueCount: 0, audioBytes: 0 };
-
-function describeError(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function appendUnique<T extends { id: string }>(current: T[], incoming: T[]) {
   const known = new Set(current.map((item) => item.id));
@@ -54,7 +51,7 @@ export default function SubtitleHistoryPage() {
   const [playbackKey, setPlaybackKey] = useState<string | null>(null);
 
   const showHistoryError = useCallback((caught: unknown) => {
-    setError(describeError(caught));
+    setError(describeRuntimeError(caught));
   }, []);
 
   const locale = i18n.resolvedLanguage ?? i18n.language ?? 'en';

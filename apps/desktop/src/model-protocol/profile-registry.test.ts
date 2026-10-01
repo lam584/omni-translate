@@ -28,7 +28,7 @@ describe('Bailian model protocol profile registry', () => {
           },
         });
       } else {
-        expect(result, vector.id).toEqual({ ok: false, errorCode: vector.expect.errorCode });
+        expect(result, vector.id).toMatchObject({ ok: false, errorCode: vector.expect.errorCode });
       }
     }
   });

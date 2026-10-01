@@ -1,5 +1,7 @@
 import ProviderWorkspaceEndpointHint from './ProviderWorkspaceEndpointHint';
 import ProviderModelBindingEditor from './ProviderModelBindingEditor';
+import CustomProviderModelBindings from './CustomProviderModelBindings';
+import CandidateModelGroupsEditor from './CandidateModelGroupsEditor';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../../components/icons/AppIcon';
@@ -7,11 +9,9 @@ import PageSectionHeader from '../../components/page/PageSectionHeader';
 import StatusBadge from '../../components/page/StatusBadge';
 import { activeDesktopApi } from '../../runtime/desktop-api';
 import { createLogger } from '../../runtime/logger';
-import type { ProviderDraft, ProviderModelCapabilityRegistryEntry, ProviderScenario } from '../../schema/config';
+import type { ProviderDraft, ProviderModelCapabilityRegistryEntry, CandidateModelGroupId } from '../../schema/config';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
 import type { ProviderTemplate } from '../../schema/provider-template';
-import { providerCapabilityLabelKey } from '../../utils/provider-model-capabilities';
-import { providersPageHelpers } from './providersPageHelpers';
 
 const providerStudioLogger = createLogger('runtime');
 
@@ -42,21 +42,17 @@ type Props = {
   secretVisible: boolean;
   secretStatusMessage: string | null;
   modelCatalogEndpoint: string | null;
-  sceneAssignments: ProviderDraft['sceneModelAssignments'];
   modelLookup: Map<string, ProviderModelRuntime>;
   localModelCapabilityRegistry: ProviderModelCapabilityRegistryEntry[];
   setSecretDraft: Dispatch<SetStateAction<string>>;
-  setDraggingSceneModel: Dispatch<SetStateAction<{ scenario: ProviderScenario; modelId: string } | null>>;
   updateActiveProviderDraft: (patch: Partial<ProviderDraft>) => void;
   onDelete: () => void;
   onVerify: () => Promise<void>;
   onVerificationDetails: () => void;
-  onOpenModelCatalog: (scenario?: ProviderScenario) => void;
+  onOpenModelCatalog: (group?: CandidateModelGroupId) => void;
   onOpenAdvancedSettings: () => void;
   onSecretVisibilityToggle: () => Promise<void>;
   onSecretSave: () => Promise<void>;
-  onSceneModelReorder: (scenario: ProviderScenario, targetModelId: string) => void;
-  onSceneModelRemove: (scenario: ProviderScenario, modelId: string) => void;
 };
 
 export default function ProviderStudio(props: Props) {
@@ -99,24 +95,14 @@ export default function ProviderStudio(props: Props) {
               <label className="field-stack provider-auth-entry-field"><span>{t('providers.auth.apiUrl')}</span><div className="secret-input-inline provider-secret-input-inline"><input className="text-input" onChange={(event) => props.updateActiveProviderDraft({ baseUrl: event.target.value, status: 'draft' })} value={props.activeProvider.baseUrl} /><button className="icon-button secret-visibility-button" onClick={() => props.updateActiveProviderDraft({ baseUrl: props.activeTemplate.defaultDraft.baseUrl, status: 'draft' })} title={t('providers.auth.resetApiUrl')} type="button"><AppIcon name="refresh" size={14} /></button></div></label>
               <label className="field-stack provider-auth-entry-field"><div className="provider-auth-label-row"><span>{t('providers.auth.apiKey')}</span>{PROVIDER_API_KEY_URL[props.activeTemplate.defaultDraft.providerId] ? <a className="provider-auth-help-link" href={PROVIDER_API_KEY_URL[props.activeTemplate.defaultDraft.providerId]} onClick={(event) => { event.preventDefault(); void activeDesktopApi().diagnostics.openExternalUrl(PROVIDER_API_KEY_URL[props.activeTemplate.defaultDraft.providerId]).catch((error) => providerStudioLogger.warn('provider API key URL could not be opened', String(error))); }} rel="noopener noreferrer" target="_blank">{t('providers.auth.getApiKey')}</a> : null}</div><div className="provider-secret-row"><div className="secret-input-inline provider-secret-input-inline"><input className="text-input" onChange={(event) => props.setSecretDraft(event.target.value)} placeholder={t('providers.auth.secretPlaceholder')} type={props.secretVisible ? 'text' : 'password'} value={props.secretStored && !props.secretDraft ? '***********************************' : props.secretDraft} /><button aria-label={props.secretVisible ? t('providers.auth.hideSecret') : t('providers.auth.showSecret')} className="icon-button secret-visibility-button" disabled={props.busyAction !== null || props.providerRuntimeBlocked} onClick={() => void props.onSecretVisibilityToggle()} title={props.secretVisible ? t('providers.auth.hideSecret') : t('providers.auth.showSecret')} type="button"><AppIcon name={props.secretVisible ? 'eye-off' : 'eye'} size={14} /></button></div></div></label>
               <ProviderWorkspaceEndpointHint provider={props.activeProvider} />
+
               <div className="provider-auth-entry-actions"><button className="action-button" disabled={props.busyAction !== null || (!props.secretDraft.trim() && !props.activeProvider.baseUrl.trim()) || props.providerRuntimeBlocked} onClick={() => void props.onSecretSave()} type="button"><AppIcon name="key" size={14} />{props.busyAction === 'secret' ? t('providers.actions.saving') : t('providers.actions.saveSecret')}</button></div>
               <div className="provider-footnote-row">{props.modelCatalogEndpoint ? <p className="provider-setting-footnote">{t('providers.modelCatalog.endpoint', { endpoint: props.modelCatalogEndpoint })}</p> : null}</div>
             </div>
           </article>
 
-          <ProviderModelBindingEditor key={props.activeProvider.providerId} provider={props.activeProvider} />
-          <article className="content-card page-card compact-card provider-panel-card provider-panel-card-compact">
-            <div className="provider-panel-heading provider-panel-heading-compact"><div><h3>{t('providers.sceneModels.title')}</h3></div><div className="provider-panel-tools"><StatusBadge label={t('providers.sceneModels.addedCount', { count: props.sceneAssignments.reduce((count, item) => count + item.modelIds.length, 0) })} tone="pending" /></div></div>
-            <div className="provider-scene-grid">
-              {props.sceneAssignments.map((assignment) => {
-                const models = assignment.modelIds.map((modelId) => props.modelLookup.get(modelId) ?? providersPageHelpers.createDerivedRuntimeModel(modelId, props.localModelCapabilityRegistry));
-                return <article className="provider-scene-card" key={assignment.scenario}>
-                  <div className="provider-scene-card-header"><div><strong>{providersPageHelpers.formatScenarioLabel(assignment.scenario)}</strong><p>{models.length ? t('providers.sceneModels.addedCount', { count: models.length }) : t('providers.sceneModels.noneAdded')}</p></div><button className="icon-button" onClick={() => props.onOpenModelCatalog(assignment.scenario)} type="button"><AppIcon name="plus" size={14} />{t('providers.actions.addModel')}</button></div>
-                  {models.length ? <div className="provider-scene-model-list">{models.map((model) => <div className="provider-scene-model-item" draggable key={`${assignment.scenario}-${model.id}`} onDragEnd={() => props.setDraggingSceneModel(null)} onDragOver={(event) => event.preventDefault()} onDragStart={() => props.setDraggingSceneModel({ scenario: assignment.scenario, modelId: model.id })} onDrop={() => props.onSceneModelReorder(assignment.scenario, model.id)}><div className="provider-scene-model-copy"><strong>{model.displayName}</strong>{model.displayName.trim() !== model.id.trim() ? <span>{model.id}</span> : null}</div><div className="provider-scene-model-actions">{model.capabilities.length ? <div className="provider-chip-row provider-chip-row-compact provider-chip-row-tight">{model.capabilities.map((capability) => <span className={`provider-meta-chip provider-capability-chip provider-capability-chip-${capability}`} key={`${model.id}-${capability}`}><AppIcon name={providersPageHelpers.resolveCapabilityIconName(capability)} size={12} />{t(providerCapabilityLabelKey(capability))}</span>)}</div> : <span className="provider-setting-footnote">???</span>}<button className="provider-header-icon provider-header-icon-danger" onClick={() => props.onSceneModelRemove(assignment.scenario, model.id)} title={t('providers.actions.removeAddedModel')} type="button"><AppIcon name="trash" size={13} /></button></div></div>)}</div> : <div className="provider-directory-empty provider-scene-empty"><strong>{t('providers.sceneModels.noneAdded')}</strong><p>{t('providers.sceneModels.emptyDescription')}</p></div>}
-                </article>;
-              })}
-            </div>
-          </article>
+          {props.activeTemplate.source === 'custom' ? <CustomProviderModelBindings key={props.activeProvider.providerId} provider={props.activeProvider} capabilitiesRegistry={props.localModelCapabilityRegistry} onChange={props.updateActiveProviderDraft} /> : props.activeProvider.kind === 'dashscope' ? null : <ProviderModelBindingEditor key={props.activeProvider.providerId} provider={props.activeProvider} />}
+          <CandidateModelGroupsEditor provider={props.activeProvider} modelLookup={props.modelLookup} localModelCapabilityRegistry={props.localModelCapabilityRegistry} onChange={props.updateActiveProviderDraft} onOpenModelCatalog={props.onOpenModelCatalog} />
         </div>
       </div>
     </section>

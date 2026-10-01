@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Ошибка проверки возможности исключения процесса: {{detail}}",
     "feedbackProcessExclusionProbing": "Поддержка исключения процессов еще не подтверждена. После выбора Bridge завершает проверку при запуске Watch; захват не начнется, пока зонд не будет готов.",
     "feedbackNoneSelected": "Устаревшая настройка управления без обратной связи по-прежнему выбрана. Просмотр не может начаться с переведенной речи, пока вы явно не выберете исключение процессов, виртуальный драйвер или эхоподавление.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Аудиомаршрутизация",
     "pageSubtitle": "Светлая поверхность · встроенный поток · единая точка выбора модели · мгновенное сохранение · удобно на мобильных",
     "overviewAria": "Обзор аудиомаршрута",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Распознавание речи · Перевод · Речь",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Основная текстовая модель",
+    "scenarioPrimaryTextCaption": "Базовый перевод текста для конвейера распознавания речи",
+    "primaryTextModelRequired": "Для текущей голосовой модели требуется выбрать базовую модель перевода текста"
   },
   "overlay": {
     "bootstrapFailed": "Не удалось инициализировать окно субтитров",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Сценарий: {{scenario}}",
       "editCapabilitiesTitle": "Изменить реестр возможностей",
       "refreshTitle": "Обновить каталог моделей",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Закрыть список моделей",
       "allScenarios": "Все",
       "searchPlaceholder": "Поиск моделей...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Секрет",
       "hideSecret": "Скрыть секрет",
       "showSecret": "Показать секрет"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Модели сцен",

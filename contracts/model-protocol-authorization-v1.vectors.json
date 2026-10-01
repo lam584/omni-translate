@@ -72,7 +72,10 @@
         "transport": "websocket",
         "region": "cn-beijing"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.endpoint_host_required" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.endpoint_host_required"
+      }
     },
     {
       "id": "beijing-region-rejects-singapore-generic-host",
@@ -83,7 +86,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope-intl.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.endpoint_host_region_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.endpoint_host_region_mismatch"
+      }
     },
     {
       "id": "workspace-host-pattern-is-exactly-one-label",
@@ -94,7 +100,10 @@
         "region": "cn-beijing",
         "endpointHost": "attacker.llm-sanitized.cn-beijing.maas.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.endpoint_host_region_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.endpoint_host_region_mismatch"
+      }
     },
     {
       "id": "unknown-model",
@@ -105,7 +114,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.model_not_registered" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
     },
     {
       "id": "unknown-snapshot-does-not-inherit-family",
@@ -116,7 +128,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.model_not_registered" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
     },
     {
       "id": "known-manifest-only-adapter-fails-closed",
@@ -127,7 +142,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.adapter_unavailable" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.adapter_unavailable"
+      }
     },
     {
       "id": "asr-cannot-authorize-native-translation",
@@ -138,7 +156,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.operation_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.operation_not_supported"
+      }
     },
     {
       "id": "tts-cannot-authorize-dialogue",
@@ -149,7 +170,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.operation_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.operation_not_supported"
+      }
     },
     {
       "id": "transport-is-not-a-dialect-flag",
@@ -160,7 +184,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.transport_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.transport_mismatch"
+      }
     },
     {
       "id": "realtime-model-cannot-use-inference-endpoint",
@@ -172,7 +199,10 @@
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredEndpointFamily": "dashscope-inference-v1"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.endpoint_family_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.endpoint_family_mismatch"
+      }
     },
     {
       "id": "livetranslate-cannot-use-omni-wire-dialect",
@@ -184,7 +214,10 @@
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredWireDialect": "bailian-omni-realtime-ws-v1"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.wire_dialect_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.wire_dialect_mismatch"
+      }
     },
     {
       "id": "terminal-lifecycle-cannot-be-swapped",
@@ -196,7 +229,10 @@
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredTerminalLifecycle": "owner-close-after-response-drain"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.terminal_lifecycle_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.terminal_lifecycle_mismatch"
+      }
     },
     {
       "id": "declared-profile-must-own-model",
@@ -208,7 +244,10 @@
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredProfileId": "bailian.omni.realtime.ws"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.profile_id_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.profile_id_mismatch"
+      }
     },
     {
       "id": "declared-profile-version-is-pinned",
@@ -221,7 +260,10 @@
         "declaredProfileId": "bailian.livetranslate.realtime.ws",
         "declaredProfileVersion": 2
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.profile_version_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.profile_version_mismatch"
+      }
     },
     {
       "id": "paraformer-region-is-beijing-only",
@@ -232,7 +274,10 @@
         "region": "ap-southeast-1",
         "endpointHost": "dashscope-intl.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.region_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.region_not_supported"
+      }
     },
     {
       "id": "paraformer-v1-rejects-8khz",
@@ -243,9 +288,16 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredProfileId": "bailian.task-asr.paraformer.realtime-v1.ws",
-        "audioInput": { "codec": "pcm", "sampleRateHz": 8000, "channels": 1 }
+        "audioInput": {
+          "codec": "pcm",
+          "sampleRateHz": 8000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.audio_input_sample_rate_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.audio_input_sample_rate_not_supported"
+      }
     },
     {
       "id": "paraformer-v2-allows-44100-before-adapter-gate",
@@ -256,9 +308,16 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredProfileId": "bailian.task-asr.paraformer.realtime-v2.ws",
-        "audioInput": { "codec": "pcm", "sampleRateHz": 44100, "channels": 1 }
+        "audioInput": {
+          "codec": "pcm",
+          "sampleRateHz": 44100,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.adapter_unavailable" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.adapter_unavailable"
+      }
     },
     {
       "id": "paraformer-8k-v2-rejects-16khz",
@@ -268,9 +327,16 @@
         "transport": "websocket",
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
-        "audioInput": { "codec": "pcm", "sampleRateHz": 16000, "channels": 1 }
+        "audioInput": {
+          "codec": "pcm",
+          "sampleRateHz": 16000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.audio_input_sample_rate_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.audio_input_sample_rate_not_supported"
+      }
     },
     {
       "id": "cosyvoice-v3.5-is-not-in-singapore",
@@ -281,7 +347,10 @@
         "region": "ap-southeast-1",
         "endpointHost": "dashscope-intl.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.region_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.region_not_supported"
+      }
     },
     {
       "id": "cosyvoice-v3-is-registered-in-singapore",
@@ -292,9 +361,16 @@
         "region": "ap-southeast-1",
         "endpointHost": "dashscope-intl.aliyuncs.com",
         "declaredProfileId": "bailian.task-tts.cosyvoice-v3.ws",
-        "audioOutput": { "codec": "opus", "sampleRateHz": 48000, "channels": 1 }
+        "audioOutput": {
+          "codec": "opus",
+          "sampleRateHz": 48000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.adapter_unavailable" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.adapter_unavailable"
+      }
     },
     {
       "id": "qwen3-tts-opus-48k-is-valid-before-adapter-gate",
@@ -305,9 +381,16 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredProfileId": "bailian.qwen3-tts.realtime.ws",
-        "audioOutput": { "codec": "opus", "sampleRateHz": 48000, "channels": 1 }
+        "audioOutput": {
+          "codec": "opus",
+          "sampleRateHz": 48000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.adapter_unavailable" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.adapter_unavailable"
+      }
     },
     {
       "id": "legacy-qwen-tts-rejects-opus",
@@ -317,9 +400,16 @@
         "transport": "websocket",
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
-        "audioOutput": { "codec": "opus", "sampleRateHz": 48000, "channels": 1 }
+        "audioOutput": {
+          "codec": "opus",
+          "sampleRateHz": 48000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.audio_output_codec_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.audio_output_codec_not_supported"
+      }
     },
     {
       "id": "legacy-qwen-tts-is-not-in-singapore",
@@ -330,7 +420,10 @@
         "region": "ap-southeast-1",
         "endpointHost": "dashscope-intl.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.region_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.region_not_supported"
+      }
     },
     {
       "id": "qwen35-omni-48k-media-is-valid-before-adapter-gate",
@@ -341,10 +434,21 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredProfileId": "bailian.omni.realtime.ws",
-        "audioInput": { "codec": "wav", "sampleRateHz": 48000, "channels": 1 },
-        "audioOutput": { "codec": "wav", "sampleRateHz": 48000, "channels": 1 }
+        "audioInput": {
+          "codec": "wav",
+          "sampleRateHz": 48000,
+          "channels": 1
+        },
+        "audioOutput": {
+          "codec": "wav",
+          "sampleRateHz": 48000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.adapter_unavailable" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.adapter_unavailable"
+      }
     },
     {
       "id": "known-qwen35-omni-snapshot-is-explicit-but-disabled",
@@ -355,7 +459,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.adapter_unavailable" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.adapter_unavailable"
+      }
     },
     {
       "id": "unknown-qwen35-omni-snapshot-does-not-inherit-family",
@@ -366,7 +473,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.model_not_registered" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
     },
     {
       "id": "legacy-omni-does-not-inherit-qwen35-media-authority",
@@ -377,9 +487,16 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredProfileId": "bailian.omni.legacy-realtime.ws",
-        "audioInput": { "codec": "wav", "sampleRateHz": 48000, "channels": 1 }
+        "audioInput": {
+          "codec": "wav",
+          "sampleRateHz": 48000,
+          "channels": 1
+        }
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.audio_input_codec_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.audio_input_codec_not_supported"
+      }
     },
     {
       "id": "qwen-audio-dialogue-cannot-declare-omni-dialect",
@@ -391,7 +508,10 @@
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredWireDialect": "bailian-omni-realtime-ws-v1"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.wire_dialect_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.wire_dialect_mismatch"
+      }
     },
     {
       "id": "qwen-audio-dialogue-is-not-native-translation",
@@ -402,7 +522,10 @@
         "region": "cn-beijing",
         "endpointHost": "dashscope.aliyuncs.com"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.operation_not_supported" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.operation_not_supported"
+      }
     },
     {
       "id": "registry-version-is-pinned",
@@ -414,7 +537,715 @@
         "endpointHost": "dashscope.aliyuncs.com",
         "declaredRegistryVersion": "bailian-model-protocol-registry/v2"
       },
-      "expect": { "ok": false, "errorCode": "model_protocol.registry_version_mismatch" }
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.registry_version_mismatch"
+      }
+    },
+    {
+      "id": "exact-family-qwen3.5-livetranslate-flash-realtime-cn-beijing",
+      "request": {
+        "exactModelId": "qwen3.5-livetranslate-flash-realtime",
+        "operation": "native_translate",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.livetranslate.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-livetranslate-session-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.livetranslate.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-livetranslate-session-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "session.finish->session.finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-livetranslate-session-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen3.5-livetranslate-flash-realtime-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen3.5-livetranslate-flash-realtime",
+        "operation": "native_translate",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.livetranslate.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-livetranslate-session-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.livetranslate.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-livetranslate-session-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "session.finish->session.finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-livetranslate-session-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen3.5-livetranslate-flash-realtime",
+      "request": {
+        "exactModelId": "qwen3.5-livetranslate-flash-realtime-2099-12-31",
+        "operation": "native_translate",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-realtime-plus-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-realtime-plus",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.qwen-audio-chat.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-chat-realtime-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.qwen-audio-chat.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-chat-realtime-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-session-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-realtime-plus-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-realtime-plus",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.qwen-audio-chat.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-chat-realtime-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.qwen-audio-chat.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-chat-realtime-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-session-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.0-realtime-plus",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-realtime-plus-2099-12-31",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-realtime-flash-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-realtime-flash",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.qwen-audio-chat.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-chat-realtime-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.qwen-audio-chat.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-chat-realtime-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-session-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-realtime-flash-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-realtime-flash",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.qwen-audio-chat.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-chat-realtime-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.qwen-audio-chat.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-chat-realtime-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-session-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.0-realtime-flash",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-realtime-flash-2099-12-31",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-asr-flash-streaming-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-asr-flash-streaming",
+        "operation": "asr",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.task-asr.qwen-audio-3.0.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-asr-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-asr.qwen-audio-3.0.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-asr-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-asr-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-asr-flash-streaming-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-asr-flash-streaming",
+        "operation": "asr",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.task-asr.qwen-audio-3.0.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-asr-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-asr.qwen-audio-3.0.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-asr-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-asr-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.0-asr-flash-streaming",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-asr-flash-streaming-2099-12-31",
+        "operation": "asr",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-tts-plus-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-tts-plus",
+        "operation": "tts",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-tts-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-tts-plus-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-tts-plus",
+        "operation": "tts",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-tts-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.0-tts-plus",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-tts-plus-2099-12-31",
+        "operation": "tts",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-tts-flash-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-tts-flash",
+        "operation": "tts",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-tts-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.0-tts-flash-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-tts-flash",
+        "operation": "tts",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-tts.qwen-audio-3.0.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-speech-synthesizer-duplex-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-tts-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.0-tts-flash",
+      "request": {
+        "exactModelId": "qwen-audio-3.0-tts-flash-2099-12-31",
+        "operation": "tts",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen3.8-livetranslate-flash-realtime-cn-beijing",
+      "request": {
+        "exactModelId": "qwen3.8-livetranslate-flash-realtime",
+        "operation": "native_translate",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "declaredProfileId": "bailian.livetranslate.3_8.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-livetranslate-session-ws-v2"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.livetranslate.3_8.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-livetranslate-session-ws-v2",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "maas-cn-beijing-workspace",
+        "terminalLifecycle": "session.finish->session.finished",
+        "wireDialectVersion": 2,
+        "adapterId": "desktop-livetranslate-session-v2"
+      }
+    },
+    {
+      "id": "exact-family-qwen3.8-livetranslate-flash-realtime-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen3.8-livetranslate-flash-realtime",
+        "operation": "native_translate",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "fixture-workspace.ap-southeast-1.maas.aliyuncs.com",
+        "declaredProfileId": "bailian.livetranslate.3_8.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-livetranslate-session-ws-v2"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.livetranslate.3_8.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-livetranslate-session-ws-v2",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "maas-ap-southeast-1-workspace",
+        "terminalLifecycle": "session.finish->session.finished",
+        "wireDialectVersion": 2,
+        "adapterId": "desktop-livetranslate-session-v2"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen3.8-livetranslate-flash-realtime",
+      "request": {
+        "exactModelId": "qwen3.8-livetranslate-flash-realtime-2099-12-31",
+        "operation": "native_translate",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.1-realtime-plus-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.1-realtime-plus",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.qwen-audio.3_1.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-chat-realtime-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.qwen-audio.3_1.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-chat-realtime-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-session-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.1-realtime-plus-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.1-realtime-plus",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.qwen-audio.3_1.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-chat-realtime-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.qwen-audio.3_1.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-chat-realtime-ws-v1",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-session-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.1-realtime-plus",
+      "request": {
+        "exactModelId": "qwen-audio-3.1-realtime-plus-2099-12-31",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen3.8-omni-flash-realtime-cn-beijing",
+      "request": {
+        "exactModelId": "qwen3.8-omni-flash-realtime",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "declaredProfileId": "bailian.omni.3_8.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-omni-realtime-ws-v2"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.omni.3_8.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-omni-realtime-ws-v2",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "maas-cn-beijing-workspace",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 2,
+        "adapterId": "desktop-omni-session-v2"
+      }
+    },
+    {
+      "id": "exact-family-qwen3.8-omni-flash-realtime-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen3.8-omni-flash-realtime",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "fixture-workspace.ap-southeast-1.maas.aliyuncs.com",
+        "declaredProfileId": "bailian.omni.3_8.realtime.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-omni-realtime-ws-v2"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.omni.3_8.realtime.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-omni-realtime-ws-v2",
+        "endpointFamily": "dashscope-realtime-v1",
+        "endpointHostFamilyId": "maas-ap-southeast-1-workspace",
+        "terminalLifecycle": "owner-close-after-response-drain",
+        "wireDialectVersion": 2,
+        "adapterId": "desktop-omni-session-v2"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen3.8-omni-flash-realtime",
+      "request": {
+        "exactModelId": "qwen3.8-omni-flash-realtime-2099-12-31",
+        "operation": "dialogue",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.1-asr-flash-streaming-cn-beijing",
+      "request": {
+        "exactModelId": "qwen-audio-3.1-asr-flash-streaming",
+        "operation": "asr",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "declaredProfileId": "bailian.task-asr.qwen-audio-3.1.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-asr-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-asr.qwen-audio-3.1.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-asr-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-cn-beijing-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-asr-v1"
+      }
+    },
+    {
+      "id": "exact-family-qwen-audio-3.1-asr-flash-streaming-ap-southeast-1",
+      "request": {
+        "exactModelId": "qwen-audio-3.1-asr-flash-streaming",
+        "operation": "asr",
+        "transport": "websocket",
+        "region": "ap-southeast-1",
+        "endpointHost": "dashscope-intl.aliyuncs.com",
+        "declaredProfileId": "bailian.task-asr.qwen-audio-3.1.ws",
+        "declaredProfileVersion": 1,
+        "declaredWireDialect": "bailian-qwen-audio-asr-task-ws-v1"
+      },
+      "expect": {
+        "ok": true,
+        "profileId": "bailian.task-asr.qwen-audio-3.1.ws",
+        "profileVersion": 1,
+        "wireDialect": "bailian-qwen-audio-asr-task-ws-v1",
+        "endpointFamily": "dashscope-inference-v1",
+        "endpointHostFamilyId": "dashscope-ap-southeast-1-generic",
+        "terminalLifecycle": "finish-task->task-finished",
+        "wireDialectVersion": 1,
+        "adapterId": "desktop-qwen-audio-task-asr-v1"
+      }
+    },
+    {
+      "id": "snapshot-does-not-inherit-qwen-audio-3.1-asr-flash-streaming",
+      "request": {
+        "exactModelId": "qwen-audio-3.1-asr-flash-streaming-2099-12-31",
+        "operation": "asr",
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.model_not_registered"
+      }
+    },
+    {
+      "id": "omni38-generic-host-denied",
+      "request": {
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "dashscope.aliyuncs.com",
+        "exactModelId": "qwen3.8-omni-flash-realtime",
+        "operation": "dialogue"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.endpoint_host_region_mismatch"
+      }
+    },
+    {
+      "id": "omni38-native-translation-denied",
+      "request": {
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "exactModelId": "qwen3.8-omni-flash-realtime",
+        "operation": "native_translate"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.operation_not_supported"
+      }
+    },
+    {
+      "id": "omni38-cannot-spoof-legacy-profile",
+      "request": {
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "exactModelId": "qwen3.8-omni-flash-realtime",
+        "operation": "dialogue",
+        "declaredProfileId": "bailian.omni.realtime.ws"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.profile_id_mismatch"
+      }
+    },
+    {
+      "id": "qwen-audio-asr31-is-not-tts",
+      "request": {
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "exactModelId": "qwen-audio-3.1-asr-flash-streaming",
+        "operation": "tts"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.operation_not_supported"
+      }
+    },
+    {
+      "id": "qwen-audio-tts-is-not-asr",
+      "request": {
+        "transport": "websocket",
+        "region": "cn-beijing",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "exactModelId": "qwen-audio-3.0-tts-plus",
+        "operation": "asr"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.operation_not_supported"
+      }
+    },
+    {
+      "id": "qwen-audio-rt-region-not-invented",
+      "request": {
+        "transport": "websocket",
+        "region": "us-east-1",
+        "endpointHost": "fixture-workspace.cn-beijing.maas.aliyuncs.com",
+        "exactModelId": "qwen-audio-3.1-realtime-plus",
+        "operation": "dialogue"
+      },
+      "expect": {
+        "ok": false,
+        "errorCode": "model_protocol.region_not_supported"
+      }
     }
   ]
 }

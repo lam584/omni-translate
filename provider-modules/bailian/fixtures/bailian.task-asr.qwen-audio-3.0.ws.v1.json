@@ -8,12 +8,13 @@
   "kind": "wire",
   "provenance": {
     "sourceDocumentationIds": [
-      "bailian.docs.13",
+      "bailian.docs.14",
+      "bailian.docs.15",
       "bailian.docs.16"
     ],
     "capturedFromLive": false,
     "sanitized": true,
-    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/task-asr-qwen-audio.json; never authorizes paid calls."
+    "notes": "Generated documentation fixture projection from provider-modules/bailian/fixtures/qwen-audio-task-asr.json; never authorizes paid calls."
   },
   "scenario": "Exact bailian.task-asr.qwen-audio-3.0.ws protocol replay",
   "data": {

@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "프로세스 제외 기능 조사 실패: {{detail}}",
     "feedbackProcessExclusionProbing": "아직 프로세스 배제 지원이 확정되지 않았습니다. 선택 후 Watch가 시작되면 Bridge는 프로브를 완료합니다. 프로브가 준비될 때까지 캡처가 시작되지 않습니다.",
     "feedbackNoneSelected": "기존의 피드백 제어 없음 설정이 여전히 선택되어 있습니다. 프로세스 제외, 가상 드라이버 또는 에코 취소를 명시적으로 선택할 때까지 번역된 음성으로 시계를 시작할 수 없습니다.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "오디오 라우팅",
     "pageSubtitle": "오디오 라우팅 설정과 상태를 확인하세요.",
     "overviewAria": "오디오 라우팅",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "음성 인식 · 번역 · 음성",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "기본 텍스트 모델",
+    "scenarioPrimaryTextCaption": "음성 인식 파이프라인을 위한 기본 텍스트 번역",
+    "primaryTextModelRequired": "현재 음성 모델에는 기본 텍스트 번역 모델 선택이 필요합니다"
   },
   "overlay": {
     "bootstrapFailed": "자막 오버레이를 초기화하지 못했습니다",
@@ -876,6 +880,7 @@
       "scenarioBadge": "제공자 - 시나리오 {{scenario}}",
       "editCapabilitiesTitle": "편집 기능 레지스트리",
       "refreshTitle": "모델 카탈로그 새로 고침",
+      "loading": "Loading models and capability data…",
       "closeTitle": "모델 목록 닫기",
       "allScenarios": "제공자",
       "searchPlaceholder": "제공자 설정과 상태를 확인하세요.",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "제공자 - 자리 표시자",
       "hideSecret": "제공자 - 숨기기",
       "showSecret": "제공자 - 표시"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "제공자 - 제목",

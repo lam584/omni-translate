@@ -82,6 +82,7 @@ describe('ProvidersPage helpers', () => {
   it('normalizes DashScope origins and resolves API-format base URLs', () => {
     expect(helpers.resolveDashscopeOrigin('wss://dashscope.aliyuncs.com/api-ws/v1')).toBe('https://dashscope.aliyuncs.com');
     expect(helpers.resolveDashscopeOrigin('ws://dashscope-intl.aliyuncs.com/api-ws/v1')).toBe('http://dashscope-intl.aliyuncs.com');
+    expect(helpers.resolveDashscopeOrigin('wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime')).toBe('https://workspace-test.cn-beijing.maas.aliyuncs.com');
     expect(helpers.resolveDashscopeOrigin('not a URL')).toBeNull();
     expect(helpers.resolveDashscopeOrigin('https://example.test/v1')).toBeNull();
     expect(helpers.resolveBaseUrlForApiFormat('dashscope', 'wss://dashscope.aliyuncs.com/api-ws/v1', deepseekTemplate)).toBe(
@@ -101,8 +102,29 @@ describe('ProvidersPage helpers', () => {
     expect(helpers.resolveBaseUrlForApiFormat('openai-compatible', 'https://example.test/v1', { ...dashscopeTemplate, defaultDraft: { ...dashscopeTemplate.defaultDraft, baseUrl: 'https://custom.test/v1' } })).toBe(helpers.defaultCompatibleDashscopeBaseUrl());
     expect(helpers.normalizeBaseUrlForComparison(' https://example.test/v1/// ')).toBe('https://example.test/v1');
     expect(helpers.shouldUseTemplatePresetModels(deepseekTemplate, `${deepseekTemplate.defaultDraft.baseUrl}/`)).toBe(true);
+    const workspaceTemplate = providerTemplates.find((template) => template.id === 'template-dashscope-workspace')!;
+    const workspaceUrl = 'wss://my-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime';
+    expect(helpers.shouldUseTemplatePresetModels(workspaceTemplate, workspaceUrl)).toBe(true);
+    expect(helpers.buildFallbackModels(workspaceTemplate, workspaceTemplate.defaultDraft.model, [], workspaceUrl)
+      .map((model) => model.id)).toEqual(expect.arrayContaining([
+        'qwen3.8-flash', 'qwen3.8-livetranslate-flash-realtime', 'qwen3.8-omni-flash-realtime',
+      ]));
+    expect(helpers.shouldUseTemplatePresetModels(workspaceTemplate, 'wss://other.evil.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime')).toBe(false);
+    expect(helpers.shouldUseTemplatePresetModels(workspaceTemplate, `${workspaceUrl}?token=secret`)).toBe(false);
   });
 
+  it('keeps workspace presets visible when a cached runtime catalog failed', () => {
+    const template = providerTemplates.find((item) => item.id === 'template-dashscope-workspace')!;
+    const baseUrl = 'wss://my-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime';
+    const failed = helpers.createEmptyModelCatalog('workspace-signature', 'error', 'HTTP endpoint unavailable');
+    const catalog = helpers.withFallbackModelCatalog(failed, template, template.defaultDraft.model, [], baseUrl);
+    expect(catalog.error).toBe('HTTP endpoint unavailable');
+    expect(catalog.source).toBe('preset');
+    expect(catalog.models.map((model) => model.id)).toEqual(expect.arrayContaining([
+      'qwen3.8-flash', 'qwen3.8-livetranslate-flash-realtime', 'qwen3.8-omni-flash-realtime',
+    ]));
+    expect(helpers.withFallbackModelCatalog(failed, template, '', [], 'https://example.test/v1').models).toEqual([]);
+  });
   it('maps drafts, fallback models and model catalog cache entries', () => {
     const provider = structuredClone(appConfigDraftMock.providers[0]);
     provider.region = undefined;
@@ -136,6 +158,7 @@ describe('ProvidersPage helpers', () => {
     expect(helpers.hasCachedModelCatalog({ ...cache, signature: 'different' }, signature)).toBe(false);
     expect(helpers.hasCachedModelCatalog({ ...cache, models: [], fetchedAt: null, error: null }, signature)).toBe(false);
     expect(helpers.hasCachedModelCatalog({ ...cache, models: [], fetchedAt: null, error: 'broken' }, signature)).toBe(true);
+    expect(helpers.hasCachedModelCatalog({ ...cache, endpoint: 'wss://ws.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime/compatible-mode/v1/models', error: 'broken' }, signature)).toBe(false);
     expect(helpers.buildModelCatalogStateFromCache(signature, { ...cache, error: 'broken' }, dashscopeTemplate, provider.model, [], provider.baseUrl)).toMatchObject({
       status: 'error',
       source: 'runtime',
@@ -225,28 +248,15 @@ describe('ProvidersPage helpers', () => {
       expect(patch).not.toHaveProperty('templateRealtimeProtocol');
     });
 
-    it('keeps manifest scenes empty when no compatible preset can authorize a fallback', () => {
-      const template = structuredClone(defaultProviderTemplate);
-      template.manifestProviderId = 'fixture-provider';
-      template.presetModels = [];
-
+    it('starts every new provider with empty capability candidates, never legacy scene selections', () => {
       const patch = buildProviderDraftPatchFromTemplate(
-        structuredClone(appConfigDraftMock.providers[0]),
-        template,
+        structuredClone(appConfigDraftMock.providers[0]), defaultProviderTemplate,
       );
-      expect(patch.sceneModelAssignments?.every((assignment) => assignment.modelIds.length === 0)).toBe(true);
-      expect(patch.sceneModelAssignments?.map((assignment) => assignment.scenario)).toContain('watch');
-      expect(patch.sceneModelAssignments?.map((assignment) => assignment.scenario)).toContain('subtitle-translate');
-
-      const preassigned = structuredClone(deepseekTemplate);
-      preassigned.manifestProviderId = 'fixture-provider';
-      const assignedPatch = buildProviderDraftPatchFromTemplate(
-        structuredClone(appConfigDraftMock.providers[0]),
-        preassigned,
-      );
-      expect(assignedPatch.sceneModelAssignments?.find(
-        (assignment) => assignment.scenario === 'subtitle-translate',
-      )?.modelIds.length).toBeGreaterThan(0);
-    });
+      expect(patch).not.toHaveProperty('sceneModelAssignments');
+      expect(patch.candidateModelGroups?.map((entry) => entry.group)).toEqual([
+        'text-processing', 'audio-understanding', 'audio-generation', 'realtime-multimodal',
+      ]);
+      expect(patch.candidateModelGroups?.every((entry) => entry.modelIds.length === 0)).toBe(true);
+    });;
   });
 });

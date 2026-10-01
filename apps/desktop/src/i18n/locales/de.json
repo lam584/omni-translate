@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Prüfung der Prozessausschlussfähigkeit fehlgeschlagen: {{detail}}",
     "feedbackProcessExclusionProbing": "Die Unterstützung von Prozessausschlüssen wurde noch nicht bestätigt. Nach der Auswahl schließt Bridge die Prüfung ab, wenn Watch startet. Die Erfassung beginnt erst, wenn die Sonde bereit ist.",
     "feedbackNoneSelected": "Die alte No-Feedback-Control-Einstellung ist weiterhin ausgewählt. Die Überwachung kann nicht mit übersetzter Sprache beginnen, bis Sie explizit Prozessausschluss, virtuellen Treiber oder Echounterdrückung auswählen.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Audio-Routing",
     "pageSubtitle": "Weiße Oberfläche · eingebetteter Fluss · Einzelmodelleingabe · Live-Speicherung · mobilfreundlich",
     "overviewAria": "Audio-Routenübersicht",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Spracherkennung · Übersetzung · Sprache",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Primäres Textmodell",
+    "scenarioPrimaryTextCaption": "Grundlegende Textübersetzung für die Spracherkennungskette",
+    "primaryTextModelRequired": "Das aktuelle Sprachmodell erfordert die Auswahl eines Basis-Textübersetzungsmodells"
   },
   "overlay": {
     "bootstrapFailed": "Untertitel-Overlay konnte nicht initialisiert werden",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Szenario: {{scenario}}",
       "editCapabilitiesTitle": "Bearbeiten Sie die Funktionsregistrierung",
       "refreshTitle": "Modellkatalog aktualisieren",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Modellliste schließen",
       "allScenarios": "Alle",
       "searchPlaceholder": "Modelle suchen...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Geheimnis",
       "hideSecret": "Geheimnis verbergen",
       "showSecret": "Geheimnis zeigen"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Szenenmodelle",

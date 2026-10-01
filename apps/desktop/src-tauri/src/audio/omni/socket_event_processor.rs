@@ -84,7 +84,7 @@ fn admit_bailian_server_event(
             ..Default::default()
         });
     }
-    let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
+    let authority = crate::audio::events::authorize_bailian_realtime(provider)?;
     let logical_frame_kind = if received_frame_kind == ModelProtocolFrameKind::Json
         && authority
             .server_json_base64_event_types
@@ -95,7 +95,10 @@ fn admit_bailian_server_event(
     } else {
         received_frame_kind
     };
-    let result = if received_frame_kind == ModelProtocolFrameKind::Json {
+    let result = if crate::audio::bailian_dialogue::is_supported_authority(&authority) {
+        if received_frame_kind != ModelProtocolFrameKind::Json { return Err("model_protocol.frame_kind_mismatch: dialogue server frames must be JSON".to_string()); }
+        event_diagnostics.dialogue_server_state.admit(&authority, event)
+    } else if received_frame_kind == ModelProtocolFrameKind::Json {
         event_diagnostics
             .livetranslate_server_state
             .admit(&authority, event)
@@ -622,6 +625,7 @@ impl OmniSocketEventProcessor {
             pre_session_audio_queue_len,
             pre_session_audio_dropped,
             echo_guard_enabled,
+            dialogue_draining,
         } = context;
         event_diagnostics.set_response_ledger_generation(session_generation);
         event_diagnostics.set_strict_media_end_authority(
@@ -742,6 +746,15 @@ impl OmniSocketEventProcessor {
                         return Err(error);
                     }
                 };
+                if let Some(item_id) = event_diagnostics.dialogue_server_state.invalidated_input_item_id().map(str::to_string) {
+                    for cue in event_diagnostics.discard_invalid_dialogue_input(&item_id) {
+                        store.discard_uncommitted_subtitle_cue(&cue);
+                        if current_cue_id.as_deref() == Some(cue.as_str()) {
+                            current_cue_id = None; pending_source_text.clear();
+                        }
+                    }
+                }
+                if event_diagnostics.dialogue_server_state.ignore_event() { return poll_result!(false); }
                 // Admission has now succeeded. A readable ASR frame may
                 // dispatch ahead of local expiry only when its raw identity
                 // already matched the exact deferred input item above. The
@@ -787,10 +800,9 @@ impl OmniSocketEventProcessor {
                             &direction,
                             session_generation,
                             &session_started_at,
-                            !crate::audio::events::is_livetranslate_route_model(
-                                provider,
-                                &provider.model,
-                            ),
+                            !crate::audio::events::is_livetranslate_route_model(provider, &provider.model)
+                                && !crate::audio::events::authorize_bailian_realtime(provider)
+                                    .is_ok_and(|a| crate::audio::bailian_dialogue::is_supported_authority(&a)),
                             event_type,
                             &evt,
                                     pre_session_audio_queue_len,
@@ -976,6 +988,12 @@ impl OmniSocketEventProcessor {
                                     }
                                 }
                                 if reset_turn {
+                                    if decision == ManualResponseDecision::SkipEmpty && !manual_response_requested
+                                        && event_diagnostics.dialogue_server_state.is_session_ready() {
+                                        if let Some(item_id) = manual_response_item_id.as_deref().filter(|id| Some(*id) == evt["item_id"].as_str()) {
+                                            event_diagnostics.abandon_manual_dialogue_input(item_id, manual_response_requested)?;
+                                        }
+                                    }
                                     // A skipped turn never issued response.create, so any
                                     // buffered output audio/text belongs to the previous
                                     // turn's still-streaming response. Only the gate and
@@ -1360,7 +1378,7 @@ impl OmniSocketEventProcessor {
                     // provider is now entitled to close.
                     "session.finished" => return poll_result!(false),
                     "error" => {
-                        if crate::audio::events::authorize_bailian_native_translate(provider).is_ok()
+                        if crate::audio::events::authorize_bailian_realtime(provider).is_ok()
                         {
                             let provider_error_code = provider_error_code(&evt);
                             let provider_error_message = provider_error_message(&evt);
@@ -1580,6 +1598,14 @@ impl OmniSocketEventProcessor {
         // consume a same-continuity, equal-boundary deferred fragment before
         // this fallback terminalizes anything still pending.
         flush_expired_deferred_empty_vad(&app, store, &mut event_diagnostics);
+
+        // Drain owns cancellation and its hard terminal deadline. The ordinary
+        // response watchdog would reconnect after its shorter cancel grace and
+        // reject a valid late terminal while the worker is stopping. Socket
+        // errors above still fail immediately; no new session may start here.
+        if dialogue_draining {
+            return poll_result!(false);
+        }
 
         let stall = maintain_response_lifecycle(
             ResponseStallReconnectState {

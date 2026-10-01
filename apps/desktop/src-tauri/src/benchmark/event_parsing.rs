@@ -1355,4 +1355,29 @@ fn v2_benchmark_preserves_prior_turns_while_next_response_streams() {
     assert_eq!(raw.translation_final, "first long sentence\nshort");
 }
 
+#[test]
+fn reject_non_turn_based_benchmark_rejects_pipeline_capability() {
+    let mut config = BenchmarkConfig {
+        api_key: String::new(),
+        mp3_path: std::path::PathBuf::new(),
+        model: "qwen3.8-livetranslate-flash-realtime".to_string(),
+        audio_mode: RealtimeAudioMode::ServerVad,
+        interaction_capabilities: vec![],
+        provider_kind: "dashscope".to_string(),
+        base_url: String::new(),
+        auth_header_name: String::new(),
+        auth_scheme: String::new(),
+        voice: String::new(),
+        target_language: "zh".to_string(),
+        protocol_dialect: None,
+        model_protocol_authority: None,
+    };
+    config.interaction_capabilities = vec!["pipeline_asr_mt_tts".to_string(), "streaming".to_string()];
+    let err = reject_non_turn_based_benchmark(&config).unwrap_err();
+    assert!(err.contains("pipeline_asr_mt_tts backends should be benchmarked as ASR -> MT -> TTS pipelines"));
+
+    config.interaction_capabilities = vec!["auto_vad".to_string(), "streaming".to_string()];
+    assert!(reject_non_turn_based_benchmark(&config).is_ok());
+}
+
 }

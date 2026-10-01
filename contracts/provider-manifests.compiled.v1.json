@@ -13,8 +13,8 @@
       "providerId": "bailian",
       "path": "provider-modules/bailian/manifest.json",
       "manifestVersion": 1,
-      "checkedAt": "2026-09-20",
-      "sha256": "b7027490ca612f1523766268f2b876277a9882e1cc602ac005643bcb682fdf5c"
+      "checkedAt": "2026-09-30",
+      "sha256": "c883623982a51993992992d03a4be2df82fb68039f68e1e8c46e6838e09ffc7f"
     },
     {
       "providerId": "google-gemini",
@@ -1647,7 +1647,7 @@
       "$schema": "../../contracts/provider-manifest.schema.json",
       "schemaVersion": "provider-manifest/v1",
       "manifestVersion": 1,
-      "checkedAt": "2026-09-20",
+      "checkedAt": "2026-09-30",
       "provider": {
         "id": "bailian",
         "displayName": "Alibaba Cloud Bailian",
@@ -1701,250 +1701,304 @@
           "id": "bailian.docs.7",
           "title": "qwen-audio-realtime-user-guides",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
         },
         {
           "id": "bailian.docs.8",
           "title": "fun-audiochat-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
         },
         {
           "id": "bailian.docs.9",
           "title": "qwen-audio-realtime-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
         },
         {
           "id": "bailian.docs.10",
+          "title": "fun-audiochat-realtime-websocket-api",
+          "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.11",
           "title": "qwen-asr-realtime-interaction-process",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.11",
+          "id": "bailian.docs.12",
           "title": "qwen-asr-realtime-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.12",
+          "id": "bailian.docs.13",
           "title": "qwen-asr-realtime-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.13",
+          "id": "bailian.docs.14",
+          "title": "qwen-audio-asr-streaming-websocket-api",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.15",
+          "title": "qwen-audio-asr-streaming-client-events",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.16",
+          "title": "qwen-audio-asr-streaming-server-events",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.17",
           "title": "fun-asr-realtime-websocket-api",
           "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.14",
+          "id": "bailian.docs.18",
           "title": "fun-asr-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.15",
+          "id": "bailian.docs.19",
           "title": "fun-asr-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.16",
-          "title": "qwen-audio-3-0-asr-flash-streaming",
-          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming",
-          "checkedAt": "2026-08-30"
-        },
-        {
-          "id": "bailian.docs.17",
+          "id": "bailian.docs.20",
           "title": "websocket-for-paraformer-real-time-service",
           "url": "https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.18",
+          "id": "bailian.docs.21",
           "title": "paraformer-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/paraformer-client-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.19",
+          "id": "bailian.docs.22",
           "title": "paraformer-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/paraformer-server-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.20",
+          "id": "bailian.docs.23",
           "title": "real-time-websocket-api-1",
           "url": "https://help.aliyun.com/zh/model-studio/real-time-websocket-api-1",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.21",
+          "id": "bailian.docs.24",
           "title": "real-time-speech-translation",
           "url": "https://help.aliyun.com/zh/model-studio/real-time-speech-translation/",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.22",
+          "id": "bailian.docs.25",
           "title": "realtime-tts-user-guide",
           "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.23",
+          "id": "bailian.docs.26",
           "title": "cosyvoice-websocket-api",
           "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-websocket-api",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.24",
+          "id": "bailian.docs.27",
           "title": "cosyvoice-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.25",
+          "id": "bailian.docs.28",
           "title": "cosyvoice-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-server-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.26",
+          "id": "bailian.docs.29",
           "title": "sambert-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/sambert-client-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.27",
+          "id": "bailian.docs.30",
           "title": "sambert-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/sambert-server-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.28",
+          "id": "bailian.docs.31",
           "title": "interactive-process-of-qwen-tts-realtime-synthesis",
           "url": "https://help.aliyun.com/zh/model-studio/interactive-process-of-qwen-tts-realtime-synthesis",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.29",
+          "id": "bailian.docs.32",
           "title": "qwen-tts-realtime-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-client-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.30",
+          "id": "bailian.docs.33",
           "title": "qwen-tts-realtime-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-tts-realtime-server-events",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.31",
+          "id": "bailian.docs.34",
           "title": "multimodal-interaction-protocol",
           "url": "https://help.aliyun.com/zh/model-studio/multimodal-interaction-protocol",
           "checkedAt": "2026-08-30"
         },
         {
-          "id": "bailian.docs.32",
+          "id": "bailian.docs.35",
           "title": "qwen3-5-livetranslate-flash-realtime",
           "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-livetranslate-flash-realtime",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.33",
+          "id": "bailian.docs.36",
           "title": "live-translator-client-events",
           "url": "https://help.aliyun.com/zh/model-studio/live-translator-client-events",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.34",
+          "id": "bailian.docs.37",
           "title": "live-translator-server-events",
           "url": "https://help.aliyun.com/zh/model-studio/live-translator-server-events",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.35",
-          "title": "qwen-audio-3-1-realtime-plus",
-          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-realtime-plus",
-          "checkedAt": "2026-09-20"
+          "id": "bailian.docs.38",
+          "title": "realtime",
+          "url": "https://help.aliyun.com/zh/model-studio/realtime",
+          "checkedAt": "2026-09-30"
         },
         {
-          "id": "bailian.docs.36",
-          "title": "newly-released-models",
-          "url": "https://help.aliyun.com/zh/model-studio/newly-released-models",
-          "checkedAt": "2026-09-20"
+          "id": "bailian.docs.39",
+          "title": "client-events",
+          "url": "https://help.aliyun.com/zh/model-studio/client-events",
+          "checkedAt": "2026-09-30"
         },
         {
-          "id": "bailian.docs.37",
+          "id": "bailian.docs.40",
+          "title": "server-events",
+          "url": "https://help.aliyun.com/zh/model-studio/server-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.41",
+          "title": "qwen-audio-tts-api",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-api",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.42",
+          "title": "qwen-audio-tts-model-access",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-model-access",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.43",
+          "title": "qwen-audio-tts-websocket-api",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-websocket-api",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.44",
+          "title": "qwen-audio-tts-client-events",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.45",
+          "title": "qwen-audio-tts-server-events",
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-server-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "id": "bailian.docs.46",
           "title": "qwen-mt-plus",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-plus",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.38",
+          "id": "bailian.docs.47",
           "title": "qwen-mt-api",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-api",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.39",
+          "id": "bailian.docs.48",
           "title": "machine-translation",
           "url": "https://help.aliyun.com/zh/model-studio/machine-translation",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.40",
+          "id": "bailian.docs.49",
           "title": "qwen-mt-flash",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-flash",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.41",
+          "id": "bailian.docs.50",
           "title": "qwen-mt-lite",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-lite",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.42",
+          "id": "bailian.docs.51",
           "title": "qwen-mt-turbo",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-mt-turbo",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.43",
+          "id": "bailian.docs.52",
           "title": "qwen3-8-max",
           "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.44",
+          "id": "bailian.docs.53",
           "title": "qwen3-8-flash",
           "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-flash",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.45",
+          "id": "bailian.docs.54",
           "title": "qwen-audio-3-1-tts-flash",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-flash",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.46",
+          "id": "bailian.docs.55",
           "title": "qwen-plus",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-plus",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.47",
+          "id": "bailian.docs.56",
           "title": "qwen-max",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-max",
           "checkedAt": "2026-09-20"
         },
         {
-          "id": "bailian.docs.48",
+          "id": "bailian.docs.57",
           "title": "qwen-turbo",
           "url": "https://help.aliyun.com/zh/model-studio/qwen-turbo",
           "checkedAt": "2026-09-20"
@@ -2166,6 +2220,20 @@
           }
         },
         {
+          "id": "bailian.transport.bailian-omni-realtime-ws-v2",
+          "kind": "websocket",
+          "requestFraming": "json-base64",
+          "responseFraming": "json-base64",
+          "requestEnvelope": {
+            "kind": "none",
+            "byteOrder": "not-applicable"
+          },
+          "responseEnvelope": {
+            "kind": "none",
+            "byteOrder": "not-applicable"
+          }
+        },
+        {
           "id": "bailian.transport.qwen-mt-http",
           "kind": "http",
           "requestFraming": "json",
@@ -2242,7 +2310,7 @@
           "input": {
             "required": true,
             "formats": [
-              "pcm16"
+              "pcm"
             ],
             "sampleRatesHz": [
               16000
@@ -2254,7 +2322,7 @@
           "output": {
             "required": true,
             "formats": [
-              "pcm16"
+              "pcm"
             ],
             "sampleRatesHz": [
               24000
@@ -2516,6 +2584,35 @@
             "required": false,
             "formats": [
               "pcm16"
+            ],
+            "sampleRatesHz": [
+              24000
+            ],
+            "channels": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "bailian.audio.bailian-omni-realtime-ws-v2",
+          "input": {
+            "required": true,
+            "formats": [
+              "pcm"
+            ],
+            "sampleRatesHz": [
+              16000
+            ],
+            "channels": [
+              1,
+              2,
+              4
+            ]
+          },
+          "output": {
+            "required": true,
+            "formats": [
+              "pcm"
             ],
             "sampleRatesHz": [
               24000
@@ -2961,6 +3058,55 @@
           "textDeltaSemantics": "append-delta"
         },
         {
+          "id": "bailian.lifecycle.bailian-omni-realtime-ws-v2",
+          "handshake": [
+            "session.created",
+            "session.update",
+            "session.updated"
+          ],
+          "clientEvents": [
+            "session.update",
+            "input_audio_buffer.append",
+            "input_audio_buffer.commit",
+            "input_audio_buffer.clear",
+            "input_image_buffer.append",
+            "conversation.item.create",
+            "response.create",
+            "response.cancel"
+          ],
+          "serverEvents": [
+            "session.created",
+            "session.updated",
+            "input_audio_buffer.speech_started",
+            "input_audio_buffer.speech_stopped",
+            "input_audio_buffer.committed",
+            "input_audio_buffer.cleared",
+            "conversation.item.created",
+            "conversation.item.input_audio_transcription.delta",
+            "conversation.item.input_audio_transcription.completed",
+            "conversation.item.input_audio_transcription.failed",
+            "response.created",
+            "response.text.delta",
+            "response.text.done",
+            "response.audio_transcript.delta",
+            "response.audio_transcript.done",
+            "response.audio.delta",
+            "response.audio.done",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.done",
+            "error"
+          ],
+          "vadModes": [],
+          "terminal": "owner-close-after-response-drain",
+          "reuse": "multi-turn",
+          "textDeltaSemantics": "mixed"
+        },
+        {
           "id": "bailian.qwen-mt-plus.http.lifecycle",
           "handshake": [
             "http.request",
@@ -3188,7 +3334,8 @@
           "documentationIds": [
             "bailian.docs.7",
             "bailian.docs.8",
-            "bailian.docs.9"
+            "bailian.docs.9",
+            "bailian.docs.10"
           ]
         },
         {
@@ -3205,9 +3352,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.10",
             "bailian.docs.11",
-            "bailian.docs.12"
+            "bailian.docs.12",
+            "bailian.docs.13"
           ]
         },
         {
@@ -3224,7 +3371,6 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.13",
             "bailian.docs.14",
             "bailian.docs.15",
             "bailian.docs.16"
@@ -3244,9 +3390,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.13",
-            "bailian.docs.14",
-            "bailian.docs.15"
+            "bailian.docs.17",
+            "bailian.docs.18",
+            "bailian.docs.19"
           ]
         },
         {
@@ -3263,9 +3409,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.17",
-            "bailian.docs.18",
-            "bailian.docs.19"
+            "bailian.docs.20",
+            "bailian.docs.21",
+            "bailian.docs.22"
           ]
         },
         {
@@ -3282,8 +3428,8 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.20",
-            "bailian.docs.21"
+            "bailian.docs.23",
+            "bailian.docs.24"
           ]
         },
         {
@@ -3300,10 +3446,10 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.23",
-            "bailian.docs.24",
-            "bailian.docs.25"
+            "bailian.docs.25",
+            "bailian.docs.26",
+            "bailian.docs.27",
+            "bailian.docs.28"
           ]
         },
         {
@@ -3320,9 +3466,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.26",
-            "bailian.docs.27"
+            "bailian.docs.25",
+            "bailian.docs.29",
+            "bailian.docs.30"
           ]
         },
         {
@@ -3339,9 +3485,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.28",
-            "bailian.docs.29",
-            "bailian.docs.30"
+            "bailian.docs.31",
+            "bailian.docs.32",
+            "bailian.docs.33"
           ]
         },
         {
@@ -3358,7 +3504,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.31"
+            "bailian.docs.34"
           ]
         },
         {
@@ -3375,9 +3521,28 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.32",
-            "bailian.docs.33",
-            "bailian.docs.34"
+            "bailian.docs.35",
+            "bailian.docs.36",
+            "bailian.docs.37"
+          ]
+        },
+        {
+          "id": "bailian.api.bailian-omni-realtime-ws-v2",
+          "displayName": "bailian-omni-realtime-ws-v2",
+          "baseUrlTemplate": "wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com",
+          "endpointTemplate": "/api-ws/v1/realtime",
+          "endpointStatus": "verified",
+          "modelAddressing": "model-id",
+          "transportId": "bailian.transport.bailian-omni-realtime-ws-v2",
+          "authProfileIds": [
+            "bailian.auth.bearer"
+          ],
+          "defaultAuthProfileId": "bailian.auth.bearer",
+          "maturity": "unspecified",
+          "documentationIds": [
+            "bailian.docs.38",
+            "bailian.docs.39",
+            "bailian.docs.40"
           ]
         },
         {
@@ -3394,9 +3559,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "ga",
           "documentationIds": [
-            "bailian.docs.37",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.46",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -3413,9 +3578,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "ga",
           "documentationIds": [
-            "bailian.docs.40",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.49",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -3432,9 +3597,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "ga",
           "documentationIds": [
-            "bailian.docs.41",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.50",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -3451,9 +3616,9 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "deprecated",
           "documentationIds": [
-            "bailian.docs.42",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.51",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -3470,7 +3635,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ]
         },
         {
@@ -3487,7 +3652,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ]
         },
         {
@@ -3504,7 +3669,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ]
         },
         {
@@ -3521,7 +3686,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.44"
+            "bailian.docs.53"
           ]
         },
         {
@@ -3538,7 +3703,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.45"
+            "bailian.docs.54"
           ]
         },
         {
@@ -3555,7 +3720,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.46"
+            "bailian.docs.55"
           ]
         },
         {
@@ -3572,7 +3737,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.47"
+            "bailian.docs.56"
           ]
         },
         {
@@ -3589,7 +3754,7 @@
           "defaultAuthProfileId": "bailian.auth.bearer",
           "maturity": "unspecified",
           "documentationIds": [
-            "bailian.docs.48"
+            "bailian.docs.57"
           ]
         }
       ],
@@ -3752,13 +3917,16 @@
           ],
           "maturity": "unspecified",
           "adapter": {
-            "id": "bailian.unimplemented.bailian.qwen-audio-chat.realtime.ws",
-            "status": "disabled",
-            "verification": "not-implemented",
-            "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+            "id": "desktop-qwen-audio-session-v1",
+            "status": "enabled",
+            "verification": "fixture-only",
+            "reason": "Typed Qwen-Audio dialogue adapter with server_vad/manual control and isolated ambient/turn_invalid events. Fixture-only; no live verification."
           },
           "documentationIds": [
-            "bailian.docs.7"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
           ],
           "fixtureIds": [
             "bailian.qwen-audio-chat.realtime.ws.fixture.v1"
@@ -3791,7 +3959,7 @@
             "reason": "Current STT worker does not prove session.finish/session.finished before close."
           },
           "documentationIds": [
-            "bailian.docs.10"
+            "bailian.docs.11"
           ],
           "fixtureIds": [
             "bailian.qwen-asr.realtime.ws.fixture.v1"
@@ -3818,13 +3986,14 @@
           ],
           "maturity": "unspecified",
           "adapter": {
-            "id": "bailian.unimplemented.bailian.task-asr.qwen-audio-3.0.ws",
-            "status": "disabled",
-            "verification": "not-implemented",
-            "reason": "Qwen-Audio-ASR-specific parameters and typed result reducer are not registered."
+            "id": "desktop-qwen-audio-task-asr-v1",
+            "status": "enabled",
+            "verification": "fixture-only",
+            "reason": "Typed Qwen-Audio streaming ASR task adapter with task identity and sentence snapshot replacement. Fixture-only; no live verification."
           },
           "documentationIds": [
-            "bailian.docs.13",
+            "bailian.docs.14",
+            "bailian.docs.15",
             "bailian.docs.16"
           ],
           "fixtureIds": [
@@ -3858,7 +4027,7 @@
             "reason": "Fun-ASR-specific parameters and typed result reducer are not registered."
           },
           "documentationIds": [
-            "bailian.docs.13"
+            "bailian.docs.17"
           ],
           "fixtureIds": [
             "bailian.task-asr.fun-realtime.ws.fixture.v1"
@@ -3891,7 +4060,7 @@
             "reason": "Paraformer-v2-specific parameters and result reducer are not registered."
           },
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "fixtureIds": [
             "bailian.task-asr.paraformer.realtime-v2.ws.fixture.v1"
@@ -3924,7 +4093,7 @@
             "reason": "Paraformer-v1-specific parameters and result reducer are not registered."
           },
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "fixtureIds": [
             "bailian.task-asr.paraformer.realtime-v1.ws.fixture.v1"
@@ -3957,7 +4126,7 @@
             "reason": "Paraformer-8k-v2-specific parameters and result reducer are not registered."
           },
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "fixtureIds": [
             "bailian.task-asr.paraformer.realtime-8k-v2.ws.fixture.v1"
@@ -3990,7 +4159,7 @@
             "reason": "Paraformer-8k-v1-specific parameters and result reducer are not registered."
           },
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "fixtureIds": [
             "bailian.task-asr.paraformer.realtime-8k-v1.ws.fixture.v1"
@@ -4026,7 +4195,7 @@
             "reason": "Legacy translation task adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.21"
+            "bailian.docs.24"
           ],
           "fixtureIds": [
             "bailian.task-translation.gummy.ws.fixture.v1"
@@ -4053,14 +4222,17 @@
           ],
           "maturity": "unspecified",
           "adapter": {
-            "id": "bailian.unimplemented.bailian.task-tts.qwen-audio-3.0.ws",
-            "status": "disabled",
-            "verification": "not-implemented",
-            "reason": "Qwen-Audio-TTS duplex task adapter is not registered."
+            "id": "desktop-qwen-audio-task-tts-v1",
+            "status": "enabled",
+            "verification": "fixture-only",
+            "reason": "Typed SpeechSynthesizer duplex adapter for exact Qwen-Audio 3.0 plus/flash only. Fixture-only; no live verification."
           },
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.41",
+            "bailian.docs.42",
+            "bailian.docs.43",
+            "bailian.docs.44",
+            "bailian.docs.45"
           ],
           "fixtureIds": [
             "bailian.task-tts.qwen-audio-3.0.ws.fixture.v1"
@@ -4093,8 +4265,8 @@
             "reason": "CosyVoice v3.5 duplex task adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "fixtureIds": [
             "bailian.task-tts.cosyvoice-v3.5.ws.fixture.v1"
@@ -4127,8 +4299,8 @@
             "reason": "CosyVoice v3 duplex task adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "fixtureIds": [
             "bailian.task-tts.cosyvoice-v3.ws.fixture.v1"
@@ -4161,8 +4333,8 @@
             "reason": "CosyVoice v2 duplex task adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "fixtureIds": [
             "bailian.task-tts.cosyvoice-v2.ws.fixture.v1"
@@ -4195,7 +4367,7 @@
             "reason": "One-shot Sambert task adapter is not registered; no family wildcard is authorized."
           },
           "documentationIds": [
-            "bailian.docs.22"
+            "bailian.docs.25"
           ],
           "fixtureIds": [
             "bailian.task-tts.sambert.ws.fixture.v1"
@@ -4228,8 +4400,8 @@
             "reason": "Qwen3-TTS input_text_buffer session adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "fixtureIds": [
             "bailian.qwen3-tts.realtime.ws.fixture.v1"
@@ -4262,8 +4434,8 @@
             "reason": "Legacy Qwen-TTS input_text_buffer session adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "fixtureIds": [
             "bailian.qwen-tts.legacy-realtime.ws.fixture.v1"
@@ -4296,7 +4468,7 @@
             "reason": "Listening-gated multimodal application adapter is not registered."
           },
           "documentationIds": [
-            "bailian.docs.31"
+            "bailian.docs.34"
           ],
           "fixtureIds": [
             "bailian.multimodal-dialog.ws.fixture.v1"
@@ -4330,7 +4502,7 @@
             "reason": "Independent v2 adapter implements nested audio configuration, three append-delta text streams and session.finish/session.finished terminal handling."
           },
           "documentationIds": [
-            "bailian.docs.32"
+            "bailian.docs.35"
           ],
           "fixtureIds": [
             "bailian.livetranslate.3_8.realtime.ws.fixture.v1"
@@ -4357,17 +4529,89 @@
           ],
           "maturity": "unspecified",
           "adapter": {
-            "id": "bailian.unimplemented.bailian.qwen-audio.3_1.realtime.ws",
-            "status": "disabled",
-            "verification": "not-implemented",
-            "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+            "id": "desktop-qwen-audio-session-v1",
+            "status": "enabled",
+            "verification": "fixture-only",
+            "reason": "Typed Qwen-Audio dialogue adapter with server_vad/manual control and isolated ambient/turn_invalid events. Fixture-only; no live verification."
           },
           "documentationIds": [
-            "bailian.docs.35",
-            "bailian.docs.36"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
           ],
           "fixtureIds": [
             "bailian.qwen-audio.3_1.realtime.ws.fixture.v1"
+          ],
+          "customProviderPolicy": "forbidden",
+          "notes": "Exact regional authorization remains in bailianModelProtocolRegistry. Regions: cn-beijing, ap-southeast-1."
+        },
+        {
+          "id": "bailian.omni.3_8.realtime.ws",
+          "version": 1,
+          "apiFamilyId": "bailian.api.bailian-omni-realtime-ws-v2",
+          "transportId": "bailian.transport.bailian-omni-realtime-ws-v2",
+          "authProfileIds": [
+            "bailian.auth.bearer"
+          ],
+          "defaultAuthProfileId": "bailian.auth.bearer",
+          "audioProfileId": "bailian.audio.bailian-omni-realtime-ws-v2",
+          "lifecycleProfileId": "bailian.lifecycle.bailian-omni-realtime-ws-v2",
+          "operations": [
+            "realtime-conversation"
+          ],
+          "capabilities": [
+            "speech-to-speech"
+          ],
+          "maturity": "unspecified",
+          "adapter": {
+            "id": "desktop-omni-session-v2",
+            "status": "enabled",
+            "verification": "fixture-only",
+            "reason": "Typed Omni 3.8 nested audio/turn detection adapter. Offline documentation fixtures only; no live verification."
+          },
+          "documentationIds": [
+            "bailian.docs.38",
+            "bailian.docs.39",
+            "bailian.docs.40"
+          ],
+          "fixtureIds": [
+            "bailian.omni.3_8.realtime.ws.fixture.v1"
+          ],
+          "customProviderPolicy": "forbidden",
+          "notes": "Exact regional authorization remains in bailianModelProtocolRegistry. Regions: cn-beijing, ap-southeast-1."
+        },
+        {
+          "id": "bailian.task-asr.qwen-audio-3.1.ws",
+          "version": 1,
+          "apiFamilyId": "bailian.api.bailian-qwen-audio-asr-task-ws-v1",
+          "transportId": "bailian.transport.bailian-qwen-audio-asr-task-ws-v1",
+          "authProfileIds": [
+            "bailian.auth.bearer"
+          ],
+          "defaultAuthProfileId": "bailian.auth.bearer",
+          "audioProfileId": "bailian.audio.bailian-qwen-audio-asr-task-ws-v1",
+          "lifecycleProfileId": "bailian.lifecycle.bailian-qwen-audio-asr-task-ws-v1",
+          "operations": [
+            "asr"
+          ],
+          "capabilities": [
+            "speech-to-text"
+          ],
+          "maturity": "unspecified",
+          "adapter": {
+            "id": "desktop-qwen-audio-task-asr-v1",
+            "status": "enabled",
+            "verification": "fixture-only",
+            "reason": "Typed Qwen-Audio streaming ASR task adapter with task identity and sentence snapshot replacement. Fixture-only; no live verification."
+          },
+          "documentationIds": [
+            "bailian.docs.14",
+            "bailian.docs.15",
+            "bailian.docs.16"
+          ],
+          "fixtureIds": [
+            "bailian.task-asr.qwen-audio-3.1.ws.fixture.v1"
           ],
           "customProviderPolicy": "forbidden",
           "notes": "Exact regional authorization remains in bailianModelProtocolRegistry. Regions: cn-beijing, ap-southeast-1."
@@ -4396,9 +4640,9 @@
             "reason": "Dedicated single-user-message and translation_options adapter is not implemented; do not route through generic chat."
           },
           "documentationIds": [
-            "bailian.docs.37",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.46",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "fixtureIds": [
             "bailian.qwen-mt-plus.http.fixture.v1"
@@ -4430,9 +4674,9 @@
             "reason": "Dedicated single-user-message and translation_options adapter is not implemented; do not route through generic chat."
           },
           "documentationIds": [
-            "bailian.docs.40",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.49",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "fixtureIds": [
             "bailian.qwen-mt-flash.http.fixture.v1"
@@ -4464,9 +4708,9 @@
             "reason": "Dedicated single-user-message and translation_options adapter is not implemented; do not route through generic chat."
           },
           "documentationIds": [
-            "bailian.docs.41",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.50",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "fixtureIds": [
             "bailian.qwen-mt-lite.http.fixture.v1"
@@ -4498,9 +4742,9 @@
             "reason": "Dedicated single-user-message and translation_options adapter is not implemented; do not route through generic chat."
           },
           "documentationIds": [
-            "bailian.docs.42",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.51",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "fixtureIds": [
             "bailian.qwen-mt-turbo.http.fixture.v1"
@@ -4534,7 +4778,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, streamingSemantics. Regions: cn-beijing, ap-southeast-1, eu-central-1, us-east-1, ap-northeast-1, cn-hongkong"
           },
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen3.8-max.fixture.v1"
@@ -4568,7 +4812,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, snapshotRegionalAvailability, streamingSemantics. Regions: unknown (snapshot-specific availability not verified)"
           },
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen3.8-max-0902.fixture.v1"
@@ -4602,7 +4846,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, snapshotRegionalAvailability, streamingSemantics. Regions: unknown (snapshot-specific availability not verified)"
           },
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen3.8-max-2026-09-02.fixture.v1"
@@ -4636,7 +4880,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, streamingSemantics. Regions: cn-beijing, ap-southeast-1, eu-central-1, us-east-1, ap-northeast-1, cn-hongkong"
           },
           "documentationIds": [
-            "bailian.docs.44"
+            "bailian.docs.53"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen3.8-flash.fixture.v1"
@@ -4669,7 +4913,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, transport, audioFormat, sampleRate. Regions: cn-beijing"
           },
           "documentationIds": [
-            "bailian.docs.45"
+            "bailian.docs.54"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen-audio-3.1-tts-flash.fixture.v1"
@@ -4701,7 +4945,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, streamingSemantics. Regions: cn-beijing, ap-southeast-1, eu-central-1, us-east-1, cn-hongkong"
           },
           "documentationIds": [
-            "bailian.docs.46"
+            "bailian.docs.55"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen-plus.fixture.v1"
@@ -4733,7 +4977,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, streamingSemantics. Regions: cn-beijing, ap-southeast-1"
           },
           "documentationIds": [
-            "bailian.docs.47"
+            "bailian.docs.56"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen-max.fixture.v1"
@@ -4765,7 +5009,7 @@
             "reason": "Official catalog only; no protocol authorization. Unknown: executableProtocol, regionalEndpoint, streamingSemantics. Regions: cn-beijing, ap-southeast-1"
           },
           "documentationIds": [
-            "bailian.docs.48"
+            "bailian.docs.57"
           ],
           "fixtureIds": [
             "bailian.catalog.qwen-turbo.fixture.v1"
@@ -5124,7 +5368,10 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.7"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5143,7 +5390,10 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.7"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5162,7 +5412,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.10"
+            "bailian.docs.11"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5181,7 +5431,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.13",
+            "bailian.docs.14",
+            "bailian.docs.15",
             "bailian.docs.16"
           ],
           "availability": "cn-beijing, ap-southeast-1"
@@ -5201,7 +5452,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.13"
+            "bailian.docs.17"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5220,7 +5471,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "availability": "cn-beijing"
         },
@@ -5239,7 +5490,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "availability": "cn-beijing"
         },
@@ -5258,7 +5509,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "availability": "cn-beijing"
         },
@@ -5277,7 +5528,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ],
           "availability": "cn-beijing"
         },
@@ -5303,7 +5554,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.21"
+            "bailian.docs.24"
           ],
           "availability": "cn-beijing"
         },
@@ -5329,7 +5580,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.21"
+            "bailian.docs.24"
           ],
           "availability": "cn-beijing"
         },
@@ -5348,8 +5599,11 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.41",
+            "bailian.docs.42",
+            "bailian.docs.43",
+            "bailian.docs.44",
+            "bailian.docs.45"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5368,8 +5622,11 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.41",
+            "bailian.docs.42",
+            "bailian.docs.43",
+            "bailian.docs.44",
+            "bailian.docs.45"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5388,8 +5645,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "availability": "cn-beijing"
         },
@@ -5408,8 +5665,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "availability": "cn-beijing"
         },
@@ -5428,8 +5685,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5448,8 +5705,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5468,8 +5725,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ],
           "availability": "cn-beijing"
         },
@@ -5488,7 +5745,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.22"
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing"
         },
@@ -5507,8 +5764,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5527,8 +5784,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5547,8 +5804,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5567,8 +5824,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5587,8 +5844,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5607,8 +5864,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5627,8 +5884,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5647,8 +5904,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5667,8 +5924,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5687,8 +5944,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing"
         },
@@ -5707,8 +5964,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing"
         },
@@ -5727,8 +5984,8 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ],
           "availability": "cn-beijing"
         },
@@ -5747,7 +6004,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.31"
+            "bailian.docs.34"
           ],
           "availability": "cn-beijing"
         },
@@ -5767,7 +6024,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.32"
+            "bailian.docs.35"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5786,8 +6043,52 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.35",
-            "bailian.docs.36"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
+          ],
+          "availability": "cn-beijing, ap-southeast-1"
+        },
+        {
+          "id": "qwen3.8-omni-flash-realtime",
+          "displayName": "qwen3.8-omni-flash-realtime",
+          "capabilities": [
+            "speech-to-speech"
+          ],
+          "maturity": "unspecified",
+          "protocolBindings": [
+            {
+              "operation": "realtime-conversation",
+              "protocolProfileId": "bailian.omni.3_8.realtime.ws",
+              "protocolProfileVersion": 1
+            }
+          ],
+          "documentationIds": [
+            "bailian.docs.38",
+            "bailian.docs.39",
+            "bailian.docs.40"
+          ],
+          "availability": "cn-beijing, ap-southeast-1"
+        },
+        {
+          "id": "qwen-audio-3.1-asr-flash-streaming",
+          "displayName": "qwen-audio-3.1-asr-flash-streaming",
+          "capabilities": [
+            "speech-to-text"
+          ],
+          "maturity": "unspecified",
+          "protocolBindings": [
+            {
+              "operation": "asr",
+              "protocolProfileId": "bailian.task-asr.qwen-audio-3.1.ws",
+              "protocolProfileVersion": 1
+            }
+          ],
+          "documentationIds": [
+            "bailian.docs.14",
+            "bailian.docs.15",
+            "bailian.docs.16"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5806,9 +6107,9 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.37",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.46",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "availability": "cn-beijing, ap-southeast-1, us-east-1"
         },
@@ -5827,9 +6128,9 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.40",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.49",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "availability": "cn-beijing, ap-southeast-1, us-east-1"
         },
@@ -5848,9 +6149,9 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.41",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.50",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "availability": "cn-beijing, ap-southeast-1, us-east-1"
         },
@@ -5869,9 +6170,9 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.42",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.51",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -5896,7 +6197,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ],
           "availability": "cn-beijing, ap-southeast-1, eu-central-1, us-east-1, ap-northeast-1, cn-hongkong"
         },
@@ -5921,7 +6222,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ],
           "availability": "unknown (snapshot-specific availability not verified)"
         },
@@ -5946,7 +6247,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ],
           "availability": "unknown (snapshot-specific availability not verified)"
         },
@@ -5971,7 +6272,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.44"
+            "bailian.docs.53"
           ],
           "availability": "cn-beijing, ap-southeast-1, eu-central-1, us-east-1, ap-northeast-1, cn-hongkong"
         },
@@ -5990,7 +6291,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.45"
+            "bailian.docs.54"
           ],
           "availability": "cn-beijing"
         },
@@ -6009,7 +6310,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.46"
+            "bailian.docs.55"
           ],
           "availability": "cn-beijing, ap-southeast-1, eu-central-1, us-east-1, cn-hongkong"
         },
@@ -6028,7 +6329,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.47"
+            "bailian.docs.56"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         },
@@ -6047,7 +6348,7 @@
             }
           ],
           "documentationIds": [
-            "bailian.docs.48"
+            "bailian.docs.57"
           ],
           "availability": "cn-beijing, ap-southeast-1"
         }
@@ -6093,7 +6394,10 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-audio-chat.realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.7"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
           ]
         },
         {
@@ -6101,7 +6405,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-asr.realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.10"
+            "bailian.docs.11"
           ]
         },
         {
@@ -6109,7 +6413,8 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-asr.qwen-audio-3.0.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.13",
+            "bailian.docs.14",
+            "bailian.docs.15",
             "bailian.docs.16"
           ]
         },
@@ -6118,7 +6423,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-asr.fun-realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.13"
+            "bailian.docs.17"
           ]
         },
         {
@@ -6126,7 +6431,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-asr.paraformer.realtime-v2.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ]
         },
         {
@@ -6134,7 +6439,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-asr.paraformer.realtime-v1.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ]
         },
         {
@@ -6142,7 +6447,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-asr.paraformer.realtime-8k-v2.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ]
         },
         {
@@ -6150,7 +6455,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-asr.paraformer.realtime-8k-v1.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.18"
+            "bailian.docs.21"
           ]
         },
         {
@@ -6158,7 +6463,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-translation.gummy.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.21"
+            "bailian.docs.24"
           ]
         },
         {
@@ -6166,8 +6471,11 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-tts.qwen-audio-3.0.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.41",
+            "bailian.docs.42",
+            "bailian.docs.43",
+            "bailian.docs.44",
+            "bailian.docs.45"
           ]
         },
         {
@@ -6175,8 +6483,8 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-tts.cosyvoice-v3.5.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ]
         },
         {
@@ -6184,8 +6492,8 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-tts.cosyvoice-v3.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ]
         },
         {
@@ -6193,8 +6501,8 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-tts.cosyvoice-v2.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.22",
-            "bailian.docs.24"
+            "bailian.docs.25",
+            "bailian.docs.27"
           ]
         },
         {
@@ -6202,7 +6510,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.task-tts.sambert.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.22"
+            "bailian.docs.25"
           ]
         },
         {
@@ -6210,8 +6518,8 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen3-tts.realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ]
         },
         {
@@ -6219,8 +6527,8 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-tts.legacy-realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.29",
-            "bailian.docs.22"
+            "bailian.docs.32",
+            "bailian.docs.25"
           ]
         },
         {
@@ -6228,7 +6536,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.multimodal-dialog.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.31"
+            "bailian.docs.34"
           ]
         },
         {
@@ -6236,7 +6544,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.livetranslate.3_8.realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.32"
+            "bailian.docs.35"
           ]
         },
         {
@@ -6244,8 +6552,30 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-audio.3_1.realtime.ws.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.35",
-            "bailian.docs.36"
+            "bailian.docs.7",
+            "bailian.docs.8",
+            "bailian.docs.9",
+            "bailian.docs.10"
+          ]
+        },
+        {
+          "id": "bailian.omni.3_8.realtime.ws.fixture.v1",
+          "path": "provider-modules/bailian/fixtures/bailian.omni.3_8.realtime.ws.v1.json",
+          "kind": "wire",
+          "sourceDocumentationIds": [
+            "bailian.docs.38",
+            "bailian.docs.39",
+            "bailian.docs.40"
+          ]
+        },
+        {
+          "id": "bailian.task-asr.qwen-audio-3.1.ws.fixture.v1",
+          "path": "provider-modules/bailian/fixtures/bailian.task-asr.qwen-audio-3.1.ws.v1.json",
+          "kind": "wire",
+          "sourceDocumentationIds": [
+            "bailian.docs.14",
+            "bailian.docs.15",
+            "bailian.docs.16"
           ]
         },
         {
@@ -6253,9 +6583,9 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-mt-plus.http.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.37",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.46",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -6263,9 +6593,9 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-mt-flash.http.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.40",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.49",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -6273,9 +6603,9 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-mt-lite.http.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.41",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.50",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -6283,9 +6613,9 @@
           "path": "provider-modules/bailian/fixtures/bailian.qwen-mt-turbo.http.v1.json",
           "kind": "wire",
           "sourceDocumentationIds": [
-            "bailian.docs.42",
-            "bailian.docs.38",
-            "bailian.docs.39"
+            "bailian.docs.51",
+            "bailian.docs.47",
+            "bailian.docs.48"
           ]
         },
         {
@@ -6293,7 +6623,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen3.8-max.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ]
         },
         {
@@ -6301,7 +6631,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen3.8-max-0902.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ]
         },
         {
@@ -6309,7 +6639,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen3.8-max-2026-09-02.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.43"
+            "bailian.docs.52"
           ]
         },
         {
@@ -6317,7 +6647,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen3.8-flash.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.44"
+            "bailian.docs.53"
           ]
         },
         {
@@ -6325,7 +6655,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen-audio-3.1-tts-flash.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.45"
+            "bailian.docs.54"
           ]
         },
         {
@@ -6333,7 +6663,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen-plus.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.46"
+            "bailian.docs.55"
           ]
         },
         {
@@ -6341,7 +6671,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen-max.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.47"
+            "bailian.docs.56"
           ]
         },
         {
@@ -6349,7 +6679,7 @@
           "path": "provider-modules/bailian/fixtures/bailian.catalog.qwen-turbo.v1.json",
           "kind": "error",
           "sourceDocumentationIds": [
-            "bailian.docs.48"
+            "bailian.docs.57"
           ]
         }
       ],
@@ -6832,7 +7162,7 @@
             "audioInput": {
               "required": true,
               "codecs": [
-                "pcm16"
+                "pcm"
               ],
               "sampleRatesHz": [
                 16000
@@ -6844,7 +7174,7 @@
             "audioOutput": {
               "required": true,
               "codecs": [
-                "pcm16"
+                "pcm"
               ],
               "sampleRatesHz": [
                 24000
@@ -6915,19 +7245,23 @@
               "session.finished",
               "task-finished"
             ],
-            "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/qwen-audio-chat-session.json",
+            "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-session.json",
             "sources": [
               {
                 "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
-                "checkedAt": "2026-08-30"
+                "checkedAt": "2026-09-30"
               },
               {
                 "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
-                "checkedAt": "2026-08-30"
+                "checkedAt": "2026-09-30"
               },
               {
                 "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
-                "checkedAt": "2026-08-30"
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+                "checkedAt": "2026-09-30"
               }
             ]
           },
@@ -7133,23 +7467,19 @@
               "session.created",
               "session.finished"
             ],
-            "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-asr-qwen-audio.json",
+            "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-task-asr.json",
             "sources": [
               {
-                "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+                "checkedAt": "2026-09-30"
               },
               {
-                "url": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+                "checkedAt": "2026-09-30"
               },
               {
-                "url": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events",
-                "checkedAt": "2026-08-30"
-              },
-              {
-                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+                "checkedAt": "2026-09-30"
               }
             ]
           },
@@ -8065,6 +8395,182 @@
                 "checkedAt": "2026-09-20"
               }
             ]
+          },
+          {
+            "dialectId": "bailian-omni-realtime-ws-v2",
+            "dialectVersion": 2,
+            "transport": "websocket",
+            "endpointFamily": "dashscope-realtime-v1",
+            "endpointPath": "/api-ws/v1/realtime",
+            "modelPlacement": "query",
+            "inputFraming": "json-base64",
+            "outputFraming": "json-base64",
+            "handshake": [
+              "session.created",
+              "session.update",
+              "session.updated"
+            ],
+            "turnControl": "session.turn_detection server_vad/semantic_vad or null; manual input_audio_buffer.commit then response.create",
+            "previewSemantics": "mixed-by-event",
+            "textEventSemantics": [
+              {
+                "eventType": "conversation.item.input_audio_transcription.delta",
+                "updateMode": "replaceable-snapshot",
+                "identityKeys": [
+                  "item_id",
+                  "content_index"
+                ],
+                "previewFields": [
+                  "text",
+                  "stash"
+                ],
+                "finalEventType": "conversation.item.input_audio_transcription.completed"
+              },
+              {
+                "eventType": "response.text.delta",
+                "updateMode": "append-delta",
+                "identityKeys": [
+                  "response_id",
+                  "item_id",
+                  "output_index",
+                  "content_index"
+                ],
+                "previewFields": [
+                  "delta"
+                ],
+                "finalEventType": "response.text.done"
+              },
+              {
+                "eventType": "response.audio_transcript.delta",
+                "updateMode": "append-delta",
+                "identityKeys": [
+                  "response_id",
+                  "item_id",
+                  "output_index",
+                  "content_index"
+                ],
+                "previewFields": [
+                  "delta"
+                ],
+                "finalEventType": "response.audio_transcript.done"
+              },
+              {
+                "eventType": "response.function_call_arguments.delta",
+                "updateMode": "append-delta",
+                "identityKeys": [
+                  "response_id",
+                  "item_id",
+                  "output_index",
+                  "call_id"
+                ],
+                "previewFields": [
+                  "delta"
+                ],
+                "finalEventType": "response.function_call_arguments.done"
+              }
+            ],
+            "commitSemantics": "response content done events commit one response; response.done is not a session terminal",
+            "responseTrigger": "response.create for manual turns",
+            "terminalLifecycle": "owner-close-after-response-drain",
+            "reusePolicy": "multi-turn-session",
+            "regionPolicy": "region-key-endpoint-model-must-match",
+            "audioInput": {
+              "required": true,
+              "codecs": [
+                "pcm"
+              ],
+              "sampleRatesHz": [
+                16000
+              ],
+              "channels": [
+                1,
+                2,
+                4
+              ]
+            },
+            "audioOutput": {
+              "required": true,
+              "codecs": [
+                "pcm"
+              ],
+              "sampleRatesHz": [
+                24000
+              ],
+              "channels": [
+                1
+              ]
+            },
+            "clientEventTypes": [
+              "session.update",
+              "input_audio_buffer.append",
+              "input_audio_buffer.commit",
+              "input_audio_buffer.clear",
+              "input_image_buffer.append",
+              "conversation.item.create",
+              "response.create",
+              "response.cancel"
+            ],
+            "serverEventTypes": [
+              "session.created",
+              "session.updated",
+              "input_audio_buffer.speech_started",
+              "input_audio_buffer.speech_stopped",
+              "input_audio_buffer.committed",
+              "input_audio_buffer.cleared",
+              "conversation.item.created",
+              "conversation.item.input_audio_transcription.delta",
+              "conversation.item.input_audio_transcription.completed",
+              "conversation.item.input_audio_transcription.failed",
+              "response.created",
+              "response.text.delta",
+              "response.text.done",
+              "response.audio_transcript.delta",
+              "response.audio_transcript.done",
+              "response.audio.delta",
+              "response.audio.done",
+              "response.function_call_arguments.delta",
+              "response.function_call_arguments.done",
+              "response.output_item.added",
+              "response.output_item.done",
+              "response.content_part.added",
+              "response.content_part.done",
+              "response.done",
+              "error"
+            ],
+            "clientJsonBase64EventTypes": [
+              "input_audio_buffer.append",
+              "input_image_buffer.append"
+            ],
+            "clientBinaryEventTypes": [],
+            "serverJsonBase64EventTypes": [
+              "response.audio.delta"
+            ],
+            "serverBinaryEventTypes": [],
+            "forbiddenClientEventTypes": [
+              "session.finish",
+              "finish-task",
+              "input_text_buffer.append"
+            ],
+            "forbiddenServerEventTypes": [
+              "response.text.text",
+              "session.finished",
+              "task-finished"
+            ],
+            "wireFixture": "provider-modules/bailian/fixtures/omni-session-v2.json",
+            "sources": [
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/realtime",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/server-events",
+                "checkedAt": "2026-09-30"
+              }
+            ]
           }
         ],
         "profiles": [
@@ -8253,15 +8759,27 @@
               "ap-southeast-1"
             ],
             "adapter": {
-              "status": "manifest-only",
-              "adapterId": null,
-              "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+              "status": "enabled",
+              "adapterId": "desktop-qwen-audio-session-v1",
+              "reason": "Typed Qwen-Audio dialogue adapter with server_vad/manual control and isolated ambient/turn_invalid events. Fixture-only; no live verification."
             },
             "legacy": false,
             "sources": [
               {
                 "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
-                "checkedAt": "2026-08-30"
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+                "checkedAt": "2026-09-30"
               }
             ]
           },
@@ -8337,19 +8855,23 @@
               }
             },
             "adapter": {
-              "status": "manifest-only",
-              "adapterId": null,
-              "reason": "Qwen-Audio-ASR-specific parameters and typed result reducer are not registered."
+              "status": "enabled",
+              "adapterId": "desktop-qwen-audio-task-asr-v1",
+              "reason": "Typed Qwen-Audio streaming ASR task adapter with task identity and sentence snapshot replacement. Fixture-only; no live verification."
             },
             "legacy": false,
             "sources": [
               {
-                "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+                "checkedAt": "2026-09-30"
               },
               {
-                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+                "checkedAt": "2026-09-30"
               }
             ]
           },
@@ -8717,19 +9239,31 @@
               }
             },
             "adapter": {
-              "status": "manifest-only",
-              "adapterId": null,
-              "reason": "Qwen-Audio-TTS duplex task adapter is not registered."
+              "status": "enabled",
+              "adapterId": "desktop-qwen-audio-task-tts-v1",
+              "reason": "Typed SpeechSynthesizer duplex adapter for exact Qwen-Audio 3.0 plus/flash only. Fixture-only; no live verification."
             },
             "legacy": false,
             "sources": [
               {
-                "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-api",
+                "checkedAt": "2026-09-30"
               },
               {
-                "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events",
-                "checkedAt": "2026-08-30"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-model-access",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-websocket-api",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-server-events",
+                "checkedAt": "2026-09-30"
               }
             ]
           },
@@ -9158,19 +9692,130 @@
               "ap-southeast-1"
             ],
             "adapter": {
-              "status": "manifest-only",
-              "adapterId": null,
-              "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+              "status": "enabled",
+              "adapterId": "desktop-qwen-audio-session-v1",
+              "reason": "Typed Qwen-Audio dialogue adapter with server_vad/manual control and isolated ambient/turn_invalid events. Fixture-only; no live verification."
             },
             "legacy": false,
             "sources": [
               {
-                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-realtime-plus",
-                "checkedAt": "2026-09-20"
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
+                "checkedAt": "2026-09-30"
               },
               {
-                "url": "https://help.aliyun.com/zh/model-studio/newly-released-models",
-                "checkedAt": "2026-09-20"
+                "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+                "checkedAt": "2026-09-30"
+              }
+            ]
+          },
+          {
+            "profileId": "bailian.omni.3_8.realtime.ws",
+            "profileVersion": 1,
+            "product": "qwen3.8-omni-realtime",
+            "exactModelIds": [
+              "qwen3.8-omni-flash-realtime"
+            ],
+            "operations": [
+              "dialogue"
+            ],
+            "dialectId": "bailian-omni-realtime-ws-v2",
+            "regions": [
+              "cn-beijing",
+              "ap-southeast-1"
+            ],
+            "endpointRequirements": {
+              "workspaceScoped": true
+            },
+            "adapter": {
+              "status": "enabled",
+              "adapterId": "desktop-omni-session-v2",
+              "reason": "Typed Omni 3.8 nested audio/turn detection adapter. Offline documentation fixtures only; no live verification."
+            },
+            "legacy": false,
+            "sources": [
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/realtime",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/server-events",
+                "checkedAt": "2026-09-30"
+              }
+            ]
+          },
+          {
+            "profileId": "bailian.task-asr.qwen-audio-3.1.ws",
+            "profileVersion": 1,
+            "product": "qwen-audio-3.1-asr-streaming",
+            "exactModelIds": [
+              "qwen-audio-3.1-asr-flash-streaming"
+            ],
+            "operations": [
+              "asr"
+            ],
+            "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+            "regions": [
+              "cn-beijing",
+              "ap-southeast-1"
+            ],
+            "modelAudio": {
+              "input": {
+                "required": true,
+                "codecs": [
+                  "pcm",
+                  "wav",
+                  "mp3",
+                  "opus",
+                  "speex",
+                  "aac",
+                  "amr"
+                ],
+                "sampleRateConstraint": {
+                  "kind": "any-positive-integer"
+                },
+                "channels": [
+                  1
+                ]
+              },
+              "output": {
+                "required": false,
+                "codecs": [],
+                "sampleRateConstraint": {
+                  "kind": "not-applicable"
+                },
+                "channels": []
+              }
+            },
+            "adapter": {
+              "status": "enabled",
+              "adapterId": "desktop-qwen-audio-task-asr-v1",
+              "reason": "Typed Qwen-Audio streaming ASR task adapter with task identity and sentence snapshot replacement. Fixture-only; no live verification."
+            },
+            "legacy": false,
+            "sources": [
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+                "checkedAt": "2026-09-30"
+              },
+              {
+                "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+                "checkedAt": "2026-09-30"
               }
             ]
           }

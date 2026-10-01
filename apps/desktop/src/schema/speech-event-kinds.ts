@@ -13,6 +13,7 @@ export const SPEECH_EVENT_KINDS = [
   'speech.deferred',
   'speech.cache-hit',
   'speech.realtime-audio-requested',
+  'speech.task-tts-requested',
   'speech.tts-queue-overflow',
   'speech.tts-start-expired',
   'speech.playback-start-expired',

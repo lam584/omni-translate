@@ -233,7 +233,7 @@ describe('provider model capabilities', () => {
         wireDialect: 'bailian-qwen-audio-chat-realtime-ws-v1',
         inputFraming: 'json-base64',
         outputFraming: 'json-base64',
-        adapterStatus: 'manifest-only',
+        adapterStatus: 'enabled',
       },
     });
     expect(seeded.find((item) => item.modelId === 'qwen3-asr-flash-realtime')).toMatchObject({
@@ -281,4 +281,21 @@ describe('provider model capabilities', () => {
     // Disabled voice-clone-only models remain visible without inventing a UI capability.
     expect(seeded.some((item) => item.modelId === 'qwen3.8-livetranslate-flash-realtime')).toBe(true);
   });
+  it("sanitizes conflicting pipeline interaction capabilities for livetranslate models", () => {
+    const registry = [
+      {
+        id: "custom-entry",
+        modelId: "qwen3.8-livetranslate-flash-realtime",
+        capabilities: ["speech-to-text", "speech-to-speech"],
+        interactionCapabilities: ["pipeline_asr_mt_tts", "server_commit_tts", "streaming"],
+        source: "custom",
+      },
+    ];
+    const resolved = resolveInteractionCapabilities("qwen3.8-livetranslate-flash-realtime", registry as never);
+    expect(resolved).not.toContain("pipeline_asr_mt_tts");
+    expect(resolved).not.toContain("server_commit_tts");
+    expect(resolved).toContain("streaming");
+    expect(resolved).toContain("auto_vad");
+  });
+
 });

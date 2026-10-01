@@ -19,7 +19,7 @@
   "data": {
     "endpointStatus": "verified",
     "networkAuthorized": false,
-    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime",
     "authContract": {
       "profileId": "bailian.auth.bearer",
       "parameters": [

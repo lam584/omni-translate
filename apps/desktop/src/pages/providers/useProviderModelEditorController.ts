@@ -1,20 +1,20 @@
+import { ensureCandidateModelGroups } from '../../utils/candidate-model-groups';
 import { modelRegistryEditorPatch, resetModelCapabilityOverride } from '../../utils/provider-model-capabilities-registry';
 import type { TFunction } from 'i18next';
 import type { Dispatch, SetStateAction } from 'react';
 import type {
   ProviderCustomHeaderDraft,
-  AudioRouteMode,
+  CandidateModelGroupId,
   ProviderDraft,
   ProviderModelCapabilityRegistryEntry,
   ProviderResponseModality,
-  ProviderScenario,
+  ProviderSceneModelAssignment,
 } from '../../schema/config';
 import type { ProviderCapability, ProviderInteractionCapability } from '../../schema/provider-contract';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
 import type { ProviderTemplate } from '../../schema/provider-template';
 import { useAppStore } from '../../stores/app-store';
 import {
-  capabilityForScenario,
   createProviderModelCapabilityRegistryEntry,
   normalizeProviderCapabilityList,
   normalizeProviderInteractionCapabilityList,
@@ -33,19 +33,19 @@ type Params = {
   t: TFunction;
   activeProvider: ProviderDraft;
   activeTemplate: ProviderTemplate;
-  sceneAssignments: ProviderDraft['sceneModelAssignments'];
+  sceneAssignments?: ProviderSceneModelAssignment[];
   localModelCapabilityRegistry: ProviderModelCapabilityRegistryEntry[];
   modelLookup: Map<string, ProviderModelRuntime>;
   modelCatalogSignature: string;
-  modelCatalogTargetScenario: ProviderScenario;
+  modelCatalogTargetScenario: CandidateModelGroupId;
   manualModelIdDraft: string;
   pendingModelRegistration: PendingModelRegistration | null;
-  draggingSceneModel: { scenario: ProviderScenario; modelId: string } | null;
-  routeMode: AudioRouteMode;
+  draggingSceneModel?: { scenario: string; modelId: string } | null;
+  routeMode?: string;
   providerRuntimeBlocked: boolean;
   providerRuntimeStatusMessage: string | null;
   setModelCatalog: Dispatch<SetStateAction<ModelCatalogState>>;
-  setModelCatalogTargetScenario: Dispatch<SetStateAction<ProviderScenario>>;
+  setModelCatalogTargetScenario: Dispatch<SetStateAction<CandidateModelGroupId>>;
   setSelectedCatalogScenario: Dispatch<SetStateAction<ModelCatalogScenarioFilter>>;
   setModelCatalogModalOpen: Dispatch<SetStateAction<boolean>>;
   setManualModelIdDraft: Dispatch<SetStateAction<string>>;
@@ -55,49 +55,31 @@ type Params = {
 
 export function useProviderModelEditorController(params: Params) {
   const updateActiveProviderDraft = useAppStore((state) => state.updateActiveProviderDraft);
-  const updateProviders = useAppStore((state) => state.updateProviders);
-
-  const syncProviderInArray = (nextProvider: ProviderDraft) => {
-    const providers = [...useAppStore.getState().configDraft.providers];
-    const index = providers.findIndex((provider) => provider.templateId === nextProvider.templateId);
-    if (index >= 0) {
-      providers[index] = { ...nextProvider };
-      updateProviders(providers);
-    }
-  };
-
-  const updateSceneModelAssignments = (
-    nextAssignments: ProviderDraft['sceneModelAssignments'],
-    nextModel?: string,
-  ) => {
-    const assignments = providersPageHelpers.ensureSceneAssignments(nextAssignments);
-    updateActiveProviderDraft({ sceneModelAssignments: assignments, ...(nextModel ? { model: nextModel } : {}), status: 'draft' });
-    syncProviderInArray({
-      ...providersPageHelpers.getActiveProviderFromState(),
-      sceneModelAssignments: assignments,
-      ...(nextModel ? { model: nextModel } : {}),
-    } as ProviderDraft);
+  const updateCandidateGroups = (group: CandidateModelGroupId, modelIds: string[]) => {
+    const groups = ensureCandidateModelGroups(params.activeProvider.candidateModelGroups);
+    updateActiveProviderDraft({
+      candidateModelGroups: groups.map((entry) => entry.group === group ? { group, modelIds } : entry),
+      status: 'draft',
+    });
   };
 
   const hasCapabilityRegistryEntry = (modelId: string) => params.localModelCapabilityRegistry
     .some((entry) => entry.modelId === modelId);
 
-  const isModelAddedToScenario = (scenario: ModelCatalogScenarioFilter, modelId: string) => scenario === 'all'
-    ? params.sceneAssignments.some((item) => item.modelIds.includes(modelId))
-    : params.sceneAssignments.find((item) => item.scenario === scenario)?.modelIds.includes(modelId) ?? false;
+  const isModelAddedToScenario = (group: ModelCatalogScenarioFilter, modelId: string) => group === 'all'
+    ? (params.activeProvider.candidateModelGroups ?? []).some((entry) => entry.modelIds.includes(modelId))
+    : (params.activeProvider.candidateModelGroups ?? []).some((entry) => entry.group === group && entry.modelIds.includes(modelId));
 
-  const handleModelCatalogOpen = (scenario?: ProviderScenario) => {
-    const target = scenario ?? params.routeMode;
-    params.setModelCatalogTargetScenario(target);
-    params.setSelectedCatalogScenario(scenario ?? 'all');
+  const handleModelCatalogOpen = (group?: CandidateModelGroupId) => {
+    params.setModelCatalogTargetScenario(group ?? 'realtime-multimodal');
+    params.setSelectedCatalogScenario(group ?? 'all');
     params.setModelCatalogModalOpen(true);
     params.setModelCatalog(providersPageHelpers.createEmptyModelCatalog(params.modelCatalogSignature, 'loading'));
     if (!params.providerRuntimeBlocked) {
       void params.refreshModelCatalog();
     } else {
       params.setModelCatalog(providersPageHelpers.createEmptyModelCatalog(
-        params.modelCatalogSignature,
-        'error',
+        params.modelCatalogSignature, 'error',
         params.providerRuntimeStatusMessage ?? params.t('providers.messages.storageBlockedAction', {
           action: params.t('providers.actions.fetchModelList'),
         }),
@@ -105,22 +87,22 @@ export function useProviderModelEditorController(params: Params) {
     }
   };
 
-  const handleSceneModelAdd = (scenario: ProviderScenario, model: ProviderModelRuntime) => {
-    updateSceneModelAssignments(
-      providersPageHelpers.addSceneModel(params.sceneAssignments, scenario, model.id),
-      scenario === params.routeMode ? model.id : undefined,
-    );
+  const handleSceneModelAdd = (group: CandidateModelGroupId, model: ProviderModelRuntime) => {
+    const current = ensureCandidateModelGroups(params.activeProvider.candidateModelGroups).find((entry) => entry.group === group)!.modelIds;
+    if (!current.includes(model.id)) updateCandidateGroups(group, [...current, model.id]);
   };
 
-  const openPendingModelRegistration = (scenario: ProviderScenario, model: ProviderModelRuntime) => {
+  const openPendingModelRegistration = (group: CandidateModelGroupId, model: ProviderModelRuntime) => {
     const capabilities = resolveProviderModelCapabilities(model, params.localModelCapabilityRegistry);
-    const realtimeAudioMode = 'server_vad' as const;
-    params.setPendingModelRegistration({
-      scenario,
-      model,
-      capabilities: capabilities.length ? capabilities : [capabilityForScenario(scenario)],
-      realtimeAudioMode,
-      interactionCapabilities: ['auto_vad'],
+    const fallback: Record<CandidateModelGroupId, ProviderCapability> = {
+      'text-processing': 'text-generation',
+      'audio-understanding': 'speech-to-text',
+      'audio-generation': 'text-to-speech',
+      'realtime-multimodal': 'speech-to-speech',
+    };
+    params.setPendingModelRegistration({ group, model,
+      capabilities: capabilities.length ? capabilities : [fallback[group]],
+      realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad'],
     });
   };
 
@@ -181,30 +163,20 @@ export function useProviderModelEditorController(params: Params) {
       ),
       ...params.localModelCapabilityRegistry.filter((entry) => entry.modelId !== pending.model.id),
     ]);
-    updateSceneModelAssignments(
-      providersPageHelpers.addSceneModel(params.sceneAssignments, pending.scenario, pending.model.id),
-      pending.scenario === params.routeMode ? pending.model.id : undefined,
-    );
+    handleSceneModelAdd(pending.group, pending.model);
     params.setManualModelIdDraft('');
     params.setPendingModelRegistration(null);
   };
 
-  const handleSceneModelRemove = (scenario: ProviderScenario, modelId: string) => {
-    const result = providersPageHelpers.removeSceneModel(
-      params.sceneAssignments,
-      scenario,
-      modelId,
-      params.routeMode,
-      params.activeProvider.model,
-      params.activeTemplate.defaultDraft.model,
-    );
-    updateSceneModelAssignments(result.assignments, result.nextModel);
+  const handleSceneModelRemove = (group: CandidateModelGroupId, modelId: string) => {
+    const current = ensureCandidateModelGroups(params.activeProvider.candidateModelGroups).find((entry) => entry.group === group)!.modelIds;
+    updateCandidateGroups(group, current.filter((id) => id !== modelId));
   };
 
-  const handleCatalogModelToggle = (scenario: ProviderScenario, model: ProviderModelRuntime) => {
-    if (isModelAddedToScenario(scenario, model.id)) return handleSceneModelRemove(scenario, model.id);
-    if (!hasCapabilityRegistryEntry(model.id) && model.capabilities.length === 0) return openPendingModelRegistration(scenario, model);
-    handleSceneModelAdd(scenario, model);
+  const handleCatalogModelToggle = (group: CandidateModelGroupId, model: ProviderModelRuntime) => {
+    if (isModelAddedToScenario(group, model.id)) return handleSceneModelRemove(group, model.id);
+    if (!hasCapabilityRegistryEntry(model.id) && model.capabilities.length === 0) return openPendingModelRegistration(group, model);
+    handleSceneModelAdd(group, model);
   };
 
   const handleProviderCustomHeaderChange = (headerId: string, patch: Partial<ProviderCustomHeaderDraft>) => {
@@ -260,11 +232,6 @@ export function useProviderModelEditorController(params: Params) {
     responseModalities: providersPageHelpers.toggleResponseModalities(params.activeProvider.responseModalities, modality),
     status: 'draft',
   });
-  const handleSceneModelReorder = (scenario: ProviderScenario, targetModelId: string) => {
-    const next = providersPageHelpers.reorderSceneModels(params.sceneAssignments, params.draggingSceneModel, scenario, targetModelId);
-    if (next !== params.sceneAssignments) updateSceneModelAssignments(next);
-  };
-
   return {
     isModelAddedToScenario,
     handleModelCatalogOpen,
@@ -283,6 +250,5 @@ export function useProviderModelEditorController(params: Params) {
     handleCapabilityRegistryInteractionToggle,
     handleCapabilityRegistryEntryRemove,
     handleResponseModalityToggle,
-    handleSceneModelReorder,
   };
 }

@@ -42,6 +42,7 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
   const diagnosis = resolveDriverDiagnosis(bridge);
   const rawDiagnosticSummary = bridge.driverDetail ?? bridge.lastDriverOperation?.summary ?? null;
 
+
   const actionKey =
     needsRepair ? 'repair' : primaryAction === 'start-bridge' ? 'startBridge' : primaryAction === 'refresh' ? 'refresh' : 'install';
   const statusTone = diagnosis.tone;
@@ -142,10 +143,12 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
             </button>
           </>
         ) : null}
-        <button type="button" className="settings-action driver-management-secondary" disabled={Boolean(busy) || probing} onClick={() => void run('refresh')}>
-          <AppIcon name="refresh" size={14} />
-          {probing ? t('driverManagement.processing') : t('driverManagement.action.refresh')}
-        </button>
+        {actionKey !== 'refresh' ? (
+          <button type="button" className="settings-action driver-management-secondary" disabled={Boolean(busy) || probing} onClick={() => void run('refresh')}>
+            <AppIcon name="refresh" size={14} />
+            {probing ? t('driverManagement.processing') : t('driverManagement.action.refresh')}
+          </button>
+        ) : null}
         <button
           type="button"
           className="settings-action driver-management-secondary"

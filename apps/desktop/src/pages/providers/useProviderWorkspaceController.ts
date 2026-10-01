@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { ProviderDraft, ProviderScenario } from '../../schema/config';
+import type { ProviderDraft, CandidateModelGroupId } from '../../schema/config';
 import type { ProviderProbeProfileRuntime, ProviderSmokeResult } from '../../schema/provider-runtime';
 import type { ProviderTemplate } from '../../schema/provider-template';
 import {
@@ -45,9 +45,8 @@ export function useProviderWorkspaceController(activeProvider: ProviderDraft) {
   const [audioModeHelpOpen, setAudioModeHelpOpen] = useState(false);
   const [verificationModalOpen, setVerificationModalOpen] = useState(false);
   const [selectedCatalogScenario, setSelectedCatalogScenario] = useState<ModelCatalogScenarioFilter>('all');
-  const [modelCatalogTargetScenario, setModelCatalogTargetScenario] = useState<ProviderScenario>('watch');
+  const [modelCatalogTargetScenario, setModelCatalogTargetScenario] = useState<CandidateModelGroupId>('realtime-multimodal');
   const [draggingTemplateId, setDraggingTemplateId] = useState<string | null>(null);
-  const [draggingSceneModel, setDraggingSceneModel] = useState<{ scenario: ProviderScenario; modelId: string } | null>(null);
   const draggingTemplateIdRef = useRef<string | null>(null);
   const templateMouseDragMovedRef = useRef(false);
   const templateMouseHoverTargetRef = useRef<string | null>(null);
@@ -73,7 +72,6 @@ export function useProviderWorkspaceController(activeProvider: ProviderDraft) {
     selectedCatalogScenario, setSelectedCatalogScenario,
     modelCatalogTargetScenario, setModelCatalogTargetScenario,
     draggingTemplateId, setDraggingTemplateId,
-    draggingSceneModel, setDraggingSceneModel,
     draggingTemplateIdRef, templateMouseDragMovedRef, templateMouseHoverTargetRef,
     manualModelIdDraft, setManualModelIdDraft,
     pendingModelRegistration, setPendingModelRegistration,

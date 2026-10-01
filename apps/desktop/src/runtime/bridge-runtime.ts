@@ -7,9 +7,9 @@ import { activeDesktopApi } from './desktop-api';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { createLogger } from './logger';
 
-const BRIDGE_REFRESH_TIMEOUT_MS = 120000;
+export const BRIDGE_REFRESH_TIMEOUT_MS = 120000;
 const BRIDGE_PROCESS_LOOPBACK_PROBE_TIMEOUT_MS = 20000;
-const BRIDGE_START_TIMEOUT_MS = 20000;
+export const BRIDGE_START_TIMEOUT_MS = 20000;
 const BRIDGE_INSTALL_TIMEOUT_MS = 120000;
 const BRIDGE_REPAIR_TIMEOUT_MS = 120000;
 const BRIDGE_UNINSTALL_TIMEOUT_MS = 60000;

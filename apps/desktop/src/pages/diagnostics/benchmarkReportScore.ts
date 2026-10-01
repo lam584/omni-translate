@@ -46,6 +46,7 @@ export type BenchmarkScoreV2Rules = {
     audioToRenderFirst: { good: number; bad: number };
     audioToRenderFinal: { good: number; bad: number };
   };
+  latencyScoring: { badScore: number; tailExponent: number; aggregation: 'geometric-mean' };
   stability: { extraResponsePenalty: number };
   grades: readonly { grade: BenchmarkScoreGrade; minimum: number }[];
 };
@@ -142,6 +143,7 @@ export type LatencySignalEvidence = {
 export type LatencyDimensionEvidence = {
   signals: LatencySignalEvidence[];
   average: number | null;
+  runs: Array<{ runIndex: number; score: number | null }>;
 };
 
 export type IncompleteRunEvidence = {
@@ -186,7 +188,7 @@ export type BenchmarkScoreV2 = {
   total: number | null;
   grade: BenchmarkScoreGrade | null;
   weights: BenchmarkScoreV2Rules['dimensionWeights'];
-  thresholds: Pick<BenchmarkScoreV2Rules, 'semantic' | 'latencyMilliseconds' | 'stability' | 'grades'>;
+  thresholds: Pick<BenchmarkScoreV2Rules, 'semantic' | 'latencyMilliseconds' | 'latencyScoring' | 'stability' | 'grades'>;
   dimensions: {
     semantic: BenchmarkDimension<SemanticDimensionEvidence>;
     latency: BenchmarkDimension<LatencyDimensionEvidence>;
@@ -228,7 +230,7 @@ export type BenchmarkScoreOptions = {
 };
 
 const clamp = (value: number) => Math.min(100, Math.max(0, value));
-const round = (value: number) => Number(value.toFixed(1));
+const round = (value: number, digits = 1) => Number(value.toFixed(digits));
 
 function finiteNumber(value: number | null | undefined): value is number {
   return value != null && Number.isFinite(value);
@@ -347,6 +349,14 @@ export function scoreLatencyRamp(valueMs: number | null, goodMs: number, badMs: 
   return round(100 * (badMs - valueMs) / (badMs - goodMs));
 }
 
+/** Continuous v2 signal score with a linear target band and a decaying slow tail. */
+export function scoreLatencyV2(valueMs: number | null, goodMs: number, badMs: number, badScore = BENCHMARK_SCORE_V2_RULES.latencyScoring.badScore, tailExponent = BENCHMARK_SCORE_V2_RULES.latencyScoring.tailExponent): number | null {
+  if (!finiteNumber(valueMs) || valueMs < 0) return null;
+  if (valueMs <= goodMs) return 100;
+  if (valueMs < badMs) return 100 - (100 - badScore) * (valueMs - goodMs) / (badMs - goodMs);
+  return badScore * (badMs / valueMs) ** tailExponent;
+}
+
 function latencyZone(valueMs: number | null, threshold: { good: number; bad: number }): LatencySignalEvidence['zone'] {
   if (!finiteNumber(valueMs)) return 'missing';
   if (valueMs <= threshold.good) return 'good';
@@ -453,8 +463,8 @@ export function scoreBenchmarkReport(
 
   const latencySignals: LatencySignalEvidence[] = report.runs.flatMap((run) => {
     const highConfidence = isHighConfidenceAudioOrigin(run.audioStartOrigin);
-    const firstLatency = highConfidence ? run.audioToRenderFirstMs ?? null : null;
-    const finalLatency = highConfidence ? run.audioToRenderFinalMs ?? null : null;
+    const firstLatency = highConfidence && finiteNumber(run.audioToRenderFirstMs) && run.audioToRenderFirstMs >= 0 ? run.audioToRenderFirstMs : null;
+    const finalLatency = highConfidence && finiteNumber(run.audioToRenderFinalMs) && run.audioToRenderFinalMs >= 0 ? run.audioToRenderFinalMs : null;
     const firstThreshold = rules.latencyMilliseconds.audioToRenderFirst;
     const finalThreshold = rules.latencyMilliseconds.audioToRenderFinal;
     return [
@@ -464,7 +474,7 @@ export function scoreBenchmarkReport(
         audioStartOrigin: run.audioStartOrigin,
         highConfidence,
         latencyMs: firstLatency,
-        score: scoreLatencyRamp(firstLatency, firstThreshold.good, firstThreshold.bad),
+        score: firstLatency == null ? null : round(scoreLatencyV2(firstLatency, firstThreshold.good, firstThreshold.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent)!, 3),
         threshold: firstThreshold,
         zone: latencyZone(firstLatency, firstThreshold),
       },
@@ -474,7 +484,7 @@ export function scoreBenchmarkReport(
         audioStartOrigin: run.audioStartOrigin,
         highConfidence,
         latencyMs: finalLatency,
-        score: scoreLatencyRamp(finalLatency, finalThreshold.good, finalThreshold.bad),
+        score: finalLatency == null ? null : round(scoreLatencyV2(finalLatency, finalThreshold.good, finalThreshold.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent)!, 3),
         threshold: finalThreshold,
         zone: latencyZone(finalLatency, finalThreshold),
       },
@@ -486,15 +496,20 @@ export function scoreBenchmarkReport(
   for (const signal of latencySignals.filter(({ score }) => score == null)) {
     latencyMissing.push(`run-${signal.runIndex}-${signal.signal}`);
   }
-  const latencyScores = latencySignals.flatMap(({ score }) => score == null ? [] : [score]);
-  const latencyAverage = latencyMissing.length === 0 ? average(latencyScores) : null;
+  const latencyRuns = report.runs.map((run) => {
+    const highConfidence = isHighConfidenceAudioOrigin(run.audioStartOrigin);
+    const first = highConfidence ? scoreLatencyV2(run.audioToRenderFirstMs ?? null, rules.latencyMilliseconds.audioToRenderFirst.good, rules.latencyMilliseconds.audioToRenderFirst.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent) : null;
+    const final = highConfidence ? scoreLatencyV2(run.audioToRenderFinalMs ?? null, rules.latencyMilliseconds.audioToRenderFinal.good, rules.latencyMilliseconds.audioToRenderFinal.bad, rules.latencyScoring.badScore, rules.latencyScoring.tailExponent) : null;
+    return { runIndex: run.runIndex, score: first == null || final == null ? null : Math.sqrt(first * final) };
+  });
+  const latencyAverage = latencyMissing.length === 0 ? average(latencyRuns.map((run) => run.score!)) : null;
   const latency: BenchmarkDimension<LatencyDimensionEvidence> = {
     score: latencyAverage == null ? null : round(latencyAverage),
     status: latencyAverage == null ? 'evidence-insufficient' : 'scored',
     weight: rules.dimensionWeights.latency,
-    formula: 'mean(each run’s high-confidence audio → visible-first and audio → visible-final linear-ramp scores)',
+    formula: `mean across runs of √(first × final); each signal: ≤good → 100, good–bad → linear to ${rules.latencyScoring.badScore}, >bad → ${rules.latencyScoring.badScore} × (bad / observed)^${rules.latencyScoring.tailExponent}`,
     missingEvidence: latencyMissing,
-    evidence: { signals: latencySignals, average: latencyAverage == null ? null : round(latencyAverage) },
+    evidence: { signals: latencySignals, average: latencyAverage == null ? null : round(latencyAverage), runs: latencyRuns.map((run) => ({ runIndex: run.runIndex, score: run.score == null ? null : round(run.score) })) },
   };
 
   const unfinished = incompleteRuns(report, declaredRuns);
@@ -585,6 +600,7 @@ export function scoreBenchmarkReport(
     thresholds: {
       semantic: rules.semantic,
       latencyMilliseconds: rules.latencyMilliseconds,
+      latencyScoring: rules.latencyScoring,
       stability: rules.stability,
       grades: rules.grades,
     },

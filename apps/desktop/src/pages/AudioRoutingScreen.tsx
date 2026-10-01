@@ -139,20 +139,8 @@ function AudioRoutingPage() {
     const registryByTemplateId = new Map(configDraft.providers.map((provider) => [
       provider.templateId, effectiveProviderModelRegistry(provider),
     ] as const));
-    const sources = configDraft.providers.map((provider) => {
-      const declaredIds = new Set((registryByTemplateId.get(provider.templateId) ?? [])
-        .filter((entry) => !entry.hidden && entry.capabilities.length > 0).map((entry) => entry.modelId));
-      const cachedIds = (provider.modelCatalogCache?.models ?? [])
-        .filter((model) => declaredIds.has(model.id)).map((model) => model.id);
-      return {
-        ...provider,
-        sceneModelAssignments: [
-          ...(provider.sceneModelAssignments ?? []),
-          { scenario: 'watch' as const, modelIds: cachedIds },
-        ],
-      };
-    });
-    return collectProviderModelOptions(sources, {
+    // Candidate pools are the sole source of selectable models; catalog caches only enrich metadata.
+    return collectProviderModelOptions(configDraft.providers, {
       templateFilter: enabledProviderTemplateIds,
       dedupeKey: 'provider-model',
       project: ({ templateId, modelId, provider }) => {
@@ -253,6 +241,7 @@ function AudioRoutingPage() {
   const inboundModelOption = resolveSelectedModel(inboundModelOptions, configDraft.devices.inboundVoiceModelId);
   const outboundModelOption = resolveSelectedModel(outboundModelOptions, configDraft.devices.outboundVoiceModelId);
   const subtitleModelOption = resolveSelectedModel(textModelOptions, configDraft.devices.subtitleTranslationModelId);
+  const primaryTextModelOption = resolveSelectedModel(textModelOptions, configDraft.devices.primaryTextTranslationModelId ?? '');
   const ttsModelOption = resolveSelectedModel(ttsModelOptions, configDraft.devices.textToSpeechModelId);
 
   const subtitleMode = configDraft.devices.subtitleTranslationMode;
@@ -571,12 +560,42 @@ function AudioRoutingPage() {
     secondarySttModelOptions,
     configDraft.devices.inboundSecondaryAudioModelId,
   );
-  const inboundScenarioCards: ScenarioCardProps[] = [{
-    active: true, caption: tWithDefault(t, 'audioRouting.scenarioInboundCaption'), icon: 'headphones',
-    modelName: inboundModelOption?.displayName ?? '—', modelOptions: inboundModelOptions, modelProvider: inboundModelOption?.description ?? '',
-    onSelect: (modelId) => selectModel('inbound', modelId),
-    tags: detectScenarioCapabilities(inboundModelOption, 'inbound'), title: tWithDefault(t, 'audioRouting.scenarioInboundTitle'), value: configDraft.devices.inboundVoiceModelId,
-  }];
+  const primaryRealtimeProfile = useMemo(() => {
+    if (!configDraft.devices.inboundVoiceModelId) return null;
+    try {
+      return resolveRealtimeProfile(configDraft, configDraft.devices.inboundVoiceModelId) as unknown as {
+        nativeTranslation?: boolean;
+        translationExecution?: 'dedicated-realtime' | 'prompted-realtime' | 'text-worker';
+        invocationOperation?: 'native_translate' | 'dialogue' | 'asr';
+      };
+    } catch {
+      return null;
+    }
+  }, [configDraft]);
+
+  const needsPrimaryTextWorker = primaryRealtimeProfile?.translationExecution === 'text-worker'
+    || (primaryRealtimeProfile?.translationExecution === undefined && primaryRealtimeProfile?.nativeTranslation === false);
+
+  const inboundScenarioCards: ScenarioCardProps[] = [
+    {
+      active: true, caption: tWithDefault(t, 'audioRouting.scenarioInboundCaption'), icon: 'headphones',
+      modelName: inboundModelOption?.displayName ?? '—', modelOptions: inboundModelOptions, modelProvider: inboundModelOption?.description ?? '',
+      onSelect: (modelId) => selectModel('inbound', modelId),
+      tags: detectScenarioCapabilities(inboundModelOption, 'inbound'), title: tWithDefault(t, 'audioRouting.scenarioInboundTitle'), value: configDraft.devices.inboundVoiceModelId,
+    },
+    ...(needsPrimaryTextWorker ? [{
+      active: true,
+      caption: tWithDefault(t, 'audioRouting.scenarioPrimaryTextCaption'),
+      icon: 'translate' as const,
+      modelName: primaryTextModelOption?.displayName || configDraft.devices.primaryTextTranslationModelId || '—',
+      modelOptions: textModelOptions,
+      modelProvider: primaryTextModelOption?.description || configDraft.devices.primaryTextTranslationModelId || '',
+      onSelect: (modelId: string) => updateDeviceDraft({ primaryTextTranslationModelId: modelId }),
+      tags: detectScenarioCapabilities(primaryTextModelOption, 'subtitle'),
+      title: tWithDefault(t, 'audioRouting.scenarioPrimaryTextTitle'),
+      value: configDraft.devices.primaryTextTranslationModelId ?? '',
+    }] : []),
+  ];
   const secondaryScenarioCards: ScenarioCardProps[] = [
     {
       caption: tWithDefault(t, 'audioRouting.scenarioSubtitleCaption'), enabled: configDraft.devices.outputSubtitlesEnabled,

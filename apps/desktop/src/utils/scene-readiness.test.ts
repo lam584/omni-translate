@@ -3,7 +3,7 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import { PENDING_PROBE_CHECKED_AT } from '../schema/provider-probe';
-import { formatSceneReadinessLabel, getAllSceneReadiness, getOverallReadiness, getSceneTone } from './scene-readiness';
+import { formatSceneReadinessLabel, getAllSceneReadiness, getWatchSceneReadiness, getOverallReadiness, getSceneTone } from './scene-readiness';
 
 /** Clones the shared config/runtime/audio mock trio for one readiness case. */
 function makeReadinessInputs() {
@@ -76,7 +76,86 @@ function makeWatchReadyRuntimeInputs() {
 }
 
 describe('scene readiness', () => {
-  it('shows provider verification blocker before the first verification attempt', () => {
+  it('does not require secondary translation for a native Watch route, including a stale saved reference', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeWatchReadyRuntimeInputs();
+    configDraft.devices.subtitleTranslationMode = 'native';
+    configDraft.devices.subtitleTranslationModelId = '';
+    configDraft.devices.virtualMicOutputEnabled = false;
+    configDraft.speech.outputTarget = 'speaker';
+    configDraft.speech.virtualMicOutputEnabled = false;
+    const withoutSecondary = getWatchSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(withoutSecondary.blockers).toEqual([]);
+    configDraft.devices.subtitleTranslationModelId = 'deleted-platform::unavailable-model';
+    const withSavedReference = getWatchSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(withSavedReference.blockers).toEqual(withoutSecondary.blockers);
+  });
+
+  it('reports an unregistered primary DashScope model without blaming the disabled secondary translation', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeWatchReadyRuntimeInputs();
+    const provider = configDraft.providers.find((entry) => entry.kind === 'dashscope')!;
+    configDraft.devices.inboundVoiceModelId = `${provider.templateId}::qwen3.8-omni-flash-realtime`;
+    configDraft.devices.subtitleTranslationMode = 'native';
+    configDraft.devices.subtitleTranslationModelId = '';
+    const readiness = getWatchSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    const protocolBlocker = readiness.blockers.find((blocker) => blocker.id.endsWith('-audio-protocol-qwen3.8-omni-flash-realtime'));
+    expect(protocolBlocker?.title).toContain('主音频模型');
+    expect(protocolBlocker?.title).toMatch(/model_protocol\.(model_not_registered|endpoint_host_region_mismatch)/);
+    expect(readiness.blockers.some((blocker) => blocker.id.includes('-text-protocol-'))).toBe(false);
+  });
+
+  it('blocks empty custom platforms and reports the missing protocol for each selected route', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeReadinessInputs();
+    const provider = configDraft.providers[0];
+    provider.templateId = 'template-custom-routing';
+    provider.templateSource = 'custom';
+    provider.kind = 'openai-compatible';
+    provider.model = '';
+    provider.candidateModelGroups = [];
+    provider.modelProtocolBindings = [];
+    configDraft.activeProviderTemplateId = provider.templateId;
+    const empty = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(empty.find((scene) => scene.mode === 'watch')?.blockers.some((blocker) => blocker.id === 'watch-empty-custom-platform')).toBe(true);
+
+    provider.candidateModelGroups = [
+      { group: 'realtime-multimodal', modelIds: ['voice-a'] },
+      { group: 'text-processing', modelIds: ['text-a'] },
+    ];
+    configDraft.devices.inboundVoiceModelId = `${provider.templateId}::voice-a`;
+    configDraft.devices.outboundVoiceModelId = `${provider.templateId}::voice-a`;
+    configDraft.devices.subtitleTranslationMode = 'secondary';
+    configDraft.devices.subtitleTranslationModelId = `${provider.templateId}::text-a`;
+    const missing = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(missing.find((scene) => scene.mode === 'watch')?.blockers.some((blocker) => blocker.id === 'watch-audio-protocol-voice-a')).toBe(true);
+    expect(missing.find((scene) => scene.mode === 'voice-room')?.blockers.some((blocker) => blocker.id === 'voice-room-text-protocol-text-a')).toBe(true);
+    provider.modelProtocolBindings = [
+      { modelId: 'voice-a', operation: 'realtime-translation', profileOwnerProviderId: 'openai', manifestVersion: 1, profileId: 'profile-voice', profileVersion: 1 },
+      { modelId: 'text-a', operation: 'text-translation', profileOwnerProviderId: 'openai', manifestVersion: 1, profileId: 'profile-text', profileVersion: 1 },
+    ];
+    const bound = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(bound.find((scene) => scene.mode === 'watch')?.blockers.some((blocker) => blocker.id.includes('-protocol-'))).toBe(false);
+    expect(bound.find((scene) => scene.mode === 'voice-room')?.blockers.some((blocker) => blocker.id.includes('-protocol-'))).toBe(false);
+  });  it('accepts exact known DashScope realtime authority at an official URL without a custom manifest binding', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeReadinessInputs();
+    const provider = configDraft.providers[0];
+    provider.templateId = 'template-custom-dashscope-official';
+    provider.templateSource = 'custom';
+    provider.kind = 'dashscope';
+    provider.transport = 'websocket';
+    provider.model = '';
+    provider.region = 'cn-beijing';
+    provider.baseUrl = 'https://dashscope.aliyuncs.com/api/v1';
+    provider.authRef.headerName = 'Authorization';
+    provider.authRef.scheme = 'bearer';
+    provider.candidateModelGroups = [{ group: 'realtime-multimodal', modelIds: ['qwen3.5-livetranslate-flash-realtime'] }];
+    provider.modelProtocolBindings = [];
+    configDraft.activeProviderTemplateId = provider.templateId;
+    configDraft.devices.inboundVoiceModelId = `${provider.templateId}::qwen3.5-livetranslate-flash-realtime`;
+    const authorized = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(authorized.find((scene) => scene.mode === 'watch')?.blockers.some((blocker) => blocker.id.includes('-protocol-'))).toBe(false);
+    provider.baseUrl = 'https://dashscope.aliyuncs.com.evil.test/api/v1';
+    const rejected = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+    expect(rejected.find((scene) => scene.mode === 'watch')?.blockers.some((blocker) => blocker.id.includes('-protocol-'))).toBe(true);
+  });  it('shows provider verification blocker before the first verification attempt', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     configDraft.providers[0].probe.profileId = 'probe-provider-dashscope-pending';
     configDraft.providers[0].probe.checkedAt = '待重新探测';

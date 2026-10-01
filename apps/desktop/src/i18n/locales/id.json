@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Pemeriksaan kemampuan pengecualian proses gagal: {{detail}}",
     "feedbackProcessExclusionProbing": "Dukungan pengecualian proses belum dikonfirmasi. Setelah pemilihan, Bridge menyelesaikan pemeriksaan saat Watch dimulai; penangkapan tidak akan dimulai sampai probe siap.",
     "feedbackNoneSelected": "Pengaturan kontrol tanpa umpan balik yang lama masih dipilih. Tontonan tidak dapat dimulai dengan ucapan yang diterjemahkan sampai Anda secara eksplisit memilih pengecualian proses, Driver Virtual, atau pembatalan gema.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Perutean Audio",
     "pageSubtitle": "White surface · embedded flow · single Model Entri · Langsung save · mobile-friendly",
     "overviewAria": "Perutean audio",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Speech recognition · Terjemahan · Speech",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Model teks primer",
+    "scenarioPrimaryTextCaption": "Terjemahan teks dasar untuk alur pengenalan suara",
+    "primaryTextModelRequired": "Model suara saat ini memerlukan pemilihan model terjemahan teks dasar"
   },
   "overlay": {
     "bootstrapFailed": "Overlay subtitel gagal diinisialisasi",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Skenario: {{scenario}}",
       "editCapabilitiesTitle": "Edit Kapabilitas Registri",
       "refreshTitle": "Segarkan Model catalog",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Tutup Model list",
       "allScenarios": "Penyedia",
       "searchPlaceholder": "Search Model...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Penyedia - Placeholder",
       "hideSecret": "Sembunyikan secret",
       "showSecret": "Tampilkan secret"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Scene Model",

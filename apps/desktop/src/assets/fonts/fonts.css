@@ -1,0 +1,100 @@
+/* Omni Translate Font Declarations - Google Noto Sans Variable Fonts */
+/* SIL Open Font License 1.1 - See OFL.txt and README.md for details */
+
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSans[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSans[wdth,wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./NotoSansSC[wght].ttf') format('truetype-variations'),
+       url('./NotoSansSC[wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans JP';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./NotoSansJP[wght].ttf') format('truetype-variations'),
+       url('./NotoSansJP[wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans KR';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./NotoSansKR[wght].ttf') format('truetype-variations'),
+       url('./NotoSansKR[wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Arabic';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSansArabic[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSansArabic[wdth,wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Devanagari';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSansDevanagari[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSansDevanagari[wdth,wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Bengali';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSansBengali[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSansBengali[wdth,wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Telugu';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSansTelugu[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSansTelugu[wdth,wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Tamil';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSansTamil[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSansTamil[wdth,wght].ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Thai';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62.5% 100%;
+  font-display: swap;
+  src: url('./NotoSansThai[wdth,wght].ttf') format('truetype-variations'),
+       url('./NotoSansThai[wdth,wght].ttf') format('truetype');
+}
+

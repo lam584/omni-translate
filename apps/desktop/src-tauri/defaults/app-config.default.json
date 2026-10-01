@@ -1395,6 +1395,7 @@
     "textToSpeechModelId": "",
     "subtitleTranslationMode": "native",
     "subtitleTranslationModelId": "",
+    "primaryTextTranslationModelId": "",
     "inputLevel": 100,
     "aecEnabled": true,
     "ansEnabled": true,

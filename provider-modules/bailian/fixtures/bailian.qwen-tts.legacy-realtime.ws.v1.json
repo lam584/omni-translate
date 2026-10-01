@@ -8,8 +8,8 @@
   "kind": "wire",
   "provenance": {
     "sourceDocumentationIds": [
-      "bailian.docs.29",
-      "bailian.docs.22"
+      "bailian.docs.32",
+      "bailian.docs.25"
     ],
     "capturedFromLive": false,
     "sanitized": true,
@@ -19,7 +19,7 @@
   "data": {
     "endpointStatus": "verified",
     "networkAuthorized": false,
-    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen-tts-realtime",
     "authContract": {
       "profileId": "bailian.auth.bearer",
       "parameters": [

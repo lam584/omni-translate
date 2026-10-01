@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "โพรบความสามารถในการแยกกระบวนการล้มเหลว: {{detail}}",
     "feedbackProcessExclusionProbing": "การสนับสนุนการแยกกระบวนการยังไม่ได้รับการยืนยัน หลังจากเลือกแล้ว Bridge จะทำการตรวจสอบให้เสร็จสิ้นเมื่อ Watch เริ่มทำงาน การจับจะไม่เริ่มจนกว่าโพรบจะพร้อม",
     "feedbackNoneSelected": "ยังคงเลือกการตั้งค่าการควบคุมแบบไม่มีข้อเสนอแนะแบบเดิมอยู่ นาฬิกาไม่สามารถเริ่มต้นด้วยคำพูดที่แปลแล้วจนกว่าคุณจะเลือกการแยกกระบวนการ ไดรเวอร์เสมือน หรือการยกเลิกเสียงก้องอย่างชัดเจน",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "การกำหนดเส้นทางเสียง",
     "pageSubtitle": "ตรวจสอบการตั้งค่าและสถานะของการกำหนดเส้นทางเสียง",
     "overviewAria": "การกำหนดเส้นทางเสียง",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "การรู้จำเสียง · การแปล · เสียงพูด",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "โมเดลข้อความหลัก",
+    "scenarioPrimaryTextCaption": "การแปลข้อความพื้นฐานสำหรับขั้นตอนการรู้จำเสียงพูด",
+    "primaryTextModelRequired": "โมเดลเสียงปัจจุบันจำเป็นต้องเลือกโมเดลแปลข้อความพื้นฐาน"
   },
   "overlay": {
     "bootstrapFailed": "เริ่มต้นหน้าต่างคำบรรยายไม่สำเร็จ",
@@ -876,6 +880,7 @@
       "scenarioBadge": "ผู้ให้บริการ - สถานการณ์ {{scenario}}",
       "editCapabilitiesTitle": "แก้ไข ความสามารถ รีจิสทรี",
       "refreshTitle": "รีเฟรชแคตตาล็อกโมเดล",
+      "loading": "Loading models and capability data…",
       "closeTitle": "ปิดรายการโมเดล",
       "allScenarios": "ผู้ให้บริการ",
       "searchPlaceholder": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "ผู้ให้บริการ - ตัวยึด",
       "hideSecret": "ผู้ให้บริการ - ซ่อน",
       "showSecret": "ผู้ให้บริการ - แสดง"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "ผู้ให้บริการ - ชื่อเรื่อง",

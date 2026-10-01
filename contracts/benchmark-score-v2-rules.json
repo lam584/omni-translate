@@ -25,6 +25,11 @@
     "audioToRenderFirst": { "good": 2000, "bad": 8000 },
     "audioToRenderFinal": { "good": 5000, "bad": 15000 }
   },
+  "latencyScoring": {
+    "badScore": 10,
+    "tailExponent": 2,
+    "aggregation": "geometric-mean"
+  },
   "stability": {
     "extraResponsePenalty": 5
   },

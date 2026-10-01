@@ -1,0 +1,300 @@
+{
+  "schemaVersion": "model-protocol-wire-fixture/v1",
+  "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+  "checkedAt": "2026-09-30",
+  "sanitized": true,
+  "sources": [
+    {
+      "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
+      "checkedAt": "2026-09-30"
+    },
+    {
+      "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
+      "checkedAt": "2026-09-30"
+    },
+    {
+      "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
+      "checkedAt": "2026-09-30"
+    },
+    {
+      "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+      "checkedAt": "2026-09-30"
+    }
+  ],
+  "sequence": [
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "session.created",
+      "wire": {
+        "type": "session.created",
+        "session": {
+          "id": "sess_fixture",
+          "voice": "longanqian",
+          "input_audio_format": "pcm",
+          "output_audio_format": "pcm",
+          "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "silence_duration_ms": 800
+          }
+        }
+      }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json",
+      "eventType": "session.update",
+      "wire": {
+        "event_id": "event_fixture_update",
+        "type": "session.update",
+        "session": {
+          "modalities": [
+            "text",
+            "audio"
+          ],
+          "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "silence_duration_ms": 800
+          },
+          "voice": "longanqian",
+          "input_audio_format": "pcm",
+          "output_audio_format": "pcm"
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "session.updated",
+      "wire": {
+        "type": "session.updated",
+        "session": {
+          "id": "sess_fixture",
+          "modalities": [
+            "text",
+            "audio"
+          ],
+          "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "silence_duration_ms": 800
+          },
+          "voice": "longanqian",
+          "input_audio_format": "pcm",
+          "output_audio_format": "pcm"
+        }
+      }
+    },
+    {
+      "direction": "client",
+      "frameKind": "json-base64",
+      "eventType": "input_audio_buffer.append",
+      "wire": {
+        "type": "input_audio_buffer.append",
+        "audio": "AAA="
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "conversation.item.ambient_audio_transcription.delta",
+      "wire": {
+        "type": "conversation.item.ambient_audio_transcription.delta",
+        "item_id": "item_ambient",
+        "content_index": 0,
+        "text": "hmm",
+        "stash": ""
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "conversation.item.ambient_audio_transcription.completed",
+      "wire": {
+        "type": "conversation.item.ambient_audio_transcription.completed",
+        "item_id": "item_ambient",
+        "content_index": 0,
+        "transcript": "hmm"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "input_audio_buffer.speech_stopped",
+      "wire": {
+        "type": "input_audio_buffer.speech_stopped",
+        "item_id": "item_ambient",
+        "audio_end_ms": 800,
+        "reason": "turn_invalid"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "input_audio_buffer.speech_stopped",
+      "wire": {
+        "type": "input_audio_buffer.speech_stopped",
+        "item_id": "item_input",
+        "audio_end_ms": 1200
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "input_audio_buffer.committed",
+      "wire": {
+        "type": "input_audio_buffer.committed",
+        "item_id": "item_input"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "conversation.item.input_audio_transcription.delta",
+      "wire": {
+        "type": "conversation.item.input_audio_transcription.delta",
+        "item_id": "item_input",
+        "content_index": 0,
+        "text": "hello",
+        "stash": " world"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "conversation.item.input_audio_transcription.delta",
+      "wire": {
+        "type": "conversation.item.input_audio_transcription.delta",
+        "item_id": "item_input",
+        "content_index": 0,
+        "text": "hello world",
+        "stash": ""
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "conversation.item.input_audio_transcription.completed",
+      "wire": {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "item_id": "item_input",
+        "content_index": 0,
+        "transcript": "hello world"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.created",
+      "wire": {
+        "type": "response.created",
+        "response": {
+          "id": "response_fixture",
+          "status": "in_progress"
+        }
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.text.delta",
+      "wire": {
+        "type": "response.text.delta",
+        "response_id": "response_fixture",
+        "item_id": "item_output",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "hello"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.text.done",
+      "wire": {
+        "type": "response.text.done",
+        "response_id": "response_fixture",
+        "item_id": "item_output",
+        "output_index": 0,
+        "content_index": 0,
+        "text": "hello"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.audio_transcript.delta",
+      "wire": {
+        "type": "response.audio_transcript.delta",
+        "response_id": "response_fixture",
+        "item_id": "item_output",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "hello"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.audio_transcript.done",
+      "wire": {
+        "type": "response.audio_transcript.done",
+        "response_id": "response_fixture",
+        "item_id": "item_output",
+        "output_index": 0,
+        "content_index": 0,
+        "transcript": "hello"
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json-base64",
+      "eventType": "response.audio.delta",
+      "wire": {
+        "type": "response.audio.delta",
+        "response_id": "response_fixture",
+        "item_id": "item_output",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "AAA="
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.audio.done",
+      "wire": {
+        "type": "response.audio.done",
+        "response_id": "response_fixture",
+        "item_id": "item_output",
+        "output_index": 0,
+        "content_index": 0
+      }
+    },
+    {
+      "direction": "server",
+      "frameKind": "json",
+      "eventType": "response.done",
+      "wire": {
+        "type": "response.done",
+        "response": {
+          "id": "response_fixture",
+          "status": "completed"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "capturedFromLive": false,
+    "networkAuthorized": false,
+    "verification": "fixture-only",
+    "sourcePreviewUpdateMode": "replaceable-snapshot",
+    "sourcePreviewAfterSecondEvent": "hello world",
+    "ambientSnapshotIsConversationInput": false,
+    "turnInvalidIsSpeechStoppedReasonNotEventType": true,
+    "responseDoneIsSessionTerminal": false,
+    "turnControl": "server_vad"
+  }
+}

@@ -200,6 +200,7 @@ CREATE TABLE audio_device_preferences (
   support_profile_id TEXT,
   subtitle_translation_mode TEXT,
   subtitle_translation_model_id TEXT,
+  primary_text_translation_model_id TEXT,
   inbound_voice_model_id TEXT,
   outbound_voice_model_id TEXT,
   text_to_speech_model_id TEXT,

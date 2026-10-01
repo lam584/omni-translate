@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "فشل مسبار قدرة استبعاد العملية: {{detail}}",
     "feedbackProcessExclusionProbing": "لم يتم تأكيد دعم استبعاد العمليات بعد. بعد التحديد، يقوم Bridge بإكمال التحقيق عند بدء المراقبة؛ لن يبدأ الالتقاط حتى يصبح المسبار جاهزًا.",
     "feedbackNoneSelected": "لا يزال الإعداد القديم لعدم التحكم في التعليقات محددًا. لا يمكن أن تبدأ المشاهدة بالكلام المترجم حتى تختار بشكل صريح استبعاد العملية أو Virtual Driver أو إلغاء الصدى.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "توجيه الصوت ",
     "pageSubtitle": "سطح أبيض · تدفق مضمن · إدخال نموذج واحد · حفظ مباشر · متوافق مع الهاتف المحمول",
     "overviewAria": "نظرة عامة على مسار الصوت",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "التعرف على الكلام · ترجمة · كلام",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "نموذج النص الأساسي",
+    "scenarioPrimaryTextCaption": "ترجمة النص الأساسي لخط أنابيب التعرف على الصوت",
+    "primaryTextModelRequired": "يتطلب نموذج الصوت الحالي اختيار نموذج ترجمة نصي أساسي"
   },
   "overlay": {
     "bootstrapFailed": "تعذر تهيئة نافذة الترجمة",
@@ -876,6 +880,7 @@
       "scenarioBadge": "السيناريو: {{scenario}}",
       "editCapabilitiesTitle": "تحرير سجل القدرات",
       "refreshTitle": "تحديث دليل النماذج",
+      "loading": "Loading models and capability data…",
       "closeTitle": "إغلاق قائمة النماذج",
       "allScenarios": "الكل",
       "searchPlaceholder": "البحث عن نماذج...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "السر",
       "hideSecret": "إخفاء السر",
       "showSecret": "إظهار السر"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "نماذج المشاهد",

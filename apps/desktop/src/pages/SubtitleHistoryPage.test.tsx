@@ -256,6 +256,22 @@ describe('SubtitleHistoryPage', () => {
     expect(view.container.textContent).toContain('refresh failed');
   });
 
+  it('shows a structured native history error rather than object coercion', async () => {
+    listSessions.mockRejectedValueOnce({
+      code: 'history.storage-unavailable',
+      message: 'History storage is unavailable',
+      details: { requestId: 'history-123' },
+    });
+    await view.render(<DesktopApiProvider api={api}><SubtitleHistoryPage /></DesktopApiProvider>);
+    await flushAsyncWork();
+
+    const alert = view.container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('History storage is unavailable');
+    expect(alert?.textContent).toContain('history.storage-unavailable');
+    expect(alert?.textContent).toContain('requestId=history-123');
+    expect(alert?.textContent).not.toContain('[object Object]');
+  });
+
   it('surfaces unexpected action rejections through the shared error handler', async () => {
     await view.render(<DesktopApiProvider api={api}><SubtitleHistoryPage /></DesktopApiProvider>);
     await flushAsyncWork();

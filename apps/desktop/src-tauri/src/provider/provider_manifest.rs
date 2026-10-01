@@ -203,8 +203,16 @@ impl AuthorizedProviderProtocol {
         provider: &ProviderDraftInput,
     ) -> ProviderDraftInput {
         let mut projected = provider.clone();
+        projected.model = self.model_id.clone();
         if let Some(header_name) = &self.canonical_auth_header_name {
             projected.auth_ref.header_name = header_name.clone();
+        }
+        if self.transport_kind == "sse"
+            && self.adapter_id == "openai-compatible-http"
+            && provider.transport == "websocket"
+            && provider.stream_enabled
+        {
+            projected.transport = "streaming-http".to_string();
         }
         if let Some(scheme) = &self.canonical_auth_scheme {
             projected.auth_ref.scheme = scheme.clone();
@@ -469,13 +477,24 @@ pub(crate) fn authorize_provider_operation(
     provider: &ProviderDraftInput,
     operation: &str,
 ) -> Result<Option<AuthorizedProviderProtocol>, String> {
+    authorize_provider_operation_for_model(provider, &provider.model, operation)
+}
+
+pub(crate) fn authorize_provider_operation_for_model(
+    provider: &ProviderDraftInput,
+    model_id: &str,
+    operation: &str,
+) -> Result<Option<AuthorizedProviderProtocol>, String> {
+    if model_id.trim().is_empty() {
+        return Err("provider_manifest.model_id_required: invocation model must not be empty".to_string());
+    }
     let bundle = bundle()?;
     let registered_manifest = provider_manifest(bundle, provider)?;
     let custom_provider = provider.template_id.starts_with("template-custom-");
     let declared_bindings = provider
         .model_protocol_bindings
         .iter()
-        .filter(|declaration| declaration.model_id == provider.model && declaration.operation == operation)
+        .filter(|declaration| declaration.model_id == model_id && declaration.operation == operation)
         .collect::<Vec<_>>();
 
     let (manifest, profile, declared_auth_profile_id, explicit_declaration) =
@@ -483,11 +502,11 @@ pub(crate) fn authorize_provider_operation(
             let model = manifest
                 .models
                 .iter()
-                .find(|model| model.id == provider.model)
+                .find(|model| model.id == model_id)
                 .ok_or_else(|| {
                     format!(
                         "provider_manifest.model_not_found: exact model '{}' is not registered by '{}'",
-                        provider.model, manifest.provider.id
+                        model_id, manifest.provider.id
                     )
                 })?;
             let binding = model
@@ -544,10 +563,10 @@ pub(crate) fn authorize_provider_operation(
             if provider.manifest_provider_id.is_some() {
                 return Err("provider_manifest.custom_owner_forbidden: a custom provider cannot claim a built-in template owner".to_string());
             }
-            if declared_bindings.len() != 1 || provider.model_protocol_bindings.len() != 1 {
+            if declared_bindings.len() != 1 {
                 return Err(format!(
-                    "provider_manifest.profile_declaration_required: custom provider '{}' must select one exact versioned binding for '{}'/{}",
-                    provider.provider_id, provider.model, operation
+                    "provider_manifest.profile_declaration_required: custom provider '{}' must select exactly one versioned binding for '{}'/{}",
+                    provider.provider_id, model_id, operation
                 ));
             }
             let declared = declared_bindings[0];
@@ -645,7 +664,16 @@ pub(crate) fn authorize_provider_operation(
                 profile.transport_id
             )
         })?;
-    if !transport_matches(&provider.transport, &transport.kind) {
+    // The text gateway already resolves an OpenAI-compatible WebSocket preference to
+    // streaming HTTP. Admit that exact custom SSE profile only when streaming is
+    // enabled; realtime WebSocket admission still requires its own transport.
+    let custom_text_streaming_fallback = custom_provider
+        && matches!(operation, "text" | "text-translation")
+        && profile.adapter.id == "openai-compatible-http"
+        && transport.kind == "sse"
+        && provider.transport == "websocket"
+        && provider.stream_enabled;
+    if !transport_matches(&provider.transport, &transport.kind) && !custom_text_streaming_fallback {
         return Err(format!(
             "provider_manifest.transport_mismatch: profile '{}' requires '{}', got '{}'",
             profile.id, transport.kind, provider.transport
@@ -675,7 +703,7 @@ pub(crate) fn authorize_provider_operation(
                 .ok_or_else(|| {
                     format!(
                         "provider_manifest.deployment_id_required: model '{}' requires an explicit deployment id",
-                        provider.model
+                        model_id
                     )
                 })?
                 .to_string(),
@@ -716,7 +744,7 @@ pub(crate) fn authorize_provider_operation(
     Ok(Some(AuthorizedProviderProtocol {
         manifest_version: manifest.manifest_version,
         provider_owner_id: manifest.provider.id.clone(),
-        model_id: provider.model.clone(),
+        model_id: model_id.to_string(),
         deployment_id,
         operation: operation.to_string(),
         profile_id: profile.id.clone(),
@@ -747,6 +775,16 @@ pub(crate) fn authorize_provider_operation(
 pub(crate) fn authorize_realtime_provider(
     provider: &ProviderDraftInput,
 ) -> Result<Option<AuthorizedProviderProtocol>, String> {
+    authorize_realtime_provider_for_model(provider, &provider.model)
+}
+
+pub(crate) fn authorize_realtime_provider_for_model(
+    provider: &ProviderDraftInput,
+    model_id: &str,
+) -> Result<Option<AuthorizedProviderProtocol>, String> {
+    if model_id.trim().is_empty() {
+        return Err("provider_manifest.model_id_required: invocation model must not be empty".to_string());
+    }
     let bundle = bundle()?;
     let manifest = provider_manifest(bundle, provider)?;
     let custom_provider = provider.template_id.starts_with("template-custom-");
@@ -754,17 +792,17 @@ pub(crate) fn authorize_realtime_provider(
         let model = manifest
             .models
             .iter()
-            .find(|model| model.id == provider.model)
+            .find(|model| model.id == model_id)
             .ok_or_else(|| {
                 format!(
                     "provider_manifest.model_not_found: exact model '{}' is not registered by '{}'",
-                    provider.model, manifest.provider.id
+                    model_id, manifest.provider.id
                 )
             })?;
         model.protocol_bindings.iter().map(|binding| binding.operation.as_str()).collect::<Vec<_>>()
     } else if custom_provider {
         provider.model_protocol_bindings.iter()
-            .filter(|binding| binding.model_id == provider.model)
+            .filter(|binding| binding.model_id == model_id)
             .map(|binding| binding.operation.as_str())
             .collect::<Vec<_>>()
     } else {
@@ -780,10 +818,10 @@ pub(crate) fn authorize_realtime_provider(
             provider.provider_id
         )),
         [] => Ok(None),
-        [operation] => authorize_provider_operation(provider, operation),
+        [operation] => authorize_provider_operation_for_model(provider, model_id, operation),
         _ => Err(format!(
             "provider_manifest.profile_ambiguous: model '{}' has multiple realtime operations",
-            provider.model
+            model_id
         )),
     }
 }
@@ -930,6 +968,7 @@ mod tests {
             .starts_with("provider_manifest.provider_owner_mismatch"));
     }
 
+
     fn workspace_provider() -> ProviderDraftInput {
         let mut provider = provider(
             "template-dashscope-workspace",
@@ -1057,6 +1096,141 @@ mod tests {
         assert!(authorize_realtime_provider(&stale)
             .unwrap_err()
             .starts_with("provider_manifest.manifest_version_mismatch"));
+    }
+
+    fn custom_text_binding(model: &str, operation: &str) -> super::super::contracts::ProviderModelProtocolBindingInput {
+        serde_json::from_value(json!({
+            "modelId": model,
+            "operation": operation,
+            "profileOwnerProviderId": "openai",
+            "manifestVersion": 3,
+            "profileId": "openai.chat-completions.sse.ga",
+            "profileVersion": 1,
+            "authProfileId": "openai.auth.bearer-header"
+        }))
+        .expect("text binding fixture")
+    }
+
+    #[test]
+    fn custom_bindings_select_the_actual_model_and_operation() {
+        let mut provider = custom_realtime_provider();
+        provider.model_protocol_bindings.push(custom_text_binding("private-text-model", "text-translation"));
+        provider.model_protocol_bindings.push(custom_text_binding("private-realtime-model", "text"));
+
+        let realtime = authorize_provider_operation(&provider, "realtime-conversation")
+            .expect("realtime authorization")
+            .expect("realtime authority");
+        assert_eq!(realtime.model_id, "private-realtime-model");
+        assert_eq!(realtime.profile_id, "openai.realtime.conversation.websocket.ga");
+        assert!(authorize_realtime_provider(&provider).unwrap().is_some());
+        let same_model_text = authorize_provider_operation(&provider, "text")
+            .expect("same-model text authorization")
+            .expect("same-model text authority");
+        assert_eq!(same_model_text.model_id, "private-realtime-model");
+        assert_eq!(same_model_text.operation, "text");
+        let projected = same_model_text.provider_for_connection(&provider);
+        assert_eq!(projected.transport, "streaming-http");
+        assert_eq!(crate::provider::gateway_parts::transport::resolve_transport(&provider).0, "streaming-http");
+        assert_eq!(crate::provider::gateway_parts::transport::resolve_transport(&projected).0, "streaming-http");
+        assert_eq!(projected.base_url, provider.base_url);
+        assert_eq!(projected.auth_ref, provider.auth_ref);
+
+        provider.model = "private-text-model".to_string();
+        let text = authorize_provider_operation(&provider, "text-translation")
+            .expect("text authorization")
+            .expect("text authority");
+        assert_eq!(text.model_id, "private-text-model");
+        assert_eq!(text.profile_id, "openai.chat-completions.sse.ga");
+        assert_eq!(text.provider_for_connection(&provider).transport, "streaming-http");
+        let mut non_streaming = provider.clone();
+        non_streaming.stream_enabled = false;
+        assert!(authorize_provider_operation(&non_streaming, "text-translation")
+            .unwrap_err()
+            .starts_with("provider_manifest.transport_mismatch"));
+        let mut insecure_text = provider.clone();
+        insecure_text.base_url = "http://gateway.example.test/v1".to_string();
+        assert!(authorize_provider_operation(&insecure_text, "text-translation")
+            .unwrap_err()
+            .starts_with("provider_manifest.endpoint_host_mismatch"));
+        let mut wrong_auth = provider.clone();
+        wrong_auth.model_protocol_bindings[1].auth_profile_id = Some("foreign-auth".to_string());
+        assert!(authorize_provider_operation(&wrong_auth, "text-translation")
+            .unwrap_err()
+            .starts_with("provider_manifest.auth_profile_not_allowed"));
+        assert!(authorize_provider_operation(&provider, "realtime-conversation")
+            .unwrap_err()
+            .starts_with("provider_manifest.profile_declaration_required"));
+    }
+
+    #[test]
+    fn second_candidate_authorizes_without_changing_provider_default_model() {
+        let mut provider = custom_realtime_provider();
+        provider.model_protocol_bindings.push(custom_text_binding("second-candidate", "text-translation"));
+
+        let authority = authorize_provider_operation_for_model(
+            &provider,
+            "second-candidate",
+            "text-translation",
+        )
+        .expect("candidate authorization")
+        .expect("candidate authority");
+        assert_eq!(provider.model, "private-realtime-model");
+        assert_eq!(authority.model_id, "second-candidate");
+        let connection = authority.provider_for_connection(&provider);
+        assert_eq!(connection.model, "second-candidate");
+        assert_eq!(connection.transport, "streaming-http");
+        assert!(authorize_realtime_provider_for_model(&provider, "second-candidate")
+            .unwrap_err()
+            .starts_with("provider_manifest.profile_declaration_required"));
+        assert!(authorize_provider_operation_for_model(&provider, "", "text-translation")
+            .is_err());
+    }
+
+    #[test]
+    fn realtime_route_uses_second_candidate_instead_of_provider_default() {
+        let mut provider = custom_realtime_provider();
+        let mut second = provider.model_protocol_bindings[0].clone();
+        second.model_id = "second-realtime-candidate".to_string();
+        provider.model_protocol_bindings.push(second);
+
+        let resolved = crate::audio::events::resolve_realtime_profile(
+            &provider,
+            "second-realtime-candidate",
+        );
+        assert_eq!(provider.model, "private-realtime-model");
+        assert_eq!(resolved.model_id, "second-realtime-candidate");
+        assert_eq!(resolved.model_protocol_error, None);
+        assert_eq!(
+            resolved.protocol_dialect,
+            Some(crate::audio::events::RealtimeProtocol::OpenAiConversation),
+        );
+    }
+
+    #[test]
+    fn custom_binding_rejects_duplicate_wrong_source_and_incompatible_operation() {
+        let mut provider = custom_realtime_provider();
+        provider.model_protocol_bindings.push(provider.model_protocol_bindings[0].clone());
+        assert!(authorize_provider_operation(&provider, "realtime-conversation")
+            .unwrap_err()
+            .starts_with("provider_manifest.profile_declaration_required"));
+
+        let mut wrong_source = custom_realtime_provider();
+        wrong_source.model_protocol_bindings[0].profile_owner_provider_id = "azure-openai".to_string();
+        assert!(authorize_provider_operation(&wrong_source, "realtime-conversation")
+            .unwrap_err()
+            .starts_with("provider_manifest.manifest_version_mismatch"));
+
+        let mut incompatible = custom_realtime_provider();
+        incompatible.model_protocol_bindings[0].operation = "text-translation".to_string();
+        assert!(authorize_provider_operation(&incompatible, "text-translation")
+            .unwrap_err()
+            .starts_with("provider_manifest.profile_operation_mismatch"));
+
+        let mut empty = custom_realtime_provider();
+        empty.model_protocol_bindings.clear();
+        assert!(authorize_provider_operation(&empty, "text-translation")
+            .unwrap_err()
+            .starts_with("provider_manifest.profile_declaration_required"));
     }
 
     #[test]

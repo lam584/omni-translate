@@ -11,6 +11,7 @@ import type {
   CredentialRefStatus,
   CredentialSecretPayload,
   ProviderModelCatalogRuntime,
+  ProviderModelMetadataRuntime,
   ProviderModelRuntime,
   ProviderProbeProfileRuntime,
   ProviderSmokeResult,
@@ -123,8 +124,8 @@ export class PreviewDesktopApi {
   }
 
   readonly provider = {
-    resolveRealtimeProfile: async (config: AppConfigDraft, modelReference: string) =>
-      resolveRealtimeProfile(config, modelReference),
+    resolveRealtimeProfile: async (config: AppConfigDraft, modelReference: string, operation?: import('../model-protocol/profile-registry').ModelProtocolOperation) =>
+      resolveRealtimeProfile(config, modelReference, { operation }),
     fetchModels: async (provider: ProviderDraft, presetModels: readonly ModelPreset[] = []): Promise<ProviderModelCatalogRuntime> => ({
       providerId: provider.providerId,
       endpoint: `${provider.baseUrl.replace(/\/$/, '')}/models`,
@@ -132,7 +133,10 @@ export class PreviewDesktopApi {
       models: presetModels.map(mapPresetToRuntimeModel),
       error: null,
     }),
-    probe: async (provider: ProviderDraft): Promise<ProviderProbeProfileRuntime> => ({
+    fetchModelMetadata: async (provider: ProviderDraft): Promise<ProviderModelMetadataRuntime> => ({
+      providerId: provider.providerId, endpoint: '', fetchedAt: new Date().toISOString(), models: [],
+      error: { code: 'request.invalid', message: '模型能力更新需要桌面运行环境。', retriable: false, httpStatus: null, providerCode: null, suggestion: null },
+    }),    probe: async (provider: ProviderDraft): Promise<ProviderProbeProfileRuntime> => ({
       id: defaultProviderProbeProfile.id,
       templateId: defaultProviderProbeProfile.templateId,
       providerId: defaultProviderProbeProfile.providerId,

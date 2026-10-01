@@ -146,6 +146,17 @@ i18n.on('languageChanged', (code) => {
   }
 });
 
+// Separate Webviews share localStorage, but each owns its own i18next instance.
+// Storage events only fire in *other* windows, so this does not loop.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== LANGUAGE_STORAGE_KEY || event.storageArea !== window.localStorage) return;
+    const code = isSupportedLanguage(event.newValue) ? event.newValue : defaultLanguage;
+    if (code !== i18n.language) {
+      void setUiLanguage(code).catch(() => { /* keep the current locale if its offline bundle cannot load */ });
+    }
+  });
+}
 export async function setUiLanguage(code: string): Promise<void> {
   if (!isSupportedLanguage(code)) {
     return;

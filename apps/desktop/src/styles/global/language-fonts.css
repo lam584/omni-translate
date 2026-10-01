@@ -1,0 +1,11 @@
+/* Locale-first bundled font stacks; fallback faces support mixed-script UI. */
+:root, :root[lang="zh-CN"] { --font-family-sans: "Noto Sans SC", "Noto Sans", "Noto Sans JP", "Noto Sans KR", "Noto Sans Arabic", "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Telugu", "Noto Sans Tamil", "Noto Sans Thai", sans-serif; }
+:root:is([lang="en"], [lang="es"], [lang="pt"], [lang="ru"], [lang="de"], [lang="id"], [lang="fr"], [lang="vi"], [lang="fil"], [lang="tr"]) { --font-family-sans: "Noto Sans", "Noto Sans SC", "Noto Sans JP", "Noto Sans KR", "Noto Sans Arabic", "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Telugu", "Noto Sans Tamil", "Noto Sans Thai", sans-serif; }
+:root[lang="ja"] { --font-family-sans: "Noto Sans JP", "Noto Sans", "Noto Sans SC", "Noto Sans KR", sans-serif; }
+:root[lang="ko"] { --font-family-sans: "Noto Sans KR", "Noto Sans", "Noto Sans SC", "Noto Sans JP", sans-serif; }
+:root[lang="ar"] { --font-family-sans: "Noto Sans Arabic", "Noto Sans", "Noto Sans SC", sans-serif; }
+:root:is([lang="hi"], [lang="mr"]) { --font-family-sans: "Noto Sans Devanagari", "Noto Sans", "Noto Sans SC", sans-serif; }
+:root[lang="bn"] { --font-family-sans: "Noto Sans Bengali", "Noto Sans", "Noto Sans SC", sans-serif; }
+:root[lang="te"] { --font-family-sans: "Noto Sans Telugu", "Noto Sans", "Noto Sans SC", sans-serif; }
+:root[lang="ta"] { --font-family-sans: "Noto Sans Tamil", "Noto Sans", "Noto Sans SC", sans-serif; }
+:root[lang="th"] { --font-family-sans: "Noto Sans Thai", "Noto Sans", "Noto Sans SC", sans-serif; }

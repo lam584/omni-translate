@@ -142,8 +142,7 @@ describe('PreviewDesktopApi', () => {
     expect(loaded.devices.inboundVoiceModelId).toBe('qwen3.5-livetranslate-flash-realtime');
     expect(loaded.devices.outboundVoiceModelId).toBe('qwen3.5-livetranslate-flash-realtime');
     expect(loaded.devices.subtitleTranslationMode).toBe('native');
-    expect(loaded.providers[0].sceneModelAssignments.find((item) => item.scenario === 'watch')?.modelIds)
-      .toEqual(['qwen3.5-livetranslate-flash-realtime']);
+    expect(loaded.providers[0].candidateModelGroups?.every((item) => item.modelIds.length === 0)).toBe(true);
 
     const next = draft();
     next.subtitles.overlayFontSize = 44;

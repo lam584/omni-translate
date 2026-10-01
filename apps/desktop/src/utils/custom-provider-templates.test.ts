@@ -8,7 +8,7 @@ import {
   writeCustomProviderTemplates,
   type CustomProviderTemplateDraft,
 } from './custom-provider-templates';
-import { customProviderProtocolProfileOptions } from '../provider-manifest/custom-profile-options';
+import { customProviderBinding, customProviderProtocolProfileOptions } from '../provider-manifest/custom-profile-options';
 
 function draft(overrides: Partial<CustomProviderTemplateDraft> = {}): CustomProviderTemplateDraft {
   return {
@@ -55,6 +55,22 @@ describe('custom provider templates', () => {
       region: undefined,
     });
     expect(template.defaultDraft.auth.reference).toBe('credential://provider/custom/custom-provider');
+  });
+
+  it('creates an empty platform without a model or inferred protocol', () => {
+    const template = createCustomProviderTemplate(draft({
+      kind: 'dashscope', model: ' ', protocolProfileKey: '', transport: 'websocket',
+      authHeaderName: ' X-API-Key ',
+    }));
+    expect(template.defaultDraft).toMatchObject({
+      model: '', transport: 'websocket', auth: { headerName: 'X-API-Key' },
+      modelProtocolBindings: [],
+    });
+    expect(writeCustomProviderTemplates([template]).ok).toBe(true);
+    expect(readCustomProviderTemplates()).toEqual([template]);
+    expect(customProviderTemplateToDraft(template).protocolProfileKey).toBe('');
+    expect(() => createCustomProviderTemplate(draft({ protocolProfileKey: '' })))
+      .toThrow('custom_provider.protocol_profile_required');
   });
 
   it('rejects DashScope custom templates until a native profile explicitly permits reuse', () => {
@@ -188,6 +204,54 @@ describe('custom provider templates', () => {
       wrongModel.id,
     ]);
     expect(result.error).toContain('require an explicit Protocol Profile');
+  });
+
+  it('preserves an unresolved legacy template when saving alongside a new platform', () => {
+    const legacy = createCustomProviderTemplate(draft());
+    legacy.id = 'template-custom-legacy-unbound';
+    delete legacy.defaultDraft.modelProtocolBindings;
+    legacy.defaultDraft.deploymentId = 'old-deployment';
+    window.localStorage.setItem('omni.customProviderTemplates', JSON.stringify([legacy]));
+    const [preserved] = readCustomProviderTemplates();
+    expect(writeCustomProviderTemplates([preserved!, createCustomProviderTemplate(draft({
+      displayName: 'New', model: '', protocolProfileKey: '',
+    }))]).ok).toBe(true);
+    expect(readCustomProviderTemplates()[0]).toEqual(legacy);
+
+    const updated = updateCustomProviderTemplate(legacy, draft({
+      displayName: 'Renamed', protocolProfileKey: '',
+    }));
+    expect(updated.defaultDraft.modelProtocolBindings).toBeUndefined();
+    expect(updated.defaultDraft.deploymentId).toBe('old-deployment');
+    expect(writeCustomProviderTemplates([updated]).ok).toBe(true);
+  });
+
+  it('validates multiple model/operation bindings and preserves them on update', () => {
+    const options = customProviderProtocolProfileOptions('openai-compatible');
+    const text = options.find((option) => option.operation === 'text-translation')!;
+    const realtime = options.find((option) => option.operation === 'realtime-conversation')!;
+    const template = createCustomProviderTemplate(draft({ protocolProfileKey: text.key }));
+    const other = customProviderBinding('openai-compatible', realtime.key, 'model-2')!;
+    const sameModelOtherOperation = customProviderBinding('openai-compatible', realtime.key, 'model-1')!;
+    template.defaultDraft.modelProtocolBindings!.push(other, sameModelOtherOperation);
+    expect(writeCustomProviderTemplates([template]).ok).toBe(true);
+    expect(readCustomProviderTemplates()).toEqual([template]);
+
+    const updated = updateCustomProviderTemplate(template, draft({
+      displayName: 'Renamed', protocolProfileKey: text.key,
+    }));
+    expect(updated.defaultDraft.modelProtocolBindings).toEqual([
+      template.defaultDraft.modelProtocolBindings![0], other, sameModelOtherOperation,
+    ]);
+    expect(writeCustomProviderTemplates([updated]).ok).toBe(true);
+    expect(customProviderTemplateToDraft(updated).protocolProfileKey).toBe(text.key);
+
+    const duplicate = structuredClone(template);
+    duplicate.defaultDraft.modelProtocolBindings!.push(structuredClone(other));
+    expect(writeCustomProviderTemplates([duplicate]).ok).toBe(false);
+    const unauthorized = structuredClone(template);
+    unauthorized.defaultDraft.modelProtocolBindings![1].authProfileId = 'unapproved';
+    expect(writeCustomProviderTemplates([unauthorized]).ok).toBe(false);
   });
 
   it('reports local-storage write failures without weakening validation', () => {

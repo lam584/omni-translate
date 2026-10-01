@@ -53,6 +53,19 @@ impl ResponseLedger {
         self.prune_completed_lineages();
     }
 
+    /// Invalid VAD input cannot seed the next response's fallback owner.
+    /// Never invalidate a source already owned by an active/completed response.
+    pub(super) fn discard_unanswered_source(&mut self, source_item_id: &str) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.lineages.retain(|lineage| {
+            let discard = lineage.source_item_id.as_deref() == Some(source_item_id)
+                && lineage.response_id.is_none() && !lineage.completed;
+            if discard { removed.push(lineage.cue_id.clone()); }
+            !discard
+        });
+        removed
+    }
+
     pub(super) fn bind_response(
         &mut self,
         response_id: Option<&str>,
@@ -350,4 +363,16 @@ mod tests {
             .expect("the oldest unfinished owner also remains addressable");
         assert_eq!(first.cue_id, "cue-0");
     }
+    #[test]
+    fn invalid_input_removes_only_unanswered_source_lineage() {
+        let mut ledger = ResponseLedger::default();
+        ledger.record_source("invalid-cue", Some("invalid-item"));
+        ledger.record_source("active-cue", Some("active-item"));
+        ledger.bind_response(Some("response"), Some("active-item"), None, None).unwrap();
+        assert_eq!(ledger.discard_unanswered_source("invalid-item"), vec!["invalid-cue"]);
+        assert!(ledger.discard_unanswered_source("active-item").is_empty());
+        assert!(ledger.bind_response(Some("other"), Some("invalid-item"), None, None).is_none());
+        assert_eq!(ledger.bind_response(Some("response"), Some("active-item"), None, None).unwrap().cue_id, "active-cue");
+    }
+
 }

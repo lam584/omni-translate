@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "model-protocol-families/v1",
+  "checkedAt": "2026-09-30",
+  "verification": "fixture-only",
+  "networkAuthorized": false,
+  "enabledBindings": [
+    {
+      "owner": "bailian",
+      "profileId": "bailian.livetranslate.realtime.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-livetranslate-session-ws-v1",
+      "dialectVersion": 1,
+      "adapterId": "desktop-livetranslate-session-v1",
+      "operations": [
+        "native_translate"
+      ],
+      "exactModelIds": [
+        "qwen3.5-livetranslate-flash-realtime"
+      ],
+      "terminalLifecycle": "session.finish->session.finished",
+      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/livetranslate-session.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.qwen-audio-chat.realtime.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+      "dialectVersion": 1,
+      "adapterId": "desktop-qwen-audio-session-v1",
+      "operations": [
+        "dialogue"
+      ],
+      "exactModelIds": [
+        "qwen-audio-3.0-realtime-plus",
+        "qwen-audio-3.0-realtime-flash"
+      ],
+      "terminalLifecycle": "owner-close-after-response-drain",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-session.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.task-asr.qwen-audio-3.0.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+      "dialectVersion": 1,
+      "adapterId": "desktop-qwen-audio-task-asr-v1",
+      "operations": [
+        "asr"
+      ],
+      "exactModelIds": [
+        "qwen-audio-3.0-asr-flash-streaming"
+      ],
+      "terminalLifecycle": "finish-task->task-finished",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-task-asr.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.task-tts.qwen-audio-3.0.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "dialectVersion": 1,
+      "adapterId": "desktop-qwen-audio-task-tts-v1",
+      "operations": [
+        "tts"
+      ],
+      "exactModelIds": [
+        "qwen-audio-3.0-tts-plus",
+        "qwen-audio-3.0-tts-flash"
+      ],
+      "terminalLifecycle": "finish-task->task-finished",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-task-tts.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.livetranslate.3_8.realtime.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-livetranslate-session-ws-v2",
+      "dialectVersion": 2,
+      "adapterId": "desktop-livetranslate-session-v2",
+      "operations": [
+        "native_translate"
+      ],
+      "exactModelIds": [
+        "qwen3.8-livetranslate-flash-realtime"
+      ],
+      "terminalLifecycle": "session.finish->session.finished",
+      "wireFixture": "provider-modules/bailian/fixtures/livetranslate-session-v2.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.qwen-audio.3_1.realtime.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+      "dialectVersion": 1,
+      "adapterId": "desktop-qwen-audio-session-v1",
+      "operations": [
+        "dialogue"
+      ],
+      "exactModelIds": [
+        "qwen-audio-3.1-realtime-plus"
+      ],
+      "terminalLifecycle": "owner-close-after-response-drain",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-session.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.omni.3_8.realtime.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-omni-realtime-ws-v2",
+      "dialectVersion": 2,
+      "adapterId": "desktop-omni-session-v2",
+      "operations": [
+        "dialogue"
+      ],
+      "exactModelIds": [
+        "qwen3.8-omni-flash-realtime"
+      ],
+      "terminalLifecycle": "owner-close-after-response-drain",
+      "wireFixture": "provider-modules/bailian/fixtures/omni-session-v2.json"
+    },
+    {
+      "owner": "bailian",
+      "profileId": "bailian.task-asr.qwen-audio-3.1.ws",
+      "profileVersion": 1,
+      "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+      "dialectVersion": 1,
+      "adapterId": "desktop-qwen-audio-task-asr-v1",
+      "operations": [
+        "asr"
+      ],
+      "exactModelIds": [
+        "qwen-audio-3.1-asr-flash-streaming"
+      ],
+      "terminalLifecycle": "finish-task->task-finished",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-task-asr-v31.json"
+    }
+  ]
+}

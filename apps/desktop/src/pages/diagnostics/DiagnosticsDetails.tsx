@@ -384,13 +384,14 @@ function BenchmarkScoreCard({ score }: { score: BenchmarkResultScore }) {
                     <td>{signal.runIndex + 1}</td>
                     <td>{signal.signal === 'audioToRenderFirst' ? i18n.t('diagnostics.benchmark.scoreFirstToken') : i18n.t('diagnostics.benchmark.scoreFirstCommitted')}</td>
                     <td>{signal.latencyMs == null ? '—' : `${signal.latencyMs.toFixed(1)}ms`}</td>
-                    <td>≤{signal.threshold.good}ms = 100; ≥{signal.threshold.bad}ms = 0</td>
-                    <td>{formatScoreValue(signal.score)}</td>
+                    <td>≤{signal.threshold.good}ms = 100; {signal.threshold.bad}ms = {score.thresholds.latencyScoring?.badScore ?? 10}; &gt;{signal.threshold.bad}ms: decays</td>
+                    <td>{signal.score != null && signal.score > 0 && signal.score < 1 ? signal.score.toFixed(3) : formatScoreValue(signal.score)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          {latency.evidence.runs?.length ? <p>{latency.evidence.runs.map((run) => `${i18n.t('diagnostics.benchmark.scoreRun', { run: run.runIndex + 1 })}: √(${i18n.t('diagnostics.benchmark.scoreFirstToken')} × ${i18n.t('diagnostics.benchmark.scoreFirstCommitted')}) = ${formatScoreValue(run.score)}`).join(' · ')}</p> : null}
         </details>
         <details>
           <summary>{i18n.t('watchReport.score.completeness')} · {formatScoreValue(completeness.score)}</summary>

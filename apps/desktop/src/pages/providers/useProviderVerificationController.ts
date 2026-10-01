@@ -2,7 +2,7 @@ import { beginCredentialVerificationChange, credentialVerificationPending, crede
 import { providerVerificationIdentity } from '../../utils/provider-draft-verification';
 import type { TFunction } from 'i18next';
 import { useEffect, useRef, useSyncExternalStore, type Dispatch, type SetStateAction } from 'react';
-import { fetchProviderModels, getProviderSecretStatus, readProviderSecret, runProviderProbe, runProviderSmoke, saveProviderSecret } from '../../runtime/provider-runtime';
+import { fetchProviderModelMetadata, fetchProviderModels, getProviderSecretStatus, readProviderSecret, runProviderProbe, runProviderSmoke, saveProviderSecret } from '../../runtime/provider-runtime';
 import type { ProviderDraft, ProviderModelCapabilityRegistryEntry } from '../../schema/config';
 import type { ProviderProbeProfileRuntime, ProviderSmokeResult } from '../../schema/provider-runtime';
 import type { ProviderTemplate } from '../../schema/provider-template';
@@ -41,6 +41,8 @@ export function useProviderVerificationController(params: Params) {
   const { activeProvider, activeTemplate, localModelCapabilityRegistry, modelCatalogSignature,
     providerRuntimeBlocked, providerRuntimeStatusMessage, setModelCatalog, setSecretDraft,
     setSecretStatusMessage, setSecretStored, setSecretVisible, t } = params;
+  const refreshRevision = useRef(0);
+  useEffect(() => () => { refreshRevision.current += 1; }, [activeProvider.providerId, activeProvider.templateId]);
   const credentialRevision = useSyncExternalStore(subscribeCredentialVerification, () => credentialVerificationRevision(activeProvider.authRef.reference));
   const verificationIdentity = providerVerificationIdentity(activeProvider);
   const mountedIdentity = useRef<string | null>(verificationIdentity);
@@ -138,51 +140,60 @@ export function useProviderVerificationController(params: Params) {
   };
 
   const refreshModelCatalog = async () => {
+    const revision = ++refreshRevision.current;
     if (params.providerRuntimeBlocked) {
       params.setModelCatalog(providersPageHelpers.createEmptyModelCatalog(
-        params.modelCatalogSignature,
-        'error',
+        params.modelCatalogSignature, 'error',
         blockedMessage(params.t('providers.actions.fetchModelList')),
       ));
       return false;
     }
-
     params.setModelCatalog((current) => ({ ...current, status: 'loading', error: null }));
-    try {
-      const catalog = await fetchProviderModels(params.activeProvider, []);
-      const models = normalizeProviderModels(catalog.models, params.localModelCapabilityRegistry);
-      const error = catalog.error?.message ?? (models.length === 0 ? params.t('providers.messages.emptyModelCatalog') : null);
-      const cache = providersPageHelpers.buildModelCatalogCache(
-        params.modelCatalogSignature,
-        'runtime',
-        models,
-        catalog.endpoint,
-        catalog.fetchedAt,
-        error,
-        params.activeProvider.templateId,
-        params.activeProvider.displayName,
-      );
-      updateActiveProviderDraft({ modelCatalogCache: cache });
-      params.setModelCatalog({
-        signature: params.modelCatalogSignature,
-        status: error ? 'error' : 'ready',
-        source: 'runtime',
-        models,
-        error,
-        fetchedAt: catalog.fetchedAt,
-        endpoint: catalog.endpoint,
-      });
-      return !error;
-    } catch (error) {
-      params.setModelCatalog(providersPageHelpers.createEmptyModelCatalog(
-        params.modelCatalogSignature,
-        'error',
-        providersPageHelpers.formatRuntimeErrorMessage(params.t('providers.messages.fetchModelCatalogFailed'), error),
-      ));
+    const provider = params.activeProvider;
+    const isCurrent = () => refreshRevision.current === revision && mountedIdentity.current === verificationIdentity;
+    const [catalogResult, metadataResult] = await Promise.allSettled([
+      fetchProviderModels(provider, []),
+      provider.kind === 'dashscope' ? fetchProviderModelMetadata(provider).then((result) => {
+        if (result.error) throw new Error(result.error.message);
+        if (result.providerId !== provider.providerId) throw new Error('Provider metadata response identity mismatch');
+        return result;
+      }) : Promise.resolve(null),
+    ]);
+    if (!isCurrent()) return false;
+    const metadataError = metadataResult.status === 'rejected'
+      ? providersPageHelpers.formatRuntimeErrorMessage(params.t('providers.messages.fetchModelCatalogFailed'), metadataResult.reason)
+      : null;
+    if (metadataResult.status === 'fulfilled' && metadataResult.value) {
+      const result = metadataResult.value;
+      updateActiveProviderDraft({ modelMetadataCache: {
+        source: 'bailian-api', fetchedAt: result.fetchedAt, endpoint: result.endpoint, models: result.models,
+      } });
+    }
+    if (catalogResult.status === 'rejected') {
+      params.setModelCatalog((current) => ({ ...current, status: 'error', error: [
+        providersPageHelpers.formatRuntimeErrorMessage(params.t('providers.messages.fetchModelCatalogFailed'), catalogResult.reason),
+        metadataError,
+      ].filter(Boolean).join('\n') }));
       return false;
     }
+    const catalog = catalogResult.value;
+    const models = normalizeProviderModels(catalog.models, params.localModelCapabilityRegistry);
+    const catalogError = catalog.error?.message ?? (models.length === 0 ? params.t('providers.messages.emptyModelCatalog') : null);
+    const error = [catalogError, metadataError].filter(Boolean).join('\n') || null;
+    if (!catalogError) {
+      const cache = providersPageHelpers.buildModelCatalogCache(
+        params.modelCatalogSignature, 'runtime', models, catalog.endpoint, catalog.fetchedAt,
+        null, provider.templateId, provider.displayName,
+      );
+      updateActiveProviderDraft({ modelCatalogCache: cache });
+    }
+    params.setModelCatalog({
+      signature: params.modelCatalogSignature,
+      status: error ? 'error' : 'ready', source: 'runtime', models,
+      error, fetchedAt: catalog.fetchedAt, endpoint: catalog.endpoint,
+    });
+    return !error;
   };
-
   const handleSecretSave = async () => {
     if (!params.secretDraft.trim() && !params.activeProvider.baseUrl.trim()) return;
     if (params.providerRuntimeBlocked) {

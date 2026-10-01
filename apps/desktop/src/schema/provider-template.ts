@@ -1,4 +1,4 @@
-import type { ProviderModelProtocolBinding, RealtimeProtocol } from './config';
+import type { CandidateModelGroupId, ProviderModelProtocolBinding, RealtimeProtocol } from './config';
 import type { ProviderAuthScheme, ProviderCapability, ProviderKind, ProviderTransport } from './provider-contract';
 
 export type ProviderTemplateSource = 'official' | 'community' | 'custom';
@@ -9,6 +9,7 @@ export type ModelPreset = {
   displayName: string;
   capabilities: ProviderCapability[];
   description: string;
+  suggestedCandidateGroups?: CandidateModelGroupId[];
 };
 
 export type ProviderTemplateFieldTier = 'required' | 'recommended' | 'advanced';

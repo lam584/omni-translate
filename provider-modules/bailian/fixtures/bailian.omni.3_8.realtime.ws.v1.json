@@ -1,0 +1,348 @@
+{
+  "$schema": "../../../contracts/provider-wire-fixture.schema.json",
+  "schemaVersion": "provider-wire-fixture/v1",
+  "id": "bailian.omni.3_8.realtime.ws.fixture.v1",
+  "providerId": "bailian",
+  "protocolProfileId": "bailian.omni.3_8.realtime.ws",
+  "protocolProfileVersion": 1,
+  "kind": "wire",
+  "provenance": {
+    "sourceDocumentationIds": [
+      "bailian.docs.38",
+      "bailian.docs.39",
+      "bailian.docs.40"
+    ],
+    "capturedFromLive": false,
+    "sanitized": true,
+    "notes": "Generated documentation fixture projection from provider-modules/bailian/fixtures/omni-session-v2.json; never authorizes paid calls."
+  },
+  "scenario": "Exact bailian.omni.3_8.realtime.ws protocol replay",
+  "data": {
+    "endpointStatus": "verified",
+    "networkAuthorized": false,
+    "connectionUrl": "wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen3.8-omni-flash-realtime",
+    "authContract": {
+      "profileId": "bailian.auth.bearer",
+      "parameters": [
+        {
+          "location": "header",
+          "name": "Authorization",
+          "value": "Bearer <redacted>"
+        }
+      ]
+    },
+    "audioContract": {
+      "input": {
+        "required": true,
+        "codecs": [
+          "pcm"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1,
+          2,
+          4
+        ]
+      },
+      "output": {
+        "required": true,
+        "codecs": [
+          "pcm"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ]
+      }
+    },
+    "events": [
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.created",
+        "wire": {
+          "type": "session.created",
+          "session": {
+            "id": "sess_fixture"
+          }
+        },
+        "type": "session.created"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.update",
+        "wire": {
+          "event_id": "event_fixture_update",
+          "type": "session.update",
+          "session": {
+            "modalities": [
+              "text",
+              "audio"
+            ],
+            "audio": {
+              "input": {
+                "format": {
+                  "type": "pcm",
+                  "sample_rate": 16000,
+                  "sample_format": "s16le",
+                  "channels": 1,
+                  "packing": "interleaved",
+                  "channel_layout": "mono"
+                }
+              },
+              "output": {
+                "voice": "Tina",
+                "format": {
+                  "type": "pcm",
+                  "sample_rate": 24000
+                }
+              }
+            },
+            "turn_detection": null,
+            "input_audio_transcription": {
+              "model": "qwen3-asr-flash-realtime"
+            }
+          }
+        },
+        "type": "session.update"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.updated",
+        "wire": {
+          "type": "session.updated",
+          "session": {
+            "id": "sess_fixture",
+            "modalities": [
+              "text",
+              "audio"
+            ],
+            "audio": {
+              "input": {
+                "format": {
+                  "type": "pcm",
+                  "sample_rate": 16000,
+                  "sample_format": "s16le",
+                  "channels": 1,
+                  "packing": "interleaved",
+                  "channel_layout": "mono"
+                }
+              },
+              "output": {
+                "voice": "Tina",
+                "format": {
+                  "type": "pcm",
+                  "sample_rate": 24000
+                }
+              }
+            },
+            "turn_detection": null,
+            "input_audio_transcription": {
+              "model": "qwen3-asr-flash-realtime"
+            }
+          }
+        },
+        "type": "session.updated"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json-base64",
+        "eventType": "input_audio_buffer.append",
+        "wire": {
+          "type": "input_audio_buffer.append",
+          "audio": "AAA="
+        },
+        "type": "input_audio_buffer.append",
+        "audio": "<redacted>"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "input_audio_buffer.commit",
+        "wire": {
+          "type": "input_audio_buffer.commit"
+        },
+        "type": "input_audio_buffer.commit"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "input_audio_buffer.committed",
+        "wire": {
+          "type": "input_audio_buffer.committed",
+          "item_id": "item_input"
+        },
+        "type": "input_audio_buffer.committed"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.input_audio_transcription.delta",
+        "wire": {
+          "type": "conversation.item.input_audio_transcription.delta",
+          "item_id": "item_input",
+          "content_index": 0,
+          "text": "hello",
+          "stash": " world"
+        },
+        "type": "conversation.item.input_audio_transcription.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.input_audio_transcription.delta",
+        "wire": {
+          "type": "conversation.item.input_audio_transcription.delta",
+          "item_id": "item_input",
+          "content_index": 0,
+          "text": "hello world",
+          "stash": ""
+        },
+        "type": "conversation.item.input_audio_transcription.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "conversation.item.input_audio_transcription.completed",
+        "wire": {
+          "type": "conversation.item.input_audio_transcription.completed",
+          "item_id": "item_input",
+          "content_index": 0,
+          "transcript": "hello world"
+        },
+        "type": "conversation.item.input_audio_transcription.completed"
+      },
+      {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "response.create",
+        "wire": {
+          "type": "response.create",
+          "response": {
+            "modalities": [
+              "text",
+              "audio"
+            ]
+          }
+        },
+        "type": "response.create"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.created",
+        "wire": {
+          "type": "response.created",
+          "response": {
+            "id": "response_fixture",
+            "status": "in_progress"
+          }
+        },
+        "type": "response.created"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.delta",
+        "wire": {
+          "type": "response.text.delta",
+          "response_id": "response_fixture",
+          "item_id": "item_output",
+          "output_index": 0,
+          "content_index": 0,
+          "delta": "hello"
+        },
+        "type": "response.text.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.text.done",
+        "wire": {
+          "type": "response.text.done",
+          "response_id": "response_fixture",
+          "item_id": "item_output",
+          "output_index": 0,
+          "content_index": 0,
+          "text": "hello"
+        },
+        "type": "response.text.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.audio_transcript.delta",
+        "wire": {
+          "type": "response.audio_transcript.delta",
+          "response_id": "response_fixture",
+          "item_id": "item_output",
+          "output_index": 0,
+          "content_index": 0,
+          "delta": "hello"
+        },
+        "type": "response.audio_transcript.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.audio_transcript.done",
+        "wire": {
+          "type": "response.audio_transcript.done",
+          "response_id": "response_fixture",
+          "item_id": "item_output",
+          "output_index": 0,
+          "content_index": 0,
+          "transcript": "hello"
+        },
+        "type": "response.audio_transcript.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json-base64",
+        "eventType": "response.audio.delta",
+        "wire": {
+          "type": "response.audio.delta",
+          "response_id": "response_fixture",
+          "item_id": "item_output",
+          "output_index": 0,
+          "content_index": 0,
+          "delta": "AAA="
+        },
+        "type": "response.audio.delta"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.audio.done",
+        "wire": {
+          "type": "response.audio.done",
+          "response_id": "response_fixture",
+          "item_id": "item_output",
+          "output_index": 0,
+          "content_index": 0
+        },
+        "type": "response.audio.done"
+      },
+      {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "response.done",
+        "wire": {
+          "type": "response.done",
+          "response": {
+            "id": "response_fixture",
+            "status": "completed"
+          }
+        },
+        "type": "response.done",
+        "terminal": true
+      }
+    ]
+  }
+}

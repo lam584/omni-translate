@@ -268,3 +268,26 @@ fn route_authority_binds_the_actual_endpoint_host_to_the_declared_region() {
     assert_eq!(nested_workspace.protocol_dialect, None);
     assert!(!nested_workspace.preconnect_allowed);
 }
+
+#[test]
+fn custom_dashscope_instance_uses_exact_registered_livetranslate_without_manifest_reuse() {
+    let mut provider = provider_fixture(
+        "qwen3.5-livetranslate-flash-realtime",
+        None,
+        None,
+        None,
+    );
+    provider.template_id = "template-custom-bailian-official".to_string();
+    provider.provider_id = "provider-custom-bailian-official".to_string();
+    provider.model_registry_version = Some(2);
+    provider.local_model_capability_registry.clear();
+    provider.model_protocol_bindings.clear();
+    let authorized = resolve_realtime_profile(&provider, &provider.model);
+    assert_eq!(authorized.protocol_dialect, Some(RealtimeProtocol::DashscopeLivetranslate));
+    assert!(authorized.preconnect_allowed);
+
+    provider.base_url = "https://dashscope.aliyuncs.com.evil.test/api/v1".to_string();
+    let rejected = resolve_realtime_profile(&provider, &provider.model);
+    assert_eq!(rejected.protocol_dialect, None);
+    assert!(!rejected.preconnect_allowed);
+}

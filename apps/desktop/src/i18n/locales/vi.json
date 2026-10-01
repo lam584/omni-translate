@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Thăm dò khả năng loại trừ quy trình không thành công: {{detail}}",
     "feedbackProcessExclusionProbing": "Hỗ trợ loại trừ quy trình vẫn chưa được xác nhận. Sau khi lựa chọn, Bridge hoàn thành việc thăm dò khi Đồng hồ bắt đầu; quá trình chụp sẽ không bắt đầu cho đến khi đầu dò sẵn sàng.",
     "feedbackNoneSelected": "Cài đặt kiểm soát không phản hồi cũ vẫn được chọn. Đồng hồ không thể bắt đầu bằng giọng nói được dịch cho đến khi bạn chọn loại trừ quy trình, Trình điều khiển ảo hoặc loại bỏ tiếng vang một cách rõ ràng.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Định tuyến âm thanh",
     "pageSubtitle": "Bề mặt trắng · luồng nhúng · mục nhập mô hình đơn · lưu trực tiếp · thân thiện với thiết bị di động",
     "overviewAria": "Tổng quan về tuyến đường âm thanh",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Nhận dạng giọng nói · Dịch thuật · Lời nói",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Mô hình văn bản chính",
+    "scenarioPrimaryTextCaption": "Dịch văn bản cơ bản cho chuỗi nhận dạng giọng nói",
+    "primaryTextModelRequired": "Mô hình giọng nói hiện tại yêu cầu chọn mô hình dịch văn bản cơ bản"
   },
   "overlay": {
     "bootstrapFailed": "Không thể khởi tạo lớp phủ phụ đề",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Kịch bản: {{scenario}}",
       "editCapabilitiesTitle": "Chỉnh sửa sổ đăng ký khả năng",
       "refreshTitle": "Làm mới danh mục mô hình",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Đóng danh sách mô hình",
       "allScenarios": "Tất cả",
       "searchPlaceholder": "Tìm kiếm mô hình...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "bí mật",
       "hideSecret": "Ẩn bí mật",
       "showSecret": "Hiển thị bí mật"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Mô hình cảnh",

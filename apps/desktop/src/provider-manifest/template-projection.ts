@@ -64,6 +64,7 @@ function presetForModel(
     model: model.id,
     displayName: existing?.displayName ?? model.displayName,
     capabilities: uiCapabilities(model),
+    suggestedCandidateGroups: existing?.suggestedCandidateGroups,
     description: [
       existing?.description ?? model.availability ?? `${model.displayName}（由 Provider Manifest 管理）`,
       verificationNote,
@@ -155,7 +156,15 @@ export function projectTemplateFromProviderManifest(template: ProviderTemplate):
       : group),
     // Discovery metadata is not execution authority. Disabled profiles remain
     // visible; resolver checks the adapter before any connection.
-    presetModels: (preserveConnectionDefaults ? manifest.models : enabledModels).map((model) => presetForModel(template, manifest, model)),
+    presetModels: [
+      ...(preserveConnectionDefaults ? manifest.models : enabledModels).map((model) => presetForModel(template, manifest, model)),
+      // Workspace-only discovery presets have no protocol binding in the shared
+      // manifest. Keep them visible without granting executable capabilities.
+      ...(template.id === 'template-dashscope-workspace'
+        ? template.presetModels.filter((preset) => !manifest.models.some((model) => model.id === preset.model))
+          .map((preset) => ({ ...preset, capabilities: [] }))
+        : []),
+    ],
   };
 }
 

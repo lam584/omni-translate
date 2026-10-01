@@ -21,8 +21,8 @@ pub(in crate::audio::omni) fn reconnect_socket<R: tauri::Runtime>(
     let session_cfg = build_omni_session_update_for_provider_with_output_mode(
         provider, voice, instructions, audio_mode, source_language, target_language, output_mode,
     );
-    if crate::audio::events::is_livetranslate_route_model(provider, &provider.model) {
-        crate::audio::bailian_protocol::admit_livetranslate_client_event_for_provider(
+    if provider.kind == "dashscope" {
+        crate::audio::bailian_dialogue::admit_client_event_for_provider(
             provider,
             &session_cfg,
         )?;

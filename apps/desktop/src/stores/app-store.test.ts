@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { RuntimeNotification } from '../schema/runtime-core';
+import type { ProviderDraft } from '../schema/config';
 import type { SubtitleDeltaRuntime } from '../schema/audio-runtime';
 import { applySubtitleDeltaToIndex, appStoreTestHelpers, useAppStore } from './app-store';
 
@@ -471,6 +472,25 @@ describe('app store', () => {
     expect(useAppStore.getState().activePresetId).toBe('preset-from-config');
   });
 
+  it('migrates old provider scene assignments exactly at hydration without losing user data', () => {
+    const draft = structuredClone(useAppStore.getState().configDraft);
+    const provider = draft.providers[0]!;
+    (provider as ProviderDraft & { sceneModelAssignments: unknown }).sceneModelAssignments = [{ scenario: 'watch', modelIds: ['old-user-model'] }];
+    provider.candidateModelGroups = undefined;
+    provider.authRef.reference = 'saved-key-ref';
+    provider.modelMetadataCache = { source: 'bailian-api', fetchedAt: '2026-01-01', models: [] };
+    useAppStore.getState().setConfigDraft(draft);
+    const loaded = useAppStore.getState().configDraft.providers[0]!;
+    expect(loaded).not.toHaveProperty('sceneModelAssignments');
+    expect(loaded.candidateModelGroups).toHaveLength(4);
+    expect(loaded.candidateModelGroups?.every(({ modelIds }) => modelIds.length === 0)).toBe(true);
+    expect(loaded.authRef.reference).toBe('saved-key-ref');
+    expect(loaded.modelMetadataCache).toEqual(provider.modelMetadataCache);
+    useAppStore.getState().updateActiveProviderDraft({ sceneModelAssignments: [{ scenario: 'game', modelIds: ['obsolete'] }] } as unknown as Partial<ProviderDraft>);
+    expect(useAppStore.getState().configDraft.providers[0]).not.toHaveProperty('sceneModelAssignments');
+    useAppStore.getState().updateProviders([{ ...loaded, sceneModelAssignments: [{ scenario: 'voice-room', modelIds: ['obsolete'] }] } as ProviderDraft]);
+    expect(useAppStore.getState().configDraft.providers[0]).not.toHaveProperty('sceneModelAssignments');
+  });
   it('uses legacy color and snapshot sequence defaults when fields are absent', () => {
     const legacyDraft = structuredClone(useAppStore.getState().configDraft);
     delete (legacyDraft.subtitles as Partial<typeof legacyDraft.subtitles>).overlayTextColor;
@@ -620,5 +640,93 @@ describe('app store', () => {
     });
     expect(res).toBe("applied");
     expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.activeCue?.cueId).toBe("cue-1");
+  });
+});
+
+
+describe('primary text translation configuration migration', () => {
+  beforeEach(resetStore);
+
+  function legacyConfig() {
+    const config = structuredClone(initialState.configDraft);
+    const devices: Partial<typeof config.devices> = { ...config.devices };
+    delete devices.primaryTextTranslationModelId;
+    config.devices = devices as typeof config.devices;
+    config.devices.inboundVoiceModelId = 'template-dashscope-realtime::qwen3-asr-flash-realtime';
+    config.devices.outboundVoiceModelId = 'template-dashscope-realtime::qwen3.5-omni-flash-realtime';
+    config.devices.subtitleTranslationModelId = 'template-dashscope-realtime::qwen-plus';
+    config.providers[0].localModelCapabilityRegistry = [
+      { id: 'legacy-text', modelId: 'qwen-plus', capabilities: ['text-generation'] },
+      { id: 'legacy-asr', modelId: 'qwen3-asr-flash-realtime', capabilities: ['speech-to-text'] },
+    ];
+    return config;
+  }
+
+  it('copies an exact ASR translator only while the new key is missing, preserving the entire input', () => {
+    const config = legacyConfig();
+    const before = structuredClone(config);
+    expect(appStoreTestHelpers.migratePrimaryTextTranslationModel(config)).toBe('template-dashscope-realtime::qwen-plus');
+    expect(config).toEqual(before);
+    useAppStore.getState().setConfigDraft(config);
+    const hydrated = useAppStore.getState().configDraft;
+    expect(hydrated.devices.primaryTextTranslationModelId).toBe(config.devices.subtitleTranslationModelId);
+    expect(hydrated.devices.subtitleTranslationModelId).toBe(config.devices.subtitleTranslationModelId);
+    expect(hydrated.providers[0].model).toBe(config.providers[0].model);
+    expect(hydrated.providers[0].authRef).toEqual(config.providers[0].authRef);
+  });
+
+  it.each(['', 'explicit::primary'])('preserves an explicitly saved primary value %j on JSON rehydration', (primary) => {
+    const config = legacyConfig();
+    config.devices.primaryTextTranslationModelId = primary;
+    useAppStore.getState().setConfigDraft(config);
+    const saved = JSON.parse(JSON.stringify(useAppStore.getState().configDraft));
+    resetStore();
+    useAppStore.getState().setConfigDraft(saved);
+    expect(useAppStore.getState().configDraft.devices.primaryTextTranslationModelId).toBe(primary);
+    expect(useAppStore.getState().configDraft.devices.subtitleTranslationModelId).toBe('template-dashscope-realtime::qwen-plus');
+  });
+
+  it.each(['name-only-asr-spoof', 'qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime'])('does not infer a text-worker pipeline from %s', (model) => {
+    const config = legacyConfig();
+    config.devices.inboundVoiceModelId = 'template-dashscope-realtime::' + model;
+    expect(appStoreTestHelpers.migratePrimaryTextTranslationModel(config)).toBe('');
+  });
+
+  it.each(['missing-provider', 'missing-model', 'non-text', 'disabled'])('does not migrate an invalid old translator: %s', (kind) => {
+    const config = legacyConfig();
+    if (kind === 'missing-provider') config.devices.subtitleTranslationModelId = 'missing::qwen-plus';
+    if (kind === 'missing-model') config.devices.subtitleTranslationModelId = 'template-dashscope-realtime::nonexistent';
+    if (kind === 'non-text') config.devices.subtitleTranslationModelId = 'template-dashscope-realtime::qwen3-asr-flash-realtime';
+    if (kind === 'disabled') Object.assign(config.providers[0], { enabled: false });
+    expect(appStoreTestHelpers.migratePrimaryTextTranslationModel(config)).toBe('');
+  });
+
+  it('migrates an explicitly authorized text-translation binding without advisory text capabilities', () => {
+    const config = legacyConfig();
+    const provider = structuredClone(config.providers[0]);
+    provider.templateId = 'template-custom-authorized-text';
+    provider.providerId = 'custom-authorized-text';
+    provider.kind = 'openai-compatible';
+    provider.model = 'provider-default-not-selected';
+    provider.baseUrl = 'https://example.com/v1';
+    provider.transport = 'streaming-http';
+    provider.localModelCapabilityRegistry = [];
+    provider.modelProtocolBindings = [{
+      modelId: 'authorized-text', operation: 'text-translation', profileOwnerProviderId: 'openai',
+      manifestVersion: 3, profileId: 'openai.chat-completions.sse.ga', profileVersion: 1,
+      authProfileId: 'openai.auth.bearer-header',
+    }];
+    config.providers.push(provider);
+    config.devices.subtitleTranslationModelId = 'template-custom-authorized-text::authorized-text';
+    expect(appStoreTestHelpers.migratePrimaryTextTranslationModel(config)).toBe(config.devices.subtitleTranslationModelId);
+    provider.modelProtocolBindings[0].profileVersion = 999;
+    expect(appStoreTestHelpers.migratePrimaryTextTranslationModel(config)).toBe('');
+  });
+
+  it('requires an unambiguous bare translator instead of choosing the first provider', () => {
+    const config = legacyConfig();
+    config.devices.subtitleTranslationModelId = 'qwen-plus';
+    config.providers.push({ ...structuredClone(config.providers[0]), templateId: 'another-template', providerId: 'another-provider' });
+    expect(appStoreTestHelpers.migratePrimaryTextTranslationModel(config)).toBe('');
   });
 });

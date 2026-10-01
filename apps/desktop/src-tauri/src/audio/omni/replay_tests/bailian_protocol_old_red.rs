@@ -82,6 +82,16 @@ fn poll_one_livetranslate_socket<C: RealtimeSocketConnector>(
     connector: &C,
     slice: WorkerSlice,
 ) -> Result<(), String> {
+    poll_one_socket_with_drain(harness, socket, connector, slice, false)
+}
+
+fn poll_one_socket_with_drain<C: RealtimeSocketConnector>(
+    harness: &ReplayHarness,
+    socket: C::Socket,
+    connector: &C,
+    slice: WorkerSlice,
+    dialogue_draining: bool,
+) -> Result<(), String> {
     let app = harness.handle();
     let store = harness.store();
     let recorder = crate::diagnostics::model_trace::ModelTraceRecorder::new(
@@ -156,6 +166,7 @@ fn poll_one_livetranslate_socket<C: RealtimeSocketConnector>(
             buffer_size: 0,
             pre_session_audio_queue_len: 0,
             pre_session_audio_dropped: 0,
+            dialogue_draining,
             echo_guard_enabled: false,
         },
         connector,
@@ -891,4 +902,24 @@ fn production_replay_normalizes_audio_text_alias_before_strict_terminal_commit()
     let terminal = store.strict_watch_terminal_lifecycle_snapshot().unwrap();
     assert_eq!(terminal.last_response_terminal.response_id, "response-audio");
     assert_eq!(terminal.final_renderer_ack.cue_id, cue.cue_id);
+}
+
+#[test]
+fn dialogue_drain_owns_deadline_instead_of_cancel_grace_reconnect() {
+    for draining in [false, true] {
+        let mut harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+        harness.provider.model = "qwen-audio-3.1-realtime-plus".to_string();
+        let mut slice = WorkerSlice::new();
+        slice.event_diagnostics.begin_native_response_lifecycle(Some("draining-response"));
+        slice.event_diagnostics.mark_native_response_cancel_sent(Instant::now() - Duration::from_secs(3));
+        assert!(matches!(slice.event_diagnostics.native_response_stall_action(Instant::now(), harness.provider.timeout_ms, true), ResponseStallAction::Reconnect));
+        let (socket, observation) = RawTextLifecycleSocket::new(vec![Message::Pong(Vec::new().into())]);
+        let result = poll_one_socket_with_drain(&harness, socket, &NoReconnectRawTextConnector, slice, draining);
+        if draining {
+            result.expect("shutdown must retain its longer terminal deadline");
+        } else {
+            assert!(result.unwrap_err().contains("must fail before reconnect"), "normal watchdog must still attempt recovery outside shutdown");
+        }
+        assert_eq!(observation.reads.load(Ordering::SeqCst), 1, "draining still polls provider events");
+    }
 }

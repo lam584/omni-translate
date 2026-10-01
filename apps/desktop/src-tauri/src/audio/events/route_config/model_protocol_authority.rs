@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn parse_realtime_protocol(value: &str) -> Option<RealtimeProtocol> {
     match value.trim() {
         "dashscope-omni" => Some(RealtimeProtocol::DashscopeOmni),
+        "dashscope-qwen-audio" => Some(RealtimeProtocol::DashscopeQwenAudio),
         "dashscope-livetranslate" => Some(RealtimeProtocol::DashscopeLivetranslate),
         "dashscope-asr" => Some(RealtimeProtocol::DashscopeAsr),
         "openai-conversation" => Some(RealtimeProtocol::OpenAiConversation),
@@ -27,12 +28,36 @@ pub(super) fn registry_protocol(
 pub(super) fn bailian_protocol_from_authority(
     authority: &AuthorizedModelProtocolProfile,
 ) -> Option<RealtimeProtocol> {
-    match authority.wire_dialect.as_str() {
-        "bailian-livetranslate-session-ws-v1" | "bailian-livetranslate-session-ws-v2" => {
+    match (authority.adapter_id.as_str(), authority.wire_dialect.as_str(), authority.wire_dialect_version) {
+        ("desktop-livetranslate-session-v1", "bailian-livetranslate-session-ws-v1", 1)
+        | ("desktop-livetranslate-session-v2", "bailian-livetranslate-session-ws-v2", 2) => {
             Some(RealtimeProtocol::DashscopeLivetranslate)
         }
+        ("desktop-omni-session-v2", "bailian-omni-realtime-ws-v2", 2) => Some(RealtimeProtocol::DashscopeOmni),
+        ("desktop-qwen-audio-session-v1", "bailian-qwen-audio-chat-realtime-ws-v1", 1) => Some(RealtimeProtocol::DashscopeQwenAudio),
+        ("desktop-qwen-audio-task-asr-v1", "bailian-qwen-audio-asr-task-ws-v1", 1) => Some(RealtimeProtocol::DashscopeAsr),
         _ => None,
     }
+}
+
+/// Exact dialect descriptors choose the operation before admission, never by model prefix.
+pub(super) fn primary_bailian_operation(provider: &ProviderDraftInput, model: &str) -> Result<&'static str, String> {
+    let profiles = crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(model)
+        .map_err(|error| error.to_string())?;
+    if profiles.len() > 1 { return Err("model_protocol.profile_ambiguous: explicit primary operation is required".to_string()); }
+    if let Some(profile) = profiles.first() {
+        return Ok(match profile.wire_dialect.as_str() {
+            "bailian-omni-realtime-ws-v2" | "bailian-qwen-audio-chat-realtime-ws-v1" => "dialogue",
+            "bailian-qwen-audio-asr-task-ws-v1" => "asr",
+            _ => "native_translate",
+        });
+    }
+    let bindings: Vec<_> = provider.model_protocol_bindings.iter().filter(|b| b.model_id == model
+        && matches!(b.operation.as_str(), "realtime-translation" | "realtime-conversation" | "asr" | "realtime-transcription")).collect();
+    if bindings.len() > 1 { return Err("model_protocol.profile_ambiguous: explicit primary operation is required".to_string()); }
+    Ok(match bindings.first().map(|b| b.operation.as_str()) {
+        Some("realtime-conversation") => "dialogue", Some("asr" | "realtime-transcription") => "asr", _ => "native_translate",
+    })
 }
 
 pub(super) fn resolve_bailian_model_protocol_authority(
@@ -132,37 +157,47 @@ pub(super) fn resolve_bailian_model_protocol_authority(
     // may then supply its audited production media contract; model-name or UI
     // capability metadata never selects these values.
     let inspected_authority = authorize(None, None)?;
-    let authority = if crate::audio::bailian_protocol::is_supported_authority(&inspected_authority) {
+    let realtime_codec = if crate::audio::bailian_dialogue::is_supported_authority(&inspected_authority) { "pcm" } else { "pcm16" };
+    let authority = if crate::audio::bailian_protocol::is_supported_authority(&inspected_authority)
+        || crate::audio::bailian_dialogue::is_supported_authority(&inspected_authority) {
         authorize(
             Some(ModelProtocolRequestedAudio {
-                codec: "pcm16",
+                codec: realtime_codec,
                 sample_rate_hz: 16_000,
                 channels: 1,
             }),
             Some(ModelProtocolRequestedAudio {
-                codec: "pcm16",
+                codec: realtime_codec,
                 sample_rate_hz: 24_000,
                 channels: 1,
             }),
         )?
-    } else {
-        inspected_authority
-    };
+    } else if inspected_authority.adapter_id == "desktop-qwen-audio-task-asr-v1" {
+        authorize(Some(ModelProtocolRequestedAudio { codec: "pcm", sample_rate_hz: 16_000, channels: 1 }), None)?
+    } else if inspected_authority.adapter_id == "desktop-qwen-audio-task-tts-v1" {
+        authorize(None, Some(ModelProtocolRequestedAudio { codec: "pcm", sample_rate_hz: 24_000, channels: 1 }))?
+    } else { inspected_authority };
     if binding.is_some() {
         let endpoint = url::Url::parse(provider.base_url.trim()).map_err(|_| "model_protocol.endpoint_host_required".to_string())?;
         let path = endpoint.path().trim_end_matches('/');
         if !matches!(endpoint.scheme(), "https" | "wss") || !endpoint.username().is_empty() || endpoint.password().is_some()
-            || !["", "/api/v1", "/compatible-mode/v1", authority.endpoint_path.as_str()].contains(&path) {
+            || !["", "/api/v1", "/compatible-mode/v1", "/api-ws/v1/realtime", "/api-ws/v1/inference"].contains(&path) {
             return Err("model_protocol.endpoint_family_mismatch: explicit binding requires an official secure endpoint path".to_string());
         }
     }
-    if bailian_protocol_from_authority(&authority).is_none() {
+    if bailian_protocol_from_authority(&authority).is_none()
+        && !(authority.adapter_id == "desktop-qwen-audio-task-tts-v1" && authority.wire_dialect == "bailian-speech-synthesizer-duplex-task-ws-v1") {
         return Err(format!(
             "model_protocol.adapter_unavailable: authorized wire dialect '{}' has no Desktop route adapter",
             authority.wire_dialect
         ));
     }
     Ok(authority)
+}
+
+pub(crate) fn authorize_bailian_realtime(provider: &ProviderDraftInput) -> Result<AuthorizedModelProtocolProfile, String> {
+    let operation = primary_bailian_operation(provider, &provider.model)?;
+    authorize_bailian_model_operation(provider, &provider.model, operation)
 }
 
 pub(crate) fn authorize_bailian_native_translate(

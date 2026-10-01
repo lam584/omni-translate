@@ -39,7 +39,7 @@ import type { AppConfigDraft, DiagnosticsExportScope, ProviderDraft, RealtimeAud
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
 import type { ModelPreset } from '../schema/provider-template';
-import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
+import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderModelMetadataRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
 import type {
   BenchmarkHistoryClearResult,
   BenchmarkHistoryDeleteResult,
@@ -135,16 +135,17 @@ export class DesktopApiV2 {
   constructor(private readonly invokeFn: InvokeFn = invoke) {}
 
   readonly provider = {
-    resolveRealtimeProfile: async (config: AppConfigDraft, modelReference: string) =>
+    resolveRealtimeProfile: async (config: AppConfigDraft, modelReference: string, operation?: import('../model-protocol/profile-registry').ModelProtocolOperation) =>
       unwrap(await this.invokeFn<ServiceResult<ResolvedRealtimeProfile>>('provider_v2', {
-        command: { action: 'resolveRealtimeProfile', config, modelReference } satisfies ProviderCommandV2,
+        command: { action: 'resolveRealtimeProfile', config, modelReference, ...(operation ? { operation } : {}) } satisfies ProviderCommandV2,
       })),
     // `presetModels` is a preview-implementation hint (the browser preview
     // builds its catalog from the preset list); the native provider service
     // resolves the catalog itself and ignores it.
     fetchModels: async (provider: ProviderDraft, _presetModels?: readonly ModelPreset[]) =>
       unwrap(await this.invokeFn<ServiceResult<ProviderModelCatalogRuntime>>('provider_v2', { command: { action: 'fetchModels', provider } satisfies ProviderCommandV2 })),
-    probe: async (provider: ProviderDraft) =>
+    fetchModelMetadata: async (provider: ProviderDraft) =>
+      unwrap(await this.invokeFn<ServiceResult<ProviderModelMetadataRuntime>>('provider_v2', { command: { action: 'fetchModelMetadata', provider } satisfies ProviderCommandV2 })),    probe: async (provider: ProviderDraft) =>
       unwrap(await this.invokeFn<ServiceResult<ProviderProbeProfileRuntime>>('provider_v2', { command: { action: 'probe', provider } satisfies ProviderCommandV2 })),
     smoke: async (provider: ProviderDraft, sourceText?: string, sourceLanguage?: string, targetLanguage?: string) =>
       unwrap(await this.invokeFn<ServiceResult<ProviderSmokeResult>>('provider_v2', {

@@ -119,9 +119,24 @@ fn run_model_benchmark_with_sink(
             .map(|authority| authority.wire_model_id().to_string())
             .unwrap_or_else(|| model.clone()),
         audio_mode,
-        interaction_capabilities: if provider.as_ref().is_some_and(|provider| provider.model_registry_version == Some(2)) {
-            resolved_profile.as_ref().map(|profile| profile.interaction_capabilities.clone()).unwrap_or_default()
-        } else { interaction_capabilities.unwrap_or_default() },
+        interaction_capabilities: {
+            let mut caps = if provider.as_ref().is_some_and(|provider| provider.model_registry_version == Some(2)) {
+                resolved_profile.as_ref().map(|profile| profile.interaction_capabilities.clone()).unwrap_or_default()
+            } else { interaction_capabilities.unwrap_or_default() };
+            let is_livetranslate = resolved_profile.as_ref().and_then(|p| p.protocol_dialect) == Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
+                || model_protocol_authority.as_ref().is_some_and(|auth| auth.profile_id.starts_with("bailian.livetranslate"))
+                || model.to_ascii_lowercase().contains("livetranslate");
+            if is_livetranslate {
+                caps.retain(|c| !matches!(c.to_ascii_lowercase().as_str(), "pipeline_asr_mt_tts" | "server_commit_tts" | "commit_tts" | "text_only_backend"));
+                if !caps.iter().any(|c| c == "auto_vad") {
+                    caps.push("auto_vad".to_string());
+                }
+                if !caps.iter().any(|c| c == "streaming") {
+                    caps.push("streaming".to_string());
+                }
+            }
+            caps
+        },
         provider_kind: requested_provider_kind,
         base_url: base_url
             .filter(|value| !value.trim().is_empty())
@@ -228,6 +243,10 @@ fn run_model_benchmark_with_sink(
         audio_send_ms: result.audio_send_ms,
         audio_chunks_sent: result.audio_chunks_sent,
         audio_duration_secs: audio_duration,
+        audio_started_at_ms: Some(0.0),
+        audio_start_origin: Some("provider-offset".to_string()),
+        audio_to_render_first_ms: result.raw.first_output_ms,
+        audio_to_render_final_ms: result.raw.response_done_ms.or(result.raw.first_committed_ms),
         first_asr_ms: result.raw.first_asr_ms,
         asr_deltas: result.raw.asr_deltas,
         asr_final: result.raw.asr_final,

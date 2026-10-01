@@ -8,6 +8,13 @@ import {
 } from './overlayTypography';
 
 describe('subtitle overlay typography', () => {
+  it('uses the active UI font for historical defaults while preserving custom fonts', () => {
+    const subtitles = structuredClone(appConfigDraftMock.subtitles);
+    expect((buildSubtitleOverlayCssVariables(subtitles) as Record<string, string>)['--subtitle-overlay-font-family']).toBe('var(--font-family-sans)');
+    subtitles.overlayFontFamily = '"Noto Serif SC", serif';
+    expect((buildSubtitleOverlayCssVariables(subtitles) as Record<string, string>)['--subtitle-overlay-font-family']).toBe('"Noto Serif SC", serif');
+  });
+
   it('builds independent source and translation effects with a single text alpha composition', () => {
     const subtitles = structuredClone(appConfigDraftMock.subtitles);
     subtitles.overlayOpacity = 0.5;

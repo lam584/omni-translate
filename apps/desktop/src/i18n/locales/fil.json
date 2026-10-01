@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Nabigo ang probe ng kakayahan sa pagbubukod sa proseso: {{detail}}",
     "feedbackProcessExclusionProbing": "Ang suporta sa pagbubukod sa proseso ay hindi pa nakumpirma. Pagkatapos ng pagpili, kinukumpleto ng Bridge ang probe kapag nagsimula ang Watch; hindi magsisimula ang pagkuha hanggang sa handa ang probe.",
     "feedbackNoneSelected": "Ang legacy na walang-feedback-control na setting ay pinili pa rin. Hindi maaaring magsimula ang panonood sa isinaling pananalita hanggang sa tahasan mong piliin ang pagbubukod ng proseso, Virtual Driver, o pagkansela ng echo.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Pagruruta ng Audio",
     "pageSubtitle": "Puting ibabaw · naka-embed na daloy · single model entry · live save · mobile-friendly",
     "overviewAria": "Pangkalahatang-ideya ng ruta ng audio",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Pagkilala sa pagsasalita · Pagsasalin · Pagsasalita",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Pangunahing modelo ng teksto",
+    "scenarioPrimaryTextCaption": "Base text translation para sa speech recognition pipeline",
+    "primaryTextModelRequired": "Kailangang pumili ng base text translation model para sa kasalukuyang voice model"
   },
   "overlay": {
     "bootstrapFailed": "Hindi masimulan ang subtitle overlay",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Sitwasyon: {{scenario}}",
       "editCapabilitiesTitle": "I-edit ang pagpapatala ng kakayahan",
       "refreshTitle": "I-refresh ang katalogo ng modelo",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Isara ang listahan ng modelo",
       "allScenarios": "Lahat",
       "searchPlaceholder": "Maghanap ng mga modelo...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Lihim",
       "hideSecret": "Magtago ng sikreto",
       "showSecret": "Ipakita ang sikreto"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Mga modelo ng eksena",

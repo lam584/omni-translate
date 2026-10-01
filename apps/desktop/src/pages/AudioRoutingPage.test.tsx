@@ -122,11 +122,11 @@ describe('AudioRoutingPage', () => {
       headerName: 'Authorization',
       scheme: 'bearer',
     };
-    configDraft.providers[0].sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['gpt-4o'] },
-      { scenario: 'game', modelIds: [] },
-      { scenario: 'voice-room', modelIds: [] },
-      { scenario: 'subtitle-translate', modelIds: [] },
+    configDraft.providers[0].candidateModelGroups = [
+      { group: 'audio-understanding', modelIds: ['gpt-4o'] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
+      { group: 'text-processing', modelIds: [] },
     ];
 
     const linkedDashscope = structuredClone(configDraft.providers[0]);
@@ -143,11 +143,11 @@ describe('AudioRoutingPage', () => {
       headerName: 'Authorization',
       scheme: 'bearer',
     };
-    linkedDashscope.sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['stt-model', 'qwen3.5-omni-plus-realtime'] },
-      { scenario: 'game', modelIds: ['tts-model'] },
-      { scenario: 'voice-room', modelIds: ['s2s-model', 'qwen3.5-omni-plus-realtime'] },
-      { scenario: 'subtitle-translate', modelIds: ['qwen3.6-flash-2026-04-16'] },
+    linkedDashscope.candidateModelGroups = [
+      { group: 'audio-understanding', modelIds: ['stt-model', 'qwen3.5-omni-plus-realtime'] },
+      { group: 'audio-generation', modelIds: ['tts-model'] },
+      { group: 'realtime-multimodal', modelIds: ['s2s-model', 'qwen3.5-omni-plus-realtime'] },
+      { group: 'text-processing', modelIds: ['qwen3.6-flash-2026-04-16'] },
     ];
     linkedDashscope.modelCatalogCache = {
       signature: 'dashscope',
@@ -1113,7 +1113,7 @@ describe('AudioRoutingPage', () => {
         ...state.configDraft,
         providers: state.configDraft.providers.map((provider) => ({
           ...provider,
-          sceneModelAssignments: [{ scenario: 'subtitle-translate', modelIds: ['z-text', 'a-text'] }],
+          candidateModelGroups: [{ group: 'text-processing', modelIds: ['z-text', 'a-text'] }],
           modelCatalogCache: { ...provider.modelCatalogCache, models: [
             { id: 'z-text', displayName: 'Zulu', ownedBy: null, createdAt: null, capabilities: ['text-generation'], providerTemplateId: provider.templateId, providerTemplateName: provider.displayName },
             { id: 'a-text', displayName: 'Alpha', ownedBy: null, createdAt: null, capabilities: ['text-generation'], providerTemplateId: provider.templateId, providerTemplateName: provider.displayName },
@@ -1419,15 +1419,15 @@ describe('AudioRoutingPage', () => {
           {
             ...state.configDraft.providers[0]!,
             displayName: 'Fallback Provider',
-            sceneModelAssignments: [
-              { scenario: 'subtitle-translate', modelIds: ['fallback-text'] },
+            candidateModelGroups: [
+              { group: 'text-processing', modelIds: ['fallback-text'] },
             ],
             modelCatalogCache: undefined as never,
             localModelCapabilityRegistry: undefined as never,
           },
           {
             ...state.configDraft.providers[1]!,
-            sceneModelAssignments: undefined as never,
+            candidateModelGroups: undefined as never,
             modelCatalogCache: undefined as never,
             localModelCapabilityRegistry: undefined as never,
           },
@@ -1447,6 +1447,37 @@ describe('AudioRoutingPage', () => {
     expect(optionTexts.some((text) => text.includes('DashScope'))).toBe(false);
   });
 
+  it('lists both explicitly bound Workspace voice candidates rather than silently dropping LiveTranslate', async () => {
+    useAppStore.setState((state) => {
+      const workspace = {
+        ...state.configDraft.providers[1]!,
+        templateId: 'template-dashscope-workspace',
+        displayName: 'Workspace DashScope',
+        baseUrl: 'wss://llm-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+        modelRegistryVersion: 2 as const,
+        localModelCapabilityRegistry: [],
+        modelCapabilityOverrides: [],
+        modelCatalogCache: { ...state.configDraft.providers[1]!.modelCatalogCache, models: [] },
+        candidateModelGroups: [{
+          group: 'realtime-multimodal' as const,
+          modelIds: ['qwen3.8-livetranslate-flash-realtime', 'qwen3.8-omni-flash-realtime'],
+        }],
+        modelProtocolBindings: [{
+          modelId: 'qwen3.8-livetranslate-flash-realtime', operation: 'realtime-translation' as const,
+          profileOwnerProviderId: 'bailian', manifestVersion: 1,
+          profileId: 'bailian.livetranslate.3_8.realtime.ws', profileVersion: 1,
+        }],
+      };
+      return { ...state, configDraft: { ...state.configDraft, providers: [workspace] } };
+    });
+    await renderPage();
+    for (const title of ['听对方', '说给对方']) {
+      const options = (await scenarioOptionTexts(container, title)).join(' ');
+      expect(options).toContain('qwen3.8-livetranslate-flash-realtime');
+      expect(options).toContain('qwen3.8-omni-flash-realtime');
+    }
+  });
+
   it('projects v2 manifest capabilities when the saved Workspace provider has no cached or local model rows', async () => {
     useAppStore.setState((state) => {
       const workspace = {
@@ -1458,10 +1489,10 @@ describe('AudioRoutingPage', () => {
         modelRegistryVersion: 2 as const,
         localModelCapabilityRegistry: [],
         modelCatalogCache: { ...state.configDraft.providers[1]!.modelCatalogCache, models: [] },
-        sceneModelAssignments: [
-          { scenario: 'watch' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
-          { scenario: 'voice-room' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
-          { scenario: 'subtitle-translate' as const, modelIds: ['qwen3.8-flash'] },
+        candidateModelGroups: [
+          { group: 'audio-understanding' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
+          { group: 'realtime-multimodal' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
+          { group: 'text-processing' as const, modelIds: ['qwen3.8-flash'] },
         ],
       };
       return { ...state, configDraft: { ...state.configDraft, providers: [workspace] } };
@@ -1471,13 +1502,13 @@ describe('AudioRoutingPage', () => {
     expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).toContain('qwen3.8-flash');
   });
 
-  it('restores all applicable route choices from a saved model catalog when scene assignments were cleared', async () => {
+  it('does not expose cached models when the configured candidate pools are empty', async () => {
     useAppStore.setState((state) => {
       const provider = {
         ...state.configDraft.providers[1]!,
         modelRegistryVersion: 2 as const,
         localModelCapabilityRegistry: [],
-        sceneModelAssignments: [],
+        candidateModelGroups: [],
         modelCatalogCache: {
           ...state.configDraft.providers[1]!.modelCatalogCache,
           models: state.configDraft.providers[1]!.modelCatalogCache.models.filter((model) =>
@@ -1487,11 +1518,30 @@ describe('AudioRoutingPage', () => {
       return { ...state, configDraft: { ...state.configDraft, providers: [provider] } };
     });
     await renderPage();
-    expect((await scenarioOptionTexts(container, '听对方')).join(' ')).toContain('Qwen Omni');
-    expect((await scenarioOptionTexts(container, '说给对方')).join(' ')).toContain('Qwen Omni');
-    expect((await scenarioOptionTexts(container, '打字 TTS')).join(' ')).toContain('Qwen Omni');
-    expect((await scenarioOptionTexts(container, '听对方 · 二次语音识别')).join(' ')).toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '听对方')).join(' ')).not.toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '说给对方')).join(' ')).not.toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '打字 TTS')).join(' ')).not.toContain('Qwen Omni');
+    expect((await scenarioOptionTexts(container, '听对方 · 二次语音识别')).join(' ')).not.toContain('Qwen Omni');
     expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
+  });
+
+  it('keeps cached non-candidates out of route choices when another candidate is configured', async () => {
+    useAppStore.setState((state) => {
+      const provider = {
+        ...state.configDraft.providers[1]!,
+        modelRegistryVersion: 2 as const,
+        localModelCapabilityRegistry: [],
+        candidateModelGroups: [
+          { group: 'text-processing' as const, modelIds: ['qwen3.8-flash'] },
+        ],
+      };
+      return { ...state, configDraft: { ...state.configDraft, providers: [provider] } };
+    });
+    await renderPage();
+    expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).toContain('qwen3.8-flash');
+    for (const title of ['听对方', '说给对方', '打字 TTS', '听对方 · 二次语音识别']) {
+      expect((await scenarioOptionTexts(container, title)).join(' ')).not.toContain('Qwen Omni');
+    }
   });
 
   it('migrates a stale generic-host Workspace model route to the authorized same-credential provider', async () => {
@@ -1505,8 +1555,8 @@ describe('AudioRoutingPage', () => {
         modelRegistryVersion: 2 as const,
         localModelCapabilityRegistry: [],
         modelCatalogCache: { ...generic.modelCatalogCache, models: [] },
-        sceneModelAssignments: [
-          { scenario: 'watch' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
+        candidateModelGroups: [
+          { group: 'audio-understanding' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] },
         ],
       };
       return {
@@ -1530,7 +1580,7 @@ describe('AudioRoutingPage', () => {
     useAppStore.setState((state) => {
       const generic = {
         ...state.configDraft.providers[1]!,
-        sceneModelAssignments: [{ scenario: 'watch' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] }],
+        candidateModelGroups: [{ group: 'audio-understanding' as const, modelIds: ['qwen3.8-livetranslate-flash-realtime'] }],
       };
       const workspace = {
         ...generic,
@@ -1571,7 +1621,7 @@ describe('AudioRoutingPage', () => {
           ...provider,
           model: '',
           modelCatalogCache: { ...provider.modelCatalogCache, models: [] },
-          sceneModelAssignments: [],
+          candidateModelGroups: [],
           localModelCapabilityRegistry: [],
         })),
         devices: {
@@ -1622,6 +1672,55 @@ describe('AudioRoutingPage', () => {
       radios[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('echo-cancel');
+  });
+
+  it('renders primary text translation card when inbound voice model requires a text worker', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          inboundVoiceModelId: 'template-custom::azure-asr-model',
+          primaryTextTranslationModelId: 'template-dashscope-realtime::qwen-plus',
+        },
+        providers: [
+          ...state.configDraft.providers,
+          {
+            ...state.configDraft.providers[0],
+            templateId: 'template-custom',
+            templateSource: 'custom',
+            displayName: 'Custom Azure ASR',
+            model: 'azure-asr-model',
+            candidateModelGroups: [
+              { group: 'audio-understanding', modelIds: ['azure-asr-model'] },
+            ],
+            localModelCapabilityRegistry: [
+              { id: 'azure-asr-reg', modelId: 'azure-asr-model', capabilities: ['speech-to-text'], hidden: false },
+            ],
+            modelProtocolBindings: [
+              {
+                modelId: 'azure-asr-model',
+                operation: 'realtime-transcription',
+                profileOwnerProviderId: 'azure-openai',
+                manifestVersion: 1,
+                profileId: 'azure-openai.realtime.transcription.websocket.ga',
+                profileVersion: 1,
+              },
+            ],
+          },
+        ],
+      },
+    }));
+
+    await renderPage();
+
+    const primaryTextTitle = i18n.t('audioRouting.scenarioPrimaryTextTitle');
+    const card = scenarioCardByTitle(container, primaryTextTitle);
+    expect(card).toBeInstanceOf(HTMLElement);
+    expect(card.textContent).toContain('qwen-plus');
+
+    
   });
 });
 

@@ -568,6 +568,103 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.inbound.captureState).toBe('capturing');
   });
 
+  it('starts native watch with a stale secondary model without secondary dispatch', async () => {
+    useAppStore.setState((state) => ({ ...state, configDraft: {
+      ...state.configDraft,
+      devices: { ...state.configDraft.devices, subtitleTranslationMode: 'native',
+        subtitleTranslationModelId: 'removed-provider::invalid-secondary-model',
+        feedbackLoopPrevention: 'none', outputSpeechEnabled: false },
+      speech: { ...state.configDraft.speech, enabled: false },
+    } }));
+    await renderPage();
+    await clickAndSettle(container.querySelector('button'));
+    expect(routeStartDirections()).toEqual(['inbound']);
+    expect(routeStartArgs()).toMatchObject({ config: { devices: {
+      subtitleTranslationMode: 'native', subtitleTranslationModelId: 'removed-provider::invalid-secondary-model',
+    } } });
+    expect(fake.sessionActionCalls('startTranslate')).toHaveLength(0);
+    expect(fake.sessionActionCalls('startSpeech')).toHaveLength(0);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
+    expect(container.textContent).not.toContain('二次翻译模型已失效');
+  });
+
+  it.each(['model_protocol.model_not_registered', 'provider_manifest.profile_unimplemented'])(
+    'surfaces primary authorization precheck rejection without launching audio (%s)', async (code) => {
+    useAppStore.getState().updateDeviceDraft({ subtitleTranslationMode: 'native', subtitleTranslationModelId: '' });
+    fake.rejectNextAction('resolveRealtimeProfile', {
+      code, message: 'model has no built-in authority or explicit binding',
+    });
+    await renderPage();
+    await clickAndSettle(container.querySelector('button'));
+    expect(routeStartDirections()).toEqual([]);
+    expect(container.textContent).toContain('主音频模型');
+    const feedback = container.querySelector('.session-launch-feedback');
+    expect(feedback?.textContent).toContain('session.model-reference-invalid');
+    expect(feedback?.querySelector('a[href="/settings/providers"]')).not.toBeNull();
+    expect(feedback?.querySelector('a[href="/audio-routing"]')).toBeNull();
+    expect(container.textContent).toContain('inboundVoiceModelId=' + useAppStore.getState().configDraft.devices.inboundVoiceModelId);
+    expect(container.textContent).toContain(code);
+    expect(container.textContent).not.toContain('二次翻译模型已失效');
+    expect(container.textContent).not.toContain('重新选择系统播放设备');
+    expect(useAppStore.getState().runtimeSnapshot.notifications[0]?.message).toContain(code);
+  });
+
+  it('leaves reply switches and model references untouched when protocol preflight rejects', async () => {
+    useAppStore.getState().updateDeviceDraft({
+      subtitleTranslationMode: 'native', subtitleTranslationModelId: 'removed-provider::saved-secondary',
+      outputSpeechEnabled: true, virtualMicOutputEnabled: true,
+    });
+    useAppStore.getState().updateSpeechDraft({ enabled: true, virtualMicOutputEnabled: true });
+    const before = structuredClone(useAppStore.getState().configDraft);
+    const { updateDeviceDraft, updateSpeechDraft } = useAppStore.getState();
+    const deviceUpdate = vi.fn(updateDeviceDraft);
+    const speechUpdate = vi.fn(updateSpeechDraft);
+    useAppStore.setState({ updateDeviceDraft: deviceUpdate, updateSpeechDraft: speechUpdate });
+    try {
+      fake.rejectNextAction('resolveRealtimeProfile', {
+        code: 'model_protocol.model_not_registered', message: 'model has no built-in authority or explicit binding',
+      });
+      await renderPage();
+      await clickAndSettle(container.querySelector('button'));
+      expect(container.textContent).toContain('model_protocol.model_not_registered');
+      expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
+      expect(deviceUpdate).not.toHaveBeenCalled();
+      expect(speechUpdate).not.toHaveBeenCalled();
+      expect(useAppStore.getState().configDraft.devices).toEqual(before.devices);
+      expect(useAppStore.getState().configDraft.speech).toEqual(before.speech);
+    } finally {
+      useAppStore.setState({ updateDeviceDraft, updateSpeechDraft });
+    }
+  });
+
+  it('keeps an accepted primary model authorization failure out of watch device recovery', async () => {
+    useAppStore.getState().updateDeviceDraft({ subtitleTranslationMode: 'native', subtitleTranslationModelId: '' });
+    const error = 'model_protocol.model_not_registered: model has no built-in authority or explicit binding | code: session.model-reference-invalid | recommended: open-providers';
+    fake.failNextRouteStart('inbound', { lastError: error, lastErrorCode: 'session.model-reference-invalid', recommendedAction: 'open-providers' });
+    await renderPage();
+    await clickAndSettle(container.querySelector('button'));
+    expect(container.textContent).toContain('model_protocol.model_not_registered');
+    expect(container.textContent).not.toContain('二次翻译模型已失效');
+    expect(container.textContent).not.toContain('重新选择系统播放设备');
+    expect(useAppStore.getState().runtimeSnapshot.notifications[0]?.message).toContain('session.model-reference-invalid');
+  });
+
+  it('renders primary model authorization failure as a provider issue, not a secondary or device issue', async () => {
+    const error = 'model_protocol.model_not_registered: model has no built-in authority or explicit binding | code: session.model-reference-invalid | recommended: open-providers';
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.inbound.lastError = error;
+    audioRuntimeSnapshot.inbound.lastErrorCode = 'session.model-reference-invalid';
+    audioRuntimeSnapshot.outbound.lastError = error;
+    audioRuntimeSnapshot.outbound.lastErrorCode = 'session.model-reference-invalid';
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+    await renderPage();
+    expect(container.textContent).toContain('model_protocol.model_not_registered');
+    expect(container.textContent).not.toContain('二次翻译模型已失效');
+    expect(container.querySelectorAll('a[href="/settings/providers"]')).toHaveLength(2);
+    const alerts = Array.from(container.querySelectorAll('p.cue-queue-error'));
+    expect(alerts.some((alert) => alert.querySelector('a[href="/audio-routing"]'))).toBe(false);
+  });
+
   it('automatically expands the retained Watch report when the Watch route stops', async () => {
     fake.startLiveSession({
       model: 'watch-report-model',
@@ -1649,82 +1746,6 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(diagnosticsReadyPatchForMode('game')).toEqual({ deviceStatus: 'ready', driverStatus: 'ready' });
   });
 
-  it.each(['model_protocol.model_not_registered', 'provider_manifest.profile_unimplemented'])(
-    'surfaces primary authorization precheck rejection without launching audio (%s)', async (code) => {
-    useAppStore.getState().updateDeviceDraft({ subtitleTranslationMode: 'native', subtitleTranslationModelId: '' });
-    fake.rejectNextAction('resolveRealtimeProfile', {
-      code, message: 'model has no built-in authority or explicit binding',
-    });
-    await renderPage();
-    await clickAndSettle(container.querySelector('button'));
-    expect(routeStartDirections()).toEqual([]);
-    expect(container.textContent).toContain('主音频模型');
-    const feedback = container.querySelector('.session-launch-feedback');
-    expect(feedback?.textContent).toContain('session.model-reference-invalid');
-    expect(feedback?.querySelector('a[href="/settings/providers"]')).not.toBeNull();
-    expect(feedback?.querySelector('a[href="/audio-routing"]')).toBeNull();
-    expect(container.textContent).toContain('inboundVoiceModelId=' + useAppStore.getState().configDraft.devices.inboundVoiceModelId);
-    expect(container.textContent).toContain(code);
-    expect(container.textContent).not.toContain('二次翻译模型已失效');
-    expect(container.textContent).not.toContain('重新选择系统播放设备');
-    expect(useAppStore.getState().runtimeSnapshot.notifications[0]?.message).toContain(code);
-  });
-
-  it('leaves reply switches and model references untouched when protocol preflight rejects', async () => {
-    useAppStore.getState().updateDeviceDraft({
-      subtitleTranslationMode: 'native', subtitleTranslationModelId: 'removed-provider::saved-secondary',
-      outputSpeechEnabled: true, virtualMicOutputEnabled: true,
-    });
-    useAppStore.getState().updateSpeechDraft({ enabled: true, virtualMicOutputEnabled: true });
-    const before = structuredClone(useAppStore.getState().configDraft);
-    const { updateDeviceDraft, updateSpeechDraft } = useAppStore.getState();
-    const deviceUpdate = vi.fn(updateDeviceDraft);
-    const speechUpdate = vi.fn(updateSpeechDraft);
-    useAppStore.setState({ updateDeviceDraft: deviceUpdate, updateSpeechDraft: speechUpdate });
-    try {
-      fake.rejectNextAction('resolveRealtimeProfile', {
-        code: 'model_protocol.model_not_registered', message: 'model has no built-in authority or explicit binding',
-      });
-      await renderPage();
-      await clickAndSettle(container.querySelector('button'));
-      expect(container.textContent).toContain('model_protocol.model_not_registered');
-      expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
-      expect(deviceUpdate).not.toHaveBeenCalled();
-      expect(speechUpdate).not.toHaveBeenCalled();
-      expect(useAppStore.getState().configDraft.devices).toEqual(before.devices);
-      expect(useAppStore.getState().configDraft.speech).toEqual(before.speech);
-    } finally {
-      useAppStore.setState({ updateDeviceDraft, updateSpeechDraft });
-    }
-  });
-
-  it('keeps an accepted primary model authorization failure out of watch device recovery', async () => {
-    useAppStore.getState().updateDeviceDraft({ subtitleTranslationMode: 'native', subtitleTranslationModelId: '' });
-    const error = 'model_protocol.model_not_registered: model has no built-in authority or explicit binding | code: session.model-reference-invalid | recommended: open-providers';
-    fake.failNextRouteStart('inbound', { lastError: error, lastErrorCode: 'session.model-reference-invalid', recommendedAction: 'open-providers' });
-    await renderPage();
-    await clickAndSettle(container.querySelector('button'));
-    expect(container.textContent).toContain('model_protocol.model_not_registered');
-    expect(container.textContent).not.toContain('二次翻译模型已失效');
-    expect(container.textContent).not.toContain('重新选择系统播放设备');
-    expect(useAppStore.getState().runtimeSnapshot.notifications[0]?.message).toContain('session.model-reference-invalid');
-  });
-
-  it('renders primary model authorization failure as a provider issue, not a secondary or device issue', async () => {
-    const error = 'model_protocol.model_not_registered: model has no built-in authority or explicit binding | code: session.model-reference-invalid | recommended: open-providers';
-    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
-    audioRuntimeSnapshot.inbound.lastError = error;
-    audioRuntimeSnapshot.inbound.lastErrorCode = 'session.model-reference-invalid';
-    audioRuntimeSnapshot.outbound.lastError = error;
-    audioRuntimeSnapshot.outbound.lastErrorCode = 'session.model-reference-invalid';
-    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
-    await renderPage();
-    expect(container.textContent).toContain('model_protocol.model_not_registered');
-    expect(container.textContent).not.toContain('二次翻译模型已失效');
-    expect(container.querySelectorAll('a[href="/settings/providers"]')).toHaveLength(2);
-    const alerts = Array.from(container.querySelectorAll('p.cue-queue-error'));
-    expect(alerts.some((alert) => alert.querySelector('a[href="/audio-routing"]'))).toBe(false);
-  });
 
   it("formats modelContext JSON errors into human-readable summaries without leaking raw JSON to visible DOM", async () => {
     const errorWithJson = "Watch launch blocked; 主音频模型; inboundVoiceModelId=qwen-vl | modelContext: {\"modelRole\":\"primary-audio\",\"modelId\":\"qwen-vl\"} | code: session.model-reference-invalid | recommended: open-providers";
@@ -1752,4 +1773,13 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(detail?.textContent).toContain("modelContext:");
   });
 
+  it('voice-room handles mixed inbound ASR and outbound native profiles', async () => {
+    useAppStore.getState().updateDeviceDraft({
+      routeMode: 'voice-room',
+      inboundVoiceModelId: 'template-dashscope-realtime::qwen3.5-livetranslate-flash-realtime',
+      outboundVoiceModelId: 'template-dashscope-realtime::qwen3.5-livetranslate-flash-realtime',
+    });
+    await renderPage();
+    expect(container).not.toBeNull();
+  });
 });

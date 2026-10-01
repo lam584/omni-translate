@@ -27,23 +27,11 @@ export const appConfigDraftMock: AppConfigDraft = {
     maxOutputTokens: 256,
     responseModalities: ['text'],
     customHeaders: [],
-    sceneModelAssignments: [
-      {
-        scenario: 'watch',
-        modelIds: ['qwen3.5-livetranslate-flash-realtime'],
-      },
-      {
-        scenario: 'game',
-        modelIds: ['qwen3.5-livetranslate-flash-realtime'],
-      },
-      {
-        scenario: 'voice-room',
-        modelIds: [],
-      },
-      {
-        scenario: 'subtitle-translate',
-        modelIds: [],
-      },
+    candidateModelGroups: [
+      { group: 'text-processing', modelIds: [] },
+      { group: 'audio-understanding', modelIds: [] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
     ],
     modelRegistryVersion: 2,
     modelCapabilityOverrides: [],
@@ -182,6 +170,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     textToSpeechModelId: '',
     subtitleTranslationMode: 'native',
     subtitleTranslationModelId: '',
+    primaryTextTranslationModelId: '',
     inboundSecondaryAudioModelId: '',
     inputLevel: 100,
     aecEnabled: true,

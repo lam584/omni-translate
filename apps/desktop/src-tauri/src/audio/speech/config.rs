@@ -12,6 +12,9 @@ struct RouteMixConfig {
     ducking_depth_percent: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpeechSynthesisProtocol { RealtimeAudio, TaskTts }
+
 #[derive(Clone)]
 struct SpeechConfig {
     provider: ProviderDraftInput,
@@ -36,6 +39,14 @@ struct SpeechConfig {
 }
 
 impl SpeechConfig {
+    fn synthesis_protocol(&self) -> SpeechSynthesisProtocol {
+        if crate::audio::bailian_tasks::is_tts_model(&self.provider.model) {
+            SpeechSynthesisProtocol::TaskTts
+        } else {
+            SpeechSynthesisProtocol::RealtimeAudio
+        }
+    }
+
     fn from_value(config: &Value) -> Result<Self, String> {
         let provider = config
             .get("providers")
@@ -107,21 +118,22 @@ impl SpeechConfig {
             .next();
         let mut provider = match selected_tts_model {
             Some(model) => resolve_model_provider_from_config_value(config, model).ok_or_else(|| {
-                format!("Configured TTS model '{model}' cannot be resolved to an enabled provider")
+                let context = json!({ "modelRole": "speech-output", "modelReference": model });
+                format!("Configured TTS model '{model}' cannot be resolved to an enabled provider | modelContext: {context}")
             })?,
             None => provider,
         };
-        if selected_tts_model.is_some() && provider.kind == "dashscope" {
+        let synthesis_protocol = prepare_speech_provider(&mut provider)?;
+        if (selected_tts_model.is_some() || synthesis_protocol == SpeechSynthesisProtocol::TaskTts) && provider.kind == "dashscope" {
             crate::audio::events::authorize_bailian_model_operation(
                 &provider,
                 &provider.model,
                 "tts",
             )
             .map_err(|error| {
-                format!(
-                    "Configured DashScope TTS model '{}' is not authorized for TTS: {error}",
-                    provider.model
-                )
+                speech_model_context(&provider, &format!(
+                    "Configured DashScope TTS model '{}' is not authorized for TTS: {error}", provider.model
+                ))
             })?;
         }
         let secondary_segment_tts_enabled = secondary_translation_active
@@ -151,6 +163,12 @@ impl SpeechConfig {
         }
         let bridge_playback_enabled = bridge_translation_playback_enabled_for_config(config);
         let bridge_capture_mode = bridge_owned_capture_mode_for_config(config);
+        let voice = match synthesis_protocol {
+            SpeechSynthesisProtocol::TaskTts => crate::audio::bailian_tasks::resolve_tts_voice(
+                config.pointer("/speech/voice").and_then(Value::as_str).unwrap_or("auto"),
+            ),
+            SpeechSynthesisProtocol::RealtimeAudio => config.pointer("/speech/voice").and_then(Value::as_str).unwrap_or("Ethan").to_string(),
+        };
         Ok(Self {
             provider,
             enabled: config
@@ -163,11 +181,7 @@ impl SpeechConfig {
                 .and_then(Value::as_str)
                 .unwrap_or("zh-CN")
                 .to_string(),
-            voice: config
-                .pointer("/speech/voice")
-                .and_then(Value::as_str)
-                .unwrap_or("Ethan")
-                .to_string(),
+            voice,
             output_target: if bridge_playback_enabled {
                 "bridge-playback".to_string()
             } else {
@@ -277,30 +291,67 @@ fn resolve_model_provider_from_config_value(
         .filter_map(|provider_value| {
             serde_json::from_value::<ProviderDraftInput>(provider_value.clone()).ok()
         })
-        .find(|provider| provider.kind == "dashscope")
-        .map(|mut provider| {
+        .filter(|provider| provider.model == requested_model
+            || provider.scene_model_assignments.iter().any(|assignment| assignment.model_ids.iter().any(|model| model == requested_model))
+            || provider.local_model_capability_registry.iter().any(|entry| entry.model_id == requested_model)
+            || provider.model_catalog_cache.models.iter().any(|model| model.id == requested_model))
+        .try_fold(None, |matched, mut provider| {
+            if matched.is_some() { return Err(()); }
             provider.model = requested_model.to_string();
-            provider
+            Ok(Some(provider))
         })
+        .ok().flatten()
 }
 
+fn speech_model_context(provider: &ProviderDraftInput, error: &str) -> String {
+    if error.contains(" | modelContext: ") { return error.to_string(); }
+    let context = json!({ "modelRole": "speech-output", "modelId": provider.model,
+        "providerId": provider.provider_id, "modelReference": format!("{}::{}", provider.template_id, provider.model) });
+    format!("{error} | modelContext: {context}")
+}
+
+fn prepare_speech_provider(provider: &mut ProviderDraftInput) -> Result<SpeechSynthesisProtocol, String> {
+    if !crate::audio::bailian_tasks::is_tts_model(&provider.model) {
+        return Ok(SpeechSynthesisProtocol::RealtimeAudio);
+    }
+    if provider.kind != "dashscope" {
+        return Err(speech_model_context(provider, "model_protocol.provider_family_mismatch: Task TTS requires a Bailian provider"));
+    }
+    let profiles = crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(&provider.model)
+        .map_err(|error| speech_model_context(provider, error.code()))?;
+    if profiles.len() != 1 || profiles[0].adapter_status != "enabled"
+        || profiles[0].adapter_id.as_deref() != Some(crate::audio::bailian_tasks::TTS_ADAPTER_ID)
+        || profiles[0].wire_dialect != crate::audio::bailian_tasks::TTS_DIALECT_ID
+        || profiles[0].wire_dialect_version != 1 || profiles[0].endpoint_path != "/api-ws/v1/inference"
+        || !profiles[0].operations.iter().any(|operation| operation == "tts")
+    {
+        return Err(speech_model_context(provider, "model_protocol.adapter_unavailable: selected Task TTS has no enabled typed adapter"));
+    }
+    // A platform can share credentials/host with its primary realtime model.
+    // Endpoint path and transport come from the exact selected TTS profile.
+    let mut endpoint = crate::provider::gateway_parts::transport::to_websocket_url(&provider.base_url, &provider.model)
+        .map_err(|error| speech_model_context(provider, &format!("{}: {}", error.code, error.message)))?;
+    if endpoint.scheme() != "wss" || !endpoint.username().is_empty() || endpoint.password().is_some() {
+        return Err(speech_model_context(provider, "model_protocol.endpoint_family_mismatch: Task TTS requires a secure credential-free endpoint URL"));
+    }
+    endpoint.set_fragment(None);
+    provider.base_url = endpoint.to_string();
+    provider.transport = "websocket".to_string();
+    Ok(SpeechSynthesisProtocol::TaskTts)
+}
 fn is_livetranslate_model_reference(config: &Value, model_id: &str) -> bool {
-    resolve_model_provider_from_config_value(config, model_id)
-        .and_then(|provider| {
-            (provider.kind == "dashscope").then(|| {
-                crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(
-                    &provider.model,
-                )
-                .ok()
-                .is_some_and(|profiles| {
-                    profiles.len() == 1
-                        && matches!(profiles[0].wire_dialect.as_str(), "bailian-livetranslate-session-ws-v1" | "bailian-livetranslate-session-ws-v2")
-                })
-            })
-        })
-        .unwrap_or(false)
+    let is_live = |model: &str| crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(model)
+        .ok().is_some_and(|profiles| profiles.len() == 1
+            && matches!(profiles[0].wire_dialect.as_str(), "bailian-livetranslate-session-ws-v1" | "bailian-livetranslate-session-ws-v2"));
+    match resolve_model_provider_from_config_value(config, model_id) {
+        Some(provider) => provider.kind == "dashscope" && is_live(&provider.model),
+        // Filtering a documented bare LT identity is classification, not an
+        // invocation or a grant to the first provider on a platform.
+        None => !model_id.contains("::") && is_live(model_id)
+            && config.get("providers").and_then(Value::as_array).is_some_and(|providers|
+                providers.iter().any(|provider| provider.get("kind").and_then(Value::as_str) == Some("dashscope"))),
+    }
 }
-
 fn parse_mix(config: &Value, prefix: &str) -> RouteMixConfig {
     RouteMixConfig {
         keep_original_audio: config

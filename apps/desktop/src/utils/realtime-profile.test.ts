@@ -28,7 +28,7 @@ function providerFor(
   provider.kind = kind;
   provider.templateId = templateId;
   provider.model = model;
-  provider.sceneModelAssignments = [];
+  provider.candidateModelGroups = [];
   provider.localModelCapabilityRegistry = [];
   delete provider.templateRealtimeProtocol;
   delete provider.realtimeProtocol;
@@ -56,6 +56,59 @@ function expectProtocolError(
 }
 
 describe('resolveRealtimeProfile', () => {
+  it('routes each approved primary family by its actual operation without HTTP replacement', () => {
+    const cases = [
+      ['qwen3.8-omni-flash-realtime', 'dialogue', 'dashscope-omni', 'prompted-realtime'],
+      ['qwen-audio-3.1-realtime-plus', 'dialogue', 'dashscope-qwen-audio', 'prompted-realtime'],
+      ['qwen-audio-3.0-realtime-plus', 'dialogue', 'dashscope-qwen-audio', 'prompted-realtime'],
+      ['qwen-audio-3.0-realtime-flash', 'dialogue', 'dashscope-qwen-audio', 'prompted-realtime'],
+      ['qwen-audio-3.0-asr-flash-streaming', 'asr', 'dashscope-asr', 'text-worker'],
+      ['qwen-audio-3.1-asr-flash-streaming', 'asr', 'dashscope-asr', 'text-worker'],
+      ['qwen3.5-livetranslate-flash-realtime', 'native_translate', 'dashscope-livetranslate', 'dedicated-realtime'],
+      ['qwen3.8-livetranslate-flash-realtime', 'native_translate', 'dashscope-livetranslate', 'dedicated-realtime'],
+    ] as const;
+    for (const [model, operation, protocolDialect, translationExecution] of cases) {
+      const provider = providerFor(model);
+      provider.modelRegistryVersion = 2;
+      provider.modelProtocolBindings = [];
+      provider.region = 'cn-beijing';
+      provider.baseUrl = 'https://fixture.cn-beijing.maas.aliyuncs.com/api/v1';
+      expect(resolveRealtimeProfile(configWith(provider), model)).toMatchObject({
+        invocationOperation: operation, protocolDialect, translationExecution, inputFormat: 'pcm',
+        nativeTranslation: translationExecution !== 'text-worker',
+      });
+      if (operation === 'dialogue') expectProtocolError(() => resolveRealtimeProfile(configWith(provider), model, {operation:'native_translate'}), 'model_protocol.operation_not_supported');
+    }
+    const tts = providerFor('qwen-audio-3.0-tts-plus');
+    expectProtocolError(() => resolveRealtimeProfile(configWith(tts), tts.model), 'model_protocol.operation_not_supported');
+  });
+
+  it('does not turn v2 advisory capabilities into a protocol declaration for an unknown model', () => {
+    const model = 'qwen3.8-omni-flash-realtime-unknown';
+    const provider = providerFor(model);
+    provider.modelRegistryVersion = 2;
+    provider.modelCapabilityOverrides = [{ modelId: model, source: 'user', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'] }];
+    expectProtocolError(() => resolveRealtimeProfile(configWith(provider), model), 'model_protocol.model_not_registered');
+  });
+
+  it('keeps v2 advisory overrides separate from exact LiveTranslate authority', () => {
+    const provider = providerFor(LIVE_TRANSLATE_MODEL);
+    provider.modelRegistryVersion = 2;
+    provider.modelProtocolBindings = [];
+    provider.modelCapabilityOverrides = [{ modelId: LIVE_TRANSLATE_MODEL, source: 'user', capabilities: ['speech-to-text'] }];
+    expect(resolveRealtimeProfile(configWith(provider), provider.model)).toMatchObject({
+      nativeTranslation: true, protocolDialect: 'dashscope-livetranslate', source: 'manifest',
+    });
+  });
+
+  it('does not enable a manifest-only v2 adapter through capability overrides', () => {
+    const provider = providerFor(OMNI_MODEL);
+    provider.modelRegistryVersion = 2;
+    provider.modelProtocolBindings = [];
+    provider.modelCapabilityOverrides = [{ modelId: OMNI_MODEL, source: 'user', capabilities: ['speech-to-speech'] }];
+    expectProtocolError(() => resolveRealtimeProfile(configWith(provider), provider.model), 'model_protocol.adapter_unavailable');
+  });
+
   it('authorizes the exact LiveTranslate profile for bare and composite references', () => {
     const provider = providerFor(LIVE_TRANSLATE_MODEL);
     const entry = seededEntry(LIVE_TRANSLATE_MODEL);
@@ -308,7 +361,7 @@ describe('resolveRealtimeProfile', () => {
     try {
       expectProtocolError(
         () => resolveRealtimeProfile(configWith(providerFor(OMNI_MODEL)), OMNI_MODEL),
-        'model_protocol.dialect_not_registered',
+        'model_protocol.adapter_unavailable',
       );
     } finally {
       profile.adapter = originalAdapter;
@@ -508,8 +561,8 @@ describe('resolveRealtimeProfile', () => {
 
   it('binds a scene model to its provider without granting an inferred protocol', () => {
     const provider = providerFor('default-text-model', 'openai-compatible');
-    provider.sceneModelAssignments = [{
-      scenario: 'watch',
+    provider.candidateModelGroups = [{
+      group: 'audio-understanding',
       modelIds: ['gpt-live-scene'],
     }];
     expect(resolveRealtimeProfile(configWith(provider), 'gpt-live-scene')).toMatchObject({
@@ -566,6 +619,18 @@ describe('registry v2 explicit realtime bindings', () => {
     provider.baseUrl = 'https://dashscope.aliyuncs.com/api/v1';
     expect(() => resolveRealtimeProfile(configWith(provider), provider.model)).toThrow('workspace_required');
     expect(provider.baseUrl).toBe('https://dashscope.aliyuncs.com/api/v1');
+  });
+  it('authorizes the Workspace template through its Bailian owner without relaxing endpoint or owner checks', () => {
+    const provider = explicitProvider('qwen3.8-livetranslate-flash-realtime');
+    provider.templateId = 'template-dashscope-workspace';
+    expect(resolveRealtimeProfile(configWith(provider), provider.model)).toMatchObject({
+      protocolDialect: 'dashscope-livetranslate', preconnectPolicy: 'allowed',
+    });
+    provider.baseUrl = 'https://dashscope.aliyuncs.com/api/v1';
+    expect(() => resolveRealtimeProfile(configWith(provider), provider.model)).toThrow('workspace_required');
+    provider.baseUrl = 'https://workspace-test.cn-beijing.maas.aliyuncs.com/api/v1';
+    provider.modelProtocolBindings![1].profileOwnerProviderId = 'untrusted';
+    expectProtocolError(() => resolveRealtimeProfile(configWith(provider), provider.model), 'model_protocol.authorization_identity_mismatch');
   });
   it('retains known 3.8 immutable authority and rejects a mismatched profile owner', () => {
     const provider = explicitProvider('qwen3.8-livetranslate-flash-realtime');

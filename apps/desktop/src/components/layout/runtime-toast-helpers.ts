@@ -1,5 +1,9 @@
-import type { RuntimeNotification } from '../../schema/runtime-core';
-import { extractSessionErrorCode, formatModelErrorSummary, sessionErrorPresentation } from '../../utils/session-error-presentation';
+import type { RuntimeNotification } from "../../schema/runtime-core";
+import {
+  extractSessionErrorCode,
+  formatModelErrorSummary,
+  sessionErrorPresentation,
+} from "../../utils/session-error-presentation";
 
 /**
  * Warning sources that require cross-page visibility. Every error is a toast
@@ -7,7 +11,7 @@ import { extractSessionErrorCode, formatModelErrorSummary, sessionErrorPresentat
  * without a rendering outlet. Info stays page-local; warnings are global only
  * for session/startup chains, while dedicated pages retain their banners.
  */
-const SESSION_TOAST_SOURCES = new Set(['session', 'omni', 'audio-engine', 'desktop-runtime']);
+const SESSION_TOAST_SOURCES = new Set(["session", "omni", "audio-engine", "desktop-runtime"]);
 
 export const WARNING_AUTO_DISMISS_MS = 5000;
 export const MAX_VISIBLE_TOASTS = 4;
@@ -22,8 +26,10 @@ export type UnifiedErrorPresentation = {
 };
 
 export function isSessionToastNotification(notification: RuntimeNotification): boolean {
-  return notification.level === 'error'
-    || (notification.level === 'warning' && SESSION_TOAST_SOURCES.has(notification.source));
+  return (
+    notification.level === "error" ||
+    (notification.level === "warning" && SESSION_TOAST_SOURCES.has(notification.source))
+  );
 }
 
 /**
@@ -72,7 +78,7 @@ export function runtimeErrorPresentation(
     code: code ?? notification.id,
     title: notification.source,
     summary: formatToastSummary(notification.message, t),
-    technicalDetail: code ? notification.message.split(' | code: ')[0] ?? null : null,
+    technicalDetail: code ? notification.message.split(" | code: ")[0] ?? null : null,
     recoveryActions: presentation ? [presentation.action] : [],
     source: notification.source,
   };

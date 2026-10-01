@@ -50,6 +50,8 @@ export type ResolvedRealtimeProfile = {
   sampleRate: number;
   serverSegmentation: boolean;
   nativeTranslation: boolean;
+  invocationOperation?: ModelProtocolOperation;
+  translationExecution?: 'dedicated-realtime' | 'prompted-realtime' | 'text-worker';
   nativeAudioOutput: boolean;
   secondaryTranslationPolicy: 'native' | 'secondary';
   speechDispatchPolicy: 'native-audio' | 'subtitle-tts' | 'disabled';
@@ -78,12 +80,12 @@ function findProvider(config: RealtimeProfileConfig, modelReference: string): Pr
   }
 
   // An exact registry declaration is stronger than a provider's current model
-  // or scene assignment. Provider order remains stable and deterministic.
+  // or candidate group. Provider order remains stable and deterministic.
   for (const provider of config.providers) {
     if (registryMatches(provider, modelReference).length > 0) return { provider, modelId: modelReference };
   }
   for (const provider of config.providers) {
-    if (provider.model === modelReference || provider.sceneModelAssignments.some((assignment) => assignment.modelIds.includes(modelReference))) {
+    if (provider.model === modelReference || provider.candidateModelGroups?.some((assignment) => assignment.modelIds.includes(modelReference))) {
       return { provider, modelId: modelReference };
     }
   }
@@ -183,18 +185,36 @@ function authorizeDashScopeProfile(
   return result.authorization;
 }
 
+export function primaryDashScopeOperation(provider: ProviderDraft, modelId: string): ModelProtocolOperation {
+  const profiles = lookupModelProtocolProfiles(modelId);
+  if (profiles.length > 1) return rejectModelProtocol('model_protocol.profile_ambiguous', modelId);
+  const dialect = profiles[0]?.dialectId;
+  if (dialect === 'bailian-omni-realtime-ws-v2' || dialect === 'bailian-qwen-audio-chat-realtime-ws-v1') return 'dialogue';
+  if (dialect === 'bailian-qwen-audio-asr-task-ws-v1') return 'asr';
+  if (profiles.length > 0) return 'native_translate';
+  const bindings = provider.modelProtocolBindings?.filter(binding => binding.modelId === modelId
+    && ['realtime-translation', 'realtime-conversation', 'asr', 'realtime-transcription'].includes(binding.operation)) ?? [];
+  if (bindings.length > 1) return rejectModelProtocol('model_protocol.profile_ambiguous', modelId);
+  return bindings[0]?.operation === 'realtime-conversation' ? 'dialogue'
+    : bindings[0]?.operation === 'asr' || bindings[0]?.operation === 'realtime-transcription' ? 'asr' : 'native_translate';
+}
+
 function protocolFromDashScopeAuthorization(
   authorization: AuthorizedModelProtocolProfile,
 ): RealtimeProtocol {
-  switch (authorization.wireDialect) {
-    case 'bailian-livetranslate-session-ws-v1':
-    case 'bailian-livetranslate-session-ws-v2':
+  const identity = [authorization.adapterId, authorization.wireDialect, authorization.wireDialectVersion].join(':');
+  switch (identity) {
+    case 'desktop-livetranslate-session-v1:bailian-livetranslate-session-ws-v1:1':
+    case 'desktop-livetranslate-session-v2:bailian-livetranslate-session-ws-v2:2':
       return 'dashscope-livetranslate';
+    case 'desktop-omni-session-v2:bailian-omni-realtime-ws-v2:2':
+      return 'dashscope-omni';
+    case 'desktop-qwen-audio-session-v1:bailian-qwen-audio-chat-realtime-ws-v1:1':
+      return 'dashscope-qwen-audio';
+    case 'desktop-qwen-audio-task-asr-v1:bailian-qwen-audio-asr-task-ws-v1:1':
+      return 'dashscope-asr';
     default:
-      // Do not project newly enabled task, TTS, or dialogue products into the
-      // legacy realtime union. Each needs an explicit executable pipeline
-      // identity before it can become a route authority.
-      return rejectModelProtocol('model_protocol.dialect_not_registered', authorization.exactModelId);
+      return rejectModelProtocol('model_protocol.adapter_unavailable', authorization.exactModelId);
   }
 }
 
@@ -294,9 +314,10 @@ export function resolveRealtimeProfile(
   if (provider && isDashScope(provider)) {
     dashscopeAuthorization = authorizeDashScopeProfile(
       provider,
-      registryEntry,
+      // V2 capability overrides are advisory, not profile identity assertions.
+      provider.modelRegistryVersion === 2 ? undefined : registryEntry,
       modelId,
-      options.operation ?? 'native_translate',
+      options.operation ?? primaryDashScopeOperation(provider, modelId),
     );
     protocolDialect = protocolFromDashScopeAuthorization(dashscopeAuthorization);
     source = 'manifest';
@@ -323,16 +344,19 @@ export function resolveRealtimeProfile(
   const realtimeAudioMode = genericManifest.profile
     ? manifestRealtimeAudioMode(genericManifest.profile)
     : registryEntry?.realtimeAudioMode ?? defaultAudioMode(protocolDialect);
-  const routeKind: RealtimeRouteKind = protocolDialect === 'dashscope-omni' || protocolDialect === 'dashscope-livetranslate'
+  const routeKind: RealtimeRouteKind = protocolDialect === 'dashscope-omni' || protocolDialect === 'dashscope-qwen-audio' || protocolDialect === 'dashscope-livetranslate'
     ? 'omni'
+    : protocolDialect === 'dashscope-asr' ? 'dashscope-asr'
     : protocolDialect === 'gemini-live'
       ? 'gemini-live'
       : protocolDialect?.startsWith('openai-')
         ? 'openai-realtime'
         : 'local-vad';
   const serverSegmentation = routeKind !== 'local-vad';
-  const nativeTranslation = protocolDialect === 'dashscope-livetranslate'
-    || protocolDialect === 'openai-translation';
+  const translationExecution = protocolDialect === 'dashscope-omni' || protocolDialect === 'dashscope-qwen-audio'
+    ? 'prompted-realtime' : protocolDialect === 'dashscope-livetranslate' || protocolDialect === 'openai-translation'
+      ? 'dedicated-realtime' : 'text-worker';
+  const nativeTranslation = translationExecution !== 'text-worker';
   const nativeAudioOutput = dashscopeAuthorization
     // `required` means the dialect always produces audio, not whether audio
     // output is supported. A non-empty authoritative codec set is the support
@@ -355,11 +379,13 @@ export function resolveRealtimeProfile(
     routeKind,
     protocolDialect,
     realtimeAudioMode,
-    inputFormat: protocolDialect === 'dashscope-livetranslate' ? 'pcm' : 'pcm16',
+    inputFormat: protocolDialect?.startsWith('dashscope-') ? 'pcm' : 'pcm16',
     outputFormat: nativeAudioOutput ? (dashscopeRealtime ? 'pcm' : 'pcm16') : null,
     sampleRate: inputSampleRate,
     serverSegmentation,
     nativeTranslation,
+    invocationOperation: dashscopeAuthorization?.operation ?? options.operation ?? 'native_translate',
+    translationExecution,
     nativeAudioOutput,
     secondaryTranslationPolicy: nativeTranslation ? 'native' : 'secondary',
     speechDispatchPolicy: nativeAudioOutput ? 'native-audio' : nativeTranslation ? 'disabled' : 'subtitle-tts',

@@ -111,12 +111,15 @@
     "release:local-signing": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/release/prepare-local-release-signing.ps1 -WorkspaceRoot .",
     "release:finalize-signed": "node ./scripts/release/finalize-signed-package.mjs",
     "release:verify": "node ./scripts/release/verify-release.mjs && npm run test:aec3-msvc && npm run quality:gate:release && npm run test:watch-mode-evidence:strict",
-    "release:prepare": "npm run release:verify && npm run release:local-signing && npm run release:manifest && npm run installer:prepare && npm run release:package && npm run release:signing-manifest && npm run release:finalize-signed",
+    "release:prepare": "npm run sync:bailian-models && npm run release:verify && npm run release:local-signing && npm run release:manifest && npm run installer:prepare && npm run release:package && npm run release:signing-manifest && npm run release:finalize-signed",
     "quality:gate:auto": "node ./scripts/testing/run-quality-gate-auto.mjs",
     "quality:gate:release": "node ./scripts/testing/run-quality-gate.mjs",
     "dev:desktop:fast": "npm run dev:tauri:fast --workspace @omni/desktop",
     "perf:startup-readiness:fast": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1 -UseFastDev",
-    "test:watch-mode-aec-retained-correlation": "node --test ./scripts/testing/watch-mode-retained-pcm-correlation.test.mjs"
+    "test:watch-mode-aec-retained-correlation": "node --test ./scripts/testing/watch-mode-retained-pcm-correlation.test.mjs",
+    "sync:bailian-models": "node ./scripts/release/sync-bailian-models.mjs",
+    "verify:bailian-models": "node ./scripts/release/sync-bailian-models.mjs --check",
+    "test:bailian-models": "node --test ./scripts/testing/sync-bailian-models.test.mjs"
   },
   "devDependencies": {
     "ajv": "^8.20.0"

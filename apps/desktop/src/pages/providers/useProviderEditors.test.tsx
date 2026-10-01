@@ -50,7 +50,7 @@ describe('provider editor controllers', () => {
         setTemplateCatalogPreferences: setPreferences, draggingTemplateIdRef: draggingRef,
         templateMouseDragMovedRef: movedRef, templateMouseHoverTargetRef: hoverRef, activeProvider,
         activeTemplate: customTemplate, activeCustomTemplateDraft: activeDraft, customTemplates: [customTemplate],
-        providerDraftForCustomTemplate: providerDraft, sceneAssignments: activeProvider.sceneModelAssignments,
+        providerDraftForCustomTemplate: providerDraft,
         setCustomTemplates, onTemplateChanged: vi.fn() });
       return null;
     }
@@ -75,7 +75,7 @@ describe('provider editor controllers', () => {
     expect(useAppStore.getState().configDraft.activeProviderTemplateId).toBe(existingTemplate.id);
 
     const savedTemplate = { ...existingTemplate, id: 'saved-template' };
-    providersPageHelpers.globalTemplateSceneAssignments.set(savedTemplate.id, activeProvider.sceneModelAssignments);
+    providersPageHelpers.globalTemplateSceneAssignments.set(savedTemplate.id, []);
     useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft,
       activeProviderTemplateId: activeProvider.templateId, providers: [activeProvider] } }));
     act(() => api.applyTemplate(savedTemplate));
@@ -83,13 +83,13 @@ describe('provider editor controllers', () => {
 
     useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft,
       activeProviderTemplateId: activeProvider.templateId,
-      providers: [activeProvider, { ...existingDraft, sceneModelAssignments: [] }],
+      providers: [activeProvider, { ...existingDraft, candidateModelGroups: [] }],
     } }));
     act(() => api.applyTemplate(existingTemplate));
     expect(useAppStore.getState().configDraft.activeProviderTemplateId).toBe(existingTemplate.id);
 
     useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft, activeProviderTemplateId: '' } }));
-    providersPageHelpers.globalTemplateSceneAssignments.set(providerTemplates[1]!.id, activeProvider.sceneModelAssignments);
+    providersPageHelpers.globalTemplateSceneAssignments.set(providerTemplates[1]!.id, []);
     act(() => api.applyTemplate(providerTemplates[1]!));
     expect(setPreferences).not.toHaveBeenCalled();
   });
@@ -107,7 +107,7 @@ describe('provider editor controllers', () => {
         setTemplateCatalogPreferences: setPreferences, draggingTemplateIdRef: draggingRef,
         templateMouseDragMovedRef: { current: false }, templateMouseHoverTargetRef: { current: null }, activeProvider,
         activeTemplate: providerTemplates[0]!, activeCustomTemplateDraft, customTemplates: [],
-        providerDraftForCustomTemplate, sceneAssignments: activeProvider.sceneModelAssignments,
+        providerDraftForCustomTemplate,
         setCustomTemplates: vi.fn(), onTemplateChanged: vi.fn() });
       return null;
     }
@@ -128,8 +128,8 @@ describe('provider editor controllers', () => {
   ) {
     return {
       t: ((key: string) => key) as never, activeProvider, activeTemplate,
-      sceneAssignments: activeProvider.sceneModelAssignments, localModelCapabilityRegistry: [],
-      modelLookup: new Map<string, ProviderModelRuntime>(), modelCatalogSignature: 'sig', modelCatalogTargetScenario: 'watch' as const,
+      localModelCapabilityRegistry: [],
+      modelLookup: new Map<string, ProviderModelRuntime>(), modelCatalogSignature: 'sig', modelCatalogTargetScenario: 'realtime-multimodal' as const,
       manualModelIdDraft: '', pendingModelRegistration: null, draggingSceneModel: null, routeMode: 'watch' as const,
       providerRuntimeBlocked: false, providerRuntimeStatusMessage: null, setModelCatalog: vi.fn(),
       setModelCatalogTargetScenario: vi.fn(), setSelectedCatalogScenario: vi.fn(), setModelCatalogModalOpen: vi.fn(),
@@ -150,9 +150,8 @@ describe('provider editor controllers', () => {
     act(() => api.handleManualModelAdd());
     act(() => api.handleCapabilityRegistryEntryToggle('missing', 'speech-to-text'));
     act(() => api.handleCapabilityRegistryInteractionToggle('missing', 'streaming'));
-    act(() => api.handleSceneModelReorder('watch', 'missing'));
     expect(api.isModelAddedToScenario('all', 'missing')).toBe(false);
-    expect(api.isModelAddedToScenario('watch', 'missing')).toBe(false);
+    expect(api.isModelAddedToScenario('realtime-multimodal', 'missing')).toBe(false);
 
     params = { ...base, manualModelIdDraft: model.id, modelLookup: new Map([[model.id, model]]) };
     await view.render(<Harness />);
@@ -168,7 +167,7 @@ describe('provider editor controllers', () => {
     expect(params.setModelCatalog).toHaveBeenCalled();
 
     useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft, providers: [] } }));
-    act(() => api.handleSceneModelRemove('watch', activeProvider.model));
+    act(() => api.handleSceneModelRemove('realtime-multimodal', activeProvider.model));
   });
 
   it('covers blocked catalog messages, missing scenarios, pending toggles, and registration guards', async () => {
@@ -195,10 +194,10 @@ describe('provider editor controllers', () => {
     act(() => api.handlePendingRegistrationInteractionToggle('streaming'));
     act(() => api.handlePendingRegistrationConfirm());
 
-    pending = { scenario: 'watch', model, capabilities: ['speech-to-text'], realtimeAudioMode: 'server_vad', interactionCapabilities: ['streaming'] };
+    pending = { group: 'realtime-multimodal', model, capabilities: ['speech-to-text'], realtimeAudioMode: 'server_vad', interactionCapabilities: ['streaming'] };
     params = { ...base, providerRuntimeStatusMessage: 'blocked', pendingModelRegistration: pending };
     await view.render(<Harness />);
-    act(() => api.handleModelCatalogOpen('game'));
+    act(() => api.handleModelCatalogOpen('audio-generation'));
     act(() => api.handlePendingRegistrationCapabilityToggle('speech-to-text'));
     act(() => api.handlePendingRegistrationCapabilityToggle('text-to-speech'));
     act(() => api.handlePendingRegistrationInteractionToggle('streaming'));

@@ -22,7 +22,6 @@ use super::realtime_ws::{self, backoff_delay, WsSocket};
 use super::state::AudioStateStore;
 use super::time_utils::{ms_marker, unix_ms};
 
-const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
 const STT_RECONNECT_MAX_RETRIES: usize = 5;
 const STT_WRITE_TIMEOUT_SECS: u64 = 10;
 const MAX_AUDIO_CHUNKS_PER_TICK: usize = 8;
@@ -38,7 +37,7 @@ fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
     );
 }
 
-fn stt_session_update() -> Value {
+fn stt_session_update(model: &str) -> Value {
     json!({
       "type": "session.update",
       "session": {
@@ -48,7 +47,7 @@ fn stt_session_update() -> Value {
         "input_audio_format": "pcm",
         "sample_rate": 16000,
         "input_audio_transcription": {
-          "model": ASR_MODEL
+          "model": model
         },
         "turn_detection": {
           "type": "server_vad",
@@ -67,10 +66,16 @@ fn connect_stt_socket(
 ) -> Result<WsSocket, String> {
     let authority = crate::audio::events::authorize_bailian_model_operation(
         provider,
-        ASR_MODEL,
+        &provider.model,
         "asr",
     )?;
-    let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
+    if authority.wire_dialect != "bailian-qwen-asr-session-ws-v1" {
+        return Err(format!(
+            "model_protocol.wire_dialect_mismatch: role=primary-audio session worker cannot execute '{}' for selected model '{}'",
+            authority.wire_dialect, provider.model
+        ));
+    }
+    let ws_url = to_websocket_url(&provider.base_url, &provider.model)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
     if ws_url.path() != authority.endpoint_path {
         return Err(format!(
@@ -130,7 +135,7 @@ pub(crate) fn start_stt(
         "stt",
         "info",
         "正在启动实时语音识别...",
-        Some(format!("model={}", ASR_MODEL)),
+        Some(format!("model={}", provider.model)),
         None,
         None,
     );
@@ -140,6 +145,7 @@ pub(crate) fn start_stt(
     let join_handle = thread::Builder::new()
         .name("stt".to_string())
         .spawn(move || {
+            let failure_direction = direction.clone();
             let audio_state = app_handle.state::<AudioStateStore>();
 
             if let Err(error) = run_stt_worker(
@@ -151,6 +157,12 @@ pub(crate) fn start_stt(
                 stop_rx,
             ) {
                 audio_state.set_stt_connected(false, 0);
+                audio_state.mark_route_last_error(
+                    &failure_direction,
+                    format!("role=primary-audio {error}"),
+                    Some(error.split(':').next().unwrap_or("task.asr_failed").to_string()),
+                    Some("检查所选 ASR 模型、协议授权与服务连接。".to_string()),
+                );
 
                 let _ = append_diagnostics_log(
                     &app_handle,
@@ -166,7 +178,7 @@ pub(crate) fn start_stt(
                     cue_id: format!("stt-error-{}", unix_ms()),
                     revision: None,
                     sequence: None,
-                    route_direction: "inbound".to_string(),
+                    route_direction: failure_direction.clone(),
                     source_text: format!("[STT 错误] {error}"),
                     display_source_text: String::new(),
                     display_segments: Vec::new(),
@@ -282,6 +294,10 @@ fn run_stt_worker(
 
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
+    if super::bailian_tasks::is_asr_model(&provider.model) {
+        return super::bailian_tasks::run_asr(&app, store, &provider, &direction, audio_rx, stop_rx)
+            .map_err(|error| error.to_string());
+    }
     let mut socket = connect_stt_socket(&provider, "无法连接 ASR 服务")?;
 
     store.set_stt_connected(true, 0);
@@ -289,7 +305,7 @@ fn run_stt_worker(
     let _ = append_diagnostics_log(&app, "stt", "info", "已连接 ASR 服务。", None, None, None);
 
     socket
-        .send(Message::Text(stt_session_update().to_string().into()))
+        .send(Message::Text(stt_session_update(&provider.model).to_string().into()))
         .map_err(|error| format!("无法发送 session 配置: {error}"))?;
 
     let _ = append_diagnostics_log(
@@ -484,7 +500,7 @@ fn reconnect_socket(
     let mut socket = connect_stt_socket(provider, "无法重新连接 ASR 服务")?;
 
     socket
-        .send(Message::Text(stt_session_update().to_string().into()))
+        .send(Message::Text(stt_session_update(&provider.model).to_string().into()))
         .map_err(|error| format!("无法重发 session 配置: {error}"))?;
 
     let _ = append_diagnostics_log(
@@ -593,7 +609,7 @@ mod tests {
 
     #[test]
     fn stt_session_update_matches_the_asr_realtime_contract() {
-        let session = stt_session_update();
+        let session = stt_session_update("selected-asr-model");
 
         // The ASR endpoint validates the format strictly: "pcm" is the only
         // accepted value; "pcm16" is rejected with an Internal service error.
@@ -613,7 +629,7 @@ mod tests {
             session
                 .pointer("/session/input_audio_transcription/model")
                 .and_then(Value::as_str),
-            Some(ASR_MODEL)
+            Some("selected-asr-model")
         );
     }
 }

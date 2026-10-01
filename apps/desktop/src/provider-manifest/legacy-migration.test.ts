@@ -33,3 +33,26 @@ it('does not canonicalize v2 exact IDs or persist inherited module bindings', ()
   expect(hydrated.model).toBe(provider.model);
   expect(hydrated.modelProtocolBindings).toEqual([]);
 });
+
+
+it('hydrates Workspace ownership without replacing its connection settings, candidates or explicit bindings', () => {
+  const provider: ProviderDraft = {
+    ...structuredClone(appConfigDraftMock.providers[0]!),
+    templateId: 'template-dashscope-workspace',
+    manifestProviderId: undefined,
+    modelRegistryVersion: 2,
+    model: 'qwen3.8-livetranslate-flash-realtime',
+    baseUrl: 'wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+    modelProtocolBindings: [{
+      modelId: 'qwen3.8-livetranslate-flash-realtime', operation: 'realtime-translation',
+      profileOwnerProviderId: 'bailian', manifestVersion: 1,
+      profileId: 'bailian.livetranslate.3_8.realtime.ws', profileVersion: 1,
+    }],
+    candidateModelGroups: [{ group: 'realtime-multimodal', modelIds: ['qwen3.8-livetranslate-flash-realtime'] }],
+  };
+  const original = structuredClone(provider);
+  const hydrated = hydrateLegacyProviderManifestAuthority(provider);
+  expect(hydrated.manifestProviderId).toBe('bailian');
+  expect({ ...hydrated, manifestProviderId: original.manifestProviderId }).toEqual(original);
+  expect(provider).toEqual(original);
+});

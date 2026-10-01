@@ -1,4 +1,7 @@
 import type { ConfigStatus, ProviderDraft, ProviderSceneModelAssignment } from '../schema/config';
+import { candidateModelGroupOrder } from './candidate-model-groups';
+import candidatePresetConfig from '../defaults/provider-candidate-presets.json';
+import type { CandidateModelGroupId } from '../schema/config';
 import { PENDING_PROBE_CHECKED_AT } from '../schema/provider-probe';
 import type { ProviderProbeProfileRuntime } from '../schema/provider-runtime';
 import type { ProviderTemplate } from '../schema/provider-template';
@@ -28,6 +31,7 @@ export function buildDefaultSceneModelAssignments(template: ProviderTemplate): P
       { scenario: 'subtitle-translate', modelIds: [] },
     ];
   }
+
 
   if (template.id === 'template-dashscope-realtime') {
     return [
@@ -95,30 +99,12 @@ export function buildDefaultSceneModelAssignments(template: ProviderTemplate): P
   return empty;
 }
 
+const candidatePresetsByTemplate: Record<string, Partial<Record<CandidateModelGroupId, string[]>>> = candidatePresetConfig;
+
 export function buildProviderDraftPatchFromTemplate(
   provider: ProviderDraft,
   template: ProviderTemplate,
 ): Partial<ProviderDraft> {
-  const declaredModels = new Set(template.presetModels.map((preset) => preset.model));
-  const manifestAlignedAssignments = buildDefaultSceneModelAssignments(template).map((assignment) => ({
-    ...assignment,
-    modelIds: assignment.modelIds.filter((modelId) => declaredModels.has(modelId)),
-  }));
-  if (template.manifestProviderId) {
-    const watch = manifestAlignedAssignments.find((assignment) => assignment.scenario === 'watch');
-    if (watch && watch.modelIds.length === 0) {
-      const watchPreset = template.presetModels.find((preset) => (
-        preset.capabilities.includes('speech-to-text')
-        || preset.capabilities.includes('speech-to-speech')
-      ));
-      if (watchPreset) watch.modelIds = [watchPreset.model];
-    }
-    const subtitle = manifestAlignedAssignments.find((assignment) => assignment.scenario === 'subtitle-translate');
-    if (subtitle && subtitle.modelIds.length === 0) {
-      const textPreset = template.presetModels.find((preset) => preset.capabilities.includes('text-generation'));
-      if (textPreset) subtitle.modelIds = [textPreset.model];
-    }
-  }
   return {
     templateId: template.id,
     templateVersion: template.version,
@@ -145,7 +131,10 @@ export function buildProviderDraftPatchFromTemplate(
     maxOutputTokens: 256,
     responseModalities: ['text'],
     customHeaders: [],
-    sceneModelAssignments: manifestAlignedAssignments,
+    candidateModelGroups: candidateModelGroupOrder.map((group) => ({
+      group,
+      modelIds: [...new Set(candidatePresetsByTemplate[template.id]?.[group] ?? [])],
+    })),
     modelProtocolBindings: template.source === 'custom'
       ? template.defaultDraft.modelProtocolBindings ?? []
       : protocolBindingsForTemplate(template.id),

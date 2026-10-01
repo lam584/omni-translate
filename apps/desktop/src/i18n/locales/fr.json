@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Échec de la sonde de capacité d'exclusion de processus : {{detail}}",
     "feedbackProcessExclusionProbing": "La prise en charge de l'exclusion de processus n'a pas encore été confirmée. Après la sélection, Bridge termine la sonde au démarrage de Watch ; la capture ne commencera que lorsque la sonde sera prête.",
     "feedbackNoneSelected": "Le paramètre existant de contrôle sans retour est toujours sélectionné. La montre ne peut pas démarrer avec la parole traduite tant que vous n'avez pas explicitement choisi l'exclusion de processus, le pilote virtuel ou l'annulation de l'écho.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Routage audio",
     "pageSubtitle": "Surface blanche · flux intégré · entrée de modèle unique · sauvegarde en direct · adapté aux mobiles",
     "overviewAria": "Aperçu de l'itinéraire audio",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Reconnaissance vocale · Traduction · Discours",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Modèle de texte principal",
+    "scenarioPrimaryTextCaption": "Traduction de texte de base pour le pipeline de reconnaissance vocale",
+    "primaryTextModelRequired": "Le modèle vocal actuel nécessite de sélectionner un modèle de traduction de texte de base"
   },
   "overlay": {
     "bootstrapFailed": "Échec de l’initialisation de la superposition de sous-titres",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Scénario : {{scenario}}",
       "editCapabilitiesTitle": "Modifier le registre des capacités",
       "refreshTitle": "Actualiser le catalogue de modèles",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Fermer la liste des modèles",
       "allScenarios": "Tout",
       "searchPlaceholder": "Rechercher des modèles...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Clé secrète",
       "hideSecret": "Cacher le secret",
       "showSecret": "Afficher le secret"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Modèles de scène",

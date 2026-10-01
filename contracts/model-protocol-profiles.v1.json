@@ -477,7 +477,7 @@
       "audioInput": {
         "required": true,
         "codecs": [
-          "pcm16"
+          "pcm"
         ],
         "sampleRatesHz": [
           16000
@@ -489,7 +489,7 @@
       "audioOutput": {
         "required": true,
         "codecs": [
-          "pcm16"
+          "pcm"
         ],
         "sampleRatesHz": [
           24000
@@ -560,19 +560,23 @@
         "session.finished",
         "task-finished"
       ],
-      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/qwen-audio-chat-session.json",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-session.json",
       "sources": [
         {
           "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
         },
         {
           "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
         },
         {
           "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+          "checkedAt": "2026-09-30"
         }
       ]
     },
@@ -778,23 +782,19 @@
         "session.created",
         "session.finished"
       ],
-      "wireFixture": "apps/desktop/src-tauri/fixtures/model-protocol/task-asr-qwen-audio.json",
+      "wireFixture": "provider-modules/bailian/fixtures/qwen-audio-task-asr.json",
       "sources": [
         {
-          "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+          "checkedAt": "2026-09-30"
         },
         {
-          "url": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+          "checkedAt": "2026-09-30"
         },
         {
-          "url": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events",
-          "checkedAt": "2026-08-30"
-        },
-        {
-          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+          "checkedAt": "2026-09-30"
         }
       ]
     },
@@ -1710,6 +1710,182 @@
           "checkedAt": "2026-09-20"
         }
       ]
+    },
+    {
+      "dialectId": "bailian-omni-realtime-ws-v2",
+      "dialectVersion": 2,
+      "transport": "websocket",
+      "endpointFamily": "dashscope-realtime-v1",
+      "endpointPath": "/api-ws/v1/realtime",
+      "modelPlacement": "query",
+      "inputFraming": "json-base64",
+      "outputFraming": "json-base64",
+      "handshake": [
+        "session.created",
+        "session.update",
+        "session.updated"
+      ],
+      "turnControl": "session.turn_detection server_vad/semantic_vad or null; manual input_audio_buffer.commit then response.create",
+      "previewSemantics": "mixed-by-event",
+      "textEventSemantics": [
+        {
+          "eventType": "conversation.item.input_audio_transcription.delta",
+          "updateMode": "replaceable-snapshot",
+          "identityKeys": [
+            "item_id",
+            "content_index"
+          ],
+          "previewFields": [
+            "text",
+            "stash"
+          ],
+          "finalEventType": "conversation.item.input_audio_transcription.completed"
+        },
+        {
+          "eventType": "response.text.delta",
+          "updateMode": "append-delta",
+          "identityKeys": [
+            "response_id",
+            "item_id",
+            "output_index",
+            "content_index"
+          ],
+          "previewFields": [
+            "delta"
+          ],
+          "finalEventType": "response.text.done"
+        },
+        {
+          "eventType": "response.audio_transcript.delta",
+          "updateMode": "append-delta",
+          "identityKeys": [
+            "response_id",
+            "item_id",
+            "output_index",
+            "content_index"
+          ],
+          "previewFields": [
+            "delta"
+          ],
+          "finalEventType": "response.audio_transcript.done"
+        },
+        {
+          "eventType": "response.function_call_arguments.delta",
+          "updateMode": "append-delta",
+          "identityKeys": [
+            "response_id",
+            "item_id",
+            "output_index",
+            "call_id"
+          ],
+          "previewFields": [
+            "delta"
+          ],
+          "finalEventType": "response.function_call_arguments.done"
+        }
+      ],
+      "commitSemantics": "response content done events commit one response; response.done is not a session terminal",
+      "responseTrigger": "response.create for manual turns",
+      "terminalLifecycle": "owner-close-after-response-drain",
+      "reusePolicy": "multi-turn-session",
+      "regionPolicy": "region-key-endpoint-model-must-match",
+      "audioInput": {
+        "required": true,
+        "codecs": [
+          "pcm"
+        ],
+        "sampleRatesHz": [
+          16000
+        ],
+        "channels": [
+          1,
+          2,
+          4
+        ]
+      },
+      "audioOutput": {
+        "required": true,
+        "codecs": [
+          "pcm"
+        ],
+        "sampleRatesHz": [
+          24000
+        ],
+        "channels": [
+          1
+        ]
+      },
+      "clientEventTypes": [
+        "session.update",
+        "input_audio_buffer.append",
+        "input_audio_buffer.commit",
+        "input_audio_buffer.clear",
+        "input_image_buffer.append",
+        "conversation.item.create",
+        "response.create",
+        "response.cancel"
+      ],
+      "serverEventTypes": [
+        "session.created",
+        "session.updated",
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "input_audio_buffer.cleared",
+        "conversation.item.created",
+        "conversation.item.input_audio_transcription.delta",
+        "conversation.item.input_audio_transcription.completed",
+        "conversation.item.input_audio_transcription.failed",
+        "response.created",
+        "response.text.delta",
+        "response.text.done",
+        "response.audio_transcript.delta",
+        "response.audio_transcript.done",
+        "response.audio.delta",
+        "response.audio.done",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.done",
+        "error"
+      ],
+      "clientJsonBase64EventTypes": [
+        "input_audio_buffer.append",
+        "input_image_buffer.append"
+      ],
+      "clientBinaryEventTypes": [],
+      "serverJsonBase64EventTypes": [
+        "response.audio.delta"
+      ],
+      "serverBinaryEventTypes": [],
+      "forbiddenClientEventTypes": [
+        "session.finish",
+        "finish-task",
+        "input_text_buffer.append"
+      ],
+      "forbiddenServerEventTypes": [
+        "response.text.text",
+        "session.finished",
+        "task-finished"
+      ],
+      "wireFixture": "provider-modules/bailian/fixtures/omni-session-v2.json",
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/realtime",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/server-events",
+          "checkedAt": "2026-09-30"
+        }
+      ]
     }
   ],
   "profiles": [
@@ -1898,15 +2074,27 @@
         "ap-southeast-1"
       ],
       "adapter": {
-        "status": "manifest-only",
-        "adapterId": null,
-        "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+        "status": "enabled",
+        "adapterId": "desktop-qwen-audio-session-v1",
+        "reason": "Typed Qwen-Audio dialogue adapter with server_vad/manual control and isolated ambient/turn_invalid events. Fixture-only; no live verification."
       },
       "legacy": false,
       "sources": [
         {
           "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
-          "checkedAt": "2026-08-30"
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+          "checkedAt": "2026-09-30"
         }
       ]
     },
@@ -1982,19 +2170,23 @@
         }
       },
       "adapter": {
-        "status": "manifest-only",
-        "adapterId": null,
-        "reason": "Qwen-Audio-ASR-specific parameters and typed result reducer are not registered."
+        "status": "enabled",
+        "adapterId": "desktop-qwen-audio-task-asr-v1",
+        "reason": "Typed Qwen-Audio streaming ASR task adapter with task identity and sentence snapshot replacement. Fixture-only; no live verification."
       },
       "legacy": false,
       "sources": [
         {
-          "url": "https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+          "checkedAt": "2026-09-30"
         },
         {
-          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-0-asr-flash-streaming",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+          "checkedAt": "2026-09-30"
         }
       ]
     },
@@ -2362,19 +2554,31 @@
         }
       },
       "adapter": {
-        "status": "manifest-only",
-        "adapterId": null,
-        "reason": "Qwen-Audio-TTS duplex task adapter is not registered."
+        "status": "enabled",
+        "adapterId": "desktop-qwen-audio-task-tts-v1",
+        "reason": "Typed SpeechSynthesizer duplex adapter for exact Qwen-Audio 3.0 plus/flash only. Fixture-only; no live verification."
       },
       "legacy": false,
       "sources": [
         {
-          "url": "https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-api",
+          "checkedAt": "2026-09-30"
         },
         {
-          "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-client-events",
-          "checkedAt": "2026-08-30"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-model-access",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-websocket-api",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-tts-server-events",
+          "checkedAt": "2026-09-30"
         }
       ]
     },
@@ -2803,19 +3007,130 @@
         "ap-southeast-1"
       ],
       "adapter": {
-        "status": "manifest-only",
-        "adapterId": null,
-        "reason": "A typed smart_turn/ambient/turn_invalid adapter is not registered."
+        "status": "enabled",
+        "adapterId": "desktop-qwen-audio-session-v1",
+        "reason": "Typed Qwen-Audio dialogue adapter with server_vad/manual control and isolated ambient/turn_invalid events. Fixture-only; no live verification."
       },
       "legacy": false,
       "sources": [
         {
-          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-realtime-plus",
-          "checkedAt": "2026-09-20"
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides",
+          "checkedAt": "2026-09-30"
         },
         {
-          "url": "https://help.aliyun.com/zh/model-studio/newly-released-models",
-          "checkedAt": "2026-09-20"
+          "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api",
+          "checkedAt": "2026-09-30"
+        }
+      ]
+    },
+    {
+      "profileId": "bailian.omni.3_8.realtime.ws",
+      "profileVersion": 1,
+      "product": "qwen3.8-omni-realtime",
+      "exactModelIds": [
+        "qwen3.8-omni-flash-realtime"
+      ],
+      "operations": [
+        "dialogue"
+      ],
+      "dialectId": "bailian-omni-realtime-ws-v2",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1"
+      ],
+      "endpointRequirements": {
+        "workspaceScoped": true
+      },
+      "adapter": {
+        "status": "enabled",
+        "adapterId": "desktop-omni-session-v2",
+        "reason": "Typed Omni 3.8 nested audio/turn detection adapter. Offline documentation fixtures only; no live verification."
+      },
+      "legacy": false,
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/realtime",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/server-events",
+          "checkedAt": "2026-09-30"
+        }
+      ]
+    },
+    {
+      "profileId": "bailian.task-asr.qwen-audio-3.1.ws",
+      "profileVersion": 1,
+      "product": "qwen-audio-3.1-asr-streaming",
+      "exactModelIds": [
+        "qwen-audio-3.1-asr-flash-streaming"
+      ],
+      "operations": [
+        "asr"
+      ],
+      "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+      "regions": [
+        "cn-beijing",
+        "ap-southeast-1"
+      ],
+      "modelAudio": {
+        "input": {
+          "required": true,
+          "codecs": [
+            "pcm",
+            "wav",
+            "mp3",
+            "opus",
+            "speex",
+            "aac",
+            "amr"
+          ],
+          "sampleRateConstraint": {
+            "kind": "any-positive-integer"
+          },
+          "channels": [
+            1
+          ]
+        },
+        "output": {
+          "required": false,
+          "codecs": [],
+          "sampleRateConstraint": {
+            "kind": "not-applicable"
+          },
+          "channels": []
+        }
+      },
+      "adapter": {
+        "status": "enabled",
+        "adapterId": "desktop-qwen-audio-task-asr-v1",
+        "reason": "Typed Qwen-Audio streaming ASR task adapter with task identity and sentence snapshot replacement. Fixture-only; no live verification."
+      },
+      "legacy": false,
+      "sources": [
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
+          "checkedAt": "2026-09-30"
+        },
+        {
+          "url": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
+          "checkedAt": "2026-09-30"
         }
       ]
     }

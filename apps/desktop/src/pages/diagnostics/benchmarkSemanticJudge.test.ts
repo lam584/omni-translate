@@ -41,7 +41,9 @@ const judgeModel = {
   provider: {
     providerId: 'judge-provider',
     model: 'judge-model',
-    streamEnabled: true,
+    localModelCapabilityRegistry: [{ id: 'judge-text', modelId: 'judge-model', capabilities: ['text-generation'] }],
+    streamEnabled: false,
+    timeoutMs: 10_000,
     systemPromptTemplate: 'original',
     temperature: 0.8,
     maxOutputTokens: 2048,
@@ -126,6 +128,13 @@ describe('parseBenchmarkJudgePayload', () => {
     expect(parseBenchmarkJudgeJson(transcript)).toEqual({ score: 85, rationale: 'usable' });
   });
 
+  it('does not accept a complete nested score from a truncated streaming response', () => {
+    const valid = JSON.stringify(payload);
+    expect(() => parseBenchmarkJudgePayload(valid.slice(0, -1))).toThrow();
+    expect(() => parseBenchmarkJudgePayload(`{"result":${valid}`)).toThrow();
+    expect(() => parseBenchmarkJudgePayload(`{"data":${valid}`)).toThrow();
+    expect(parseBenchmarkJudgePayload(`prefix ${valid}`).score).toBe(90);
+  });
   it('rejects a bare scalar score or a response with a missing rubric field', () => {
     expect(() => parseBenchmarkJudgePayload('{"score": 90, "rationale": "opaque"}')).toThrow();
     expect(() => parseBenchmarkJudgePayload('{"subscores":{"adequacy":90},"rationale":"incomplete"}')).toThrow();
@@ -175,6 +184,40 @@ describe('parseBenchmarkJudgePayload', () => {
     });
   });
 
+  it('handles <think> blocks, wrapper objects, and omitted criticalErrors', () => {
+    const raw = `<think>
+Thinking about scores:
+- adequacy: 95
+- facts: 90
+- omissions: 90
+- fluency: 95
+</think>
+\`\`\`json
+{
+  "result": {
+    "subscores": {
+      "忠实度": 95,
+      "facts_terminology": 90,
+      "omissions-additions": 90,
+      "流畅度": 95
+    },
+    "summary": "翻译非常准确流畅。"
+  }
+}
+\`\`\``;
+    expect(parseBenchmarkJudgePayload(raw)).toEqual({
+      score: 92.5,
+      subscores: {
+        adequacy: 95,
+        factsTerminology: 90,
+        omissionsAdditions: 90,
+        fluency: 95,
+      },
+      rationale: "翻译非常准确流畅。",
+      criticalErrors: [],
+    });
+  });
+
   it('rejects malformed critical-error containers and unauditable entries', () => {
     const base = {
       subscores: { adequacy: 90, facts: 90, additions: 90, fluency: 90 },
@@ -219,9 +262,11 @@ describe('runBenchmarkSemanticJudge', () => {
       model: 'judge-model',
       systemPromptTemplate: 'benchmark-semantic-judge-v1',
       temperature: 0,
-      maxOutputTokens: 768,
+      maxOutputTokens: 2048,
       responseModalities: ['text'],
-      streamEnabled: false,
+      streamEnabled: true,
+      transport: 'streaming-http',
+      timeoutMs: 60_000,
     });
     expect(JSON.parse(mocks.smoke.mock.calls[0][1])).toMatchObject({
       rubricVersion: 'benchmark-semantic-judge/v1',
@@ -232,6 +277,54 @@ describe('runBenchmarkSemanticJudge', () => {
     });
   });
 
+  it('routes a text judge through streaming HTTP without rewriting the configured realtime provider', async () => {
+    mocks.smoke.mockResolvedValueOnce({ error: null, transcript: JSON.stringify(payload) });
+    const realtime = {
+      ...judgeModel.provider,
+      model: 'qwen-plus',
+      localModelCapabilityRegistry: [{ id: 'judge-text', modelId: 'qwen-plus', capabilities: ['text-generation'] }],
+      kind: 'dashscope',
+      transport: 'websocket',
+    } as ProviderDraft;
+    await runBenchmarkSemanticJudge(benchmarkReport(), {
+      ...judgeModel, provider: realtime,
+    }, 'direct-key');
+    expect(mocks.smoke.mock.calls[0][0]).toMatchObject({ model: 'qwen-plus', transport: 'streaming-http', streamEnabled: true, timeoutMs: 60_000 });
+    expect(realtime.transport).toBe('websocket');
+    expect(realtime.streamEnabled).toBe(false);
+    expect(realtime.timeoutMs).toBe(10_000);
+  });
+  it('uses the built-in text capability for a catalog LLM without requiring a user override', async () => {
+    await runBenchmarkSemanticJudge(benchmarkReport(), {
+      ...judgeModel,
+      provider: { ...judgeModel.provider, kind: 'dashscope', model: 'qwen3.8-flash' },
+    }, 'direct-key');
+    expect(mocks.smoke.mock.calls[0][0]).toMatchObject({
+      transport: 'streaming-http',
+      model: 'qwen3.8-flash',
+      localModelCapabilityRegistry: expect.arrayContaining([
+        expect.objectContaining({ modelId: 'qwen3.8-flash', capabilities: expect.arrayContaining(['text-generation']) }),
+      ]),
+    });
+  });
+  it('uses an explicit GUI capability override for catalog-only text models and respects its removal', async () => {
+    const provider = {
+      ...judgeModel.provider,
+      kind: 'dashscope',
+      model: 'qwen3.8-flash',
+      modelRegistryVersion: 2,
+      modelCapabilityOverrides: [{ modelId: 'qwen3.8-flash', source: 'user', capabilities: ['text-generation'] }],
+    } as ProviderDraft;
+    await runBenchmarkSemanticJudge(benchmarkReport(), { ...judgeModel, provider }, 'direct-key');
+    expect(mocks.smoke.mock.calls[0][0]).toMatchObject({
+      model: 'qwen3.8-flash', transport: 'streaming-http',
+      localModelCapabilityRegistry: expect.arrayContaining([expect.objectContaining({ modelId: 'qwen3.8-flash', capabilities: ['text-generation'] })]),
+    });
+    mocks.smoke.mockClear();
+    const disabled = { ...provider, modelCapabilityOverrides: [{ modelId: 'qwen3.8-flash', source: 'user' as const, capabilities: [] }] };
+    await expect(runBenchmarkSemanticJudge(benchmarkReport(), { ...judgeModel, provider: disabled }, 'direct-key')).rejects.toThrow('文本生成');
+    expect(mocks.smoke).not.toHaveBeenCalled();
+  });
   it('reads a stored credential and ignores incomplete or empty candidate runs', async () => {
     const incomplete = { ...benchmarkReport().runs[0], runIndex: 1, responseDoneMs: null };
     const empty = { ...benchmarkReport().runs[0], runIndex: 2, translationFinal: '   ' };
@@ -242,6 +335,10 @@ describe('runBenchmarkSemanticJudge', () => {
     expect(mocks.smoke).toHaveBeenCalledOnce();
   });
 
+  it('rejects an interrupted streaming response rather than scoring its complete nested object', async () => {
+    mocks.smoke.mockResolvedValueOnce({ error: null, transcript: `{"result":${JSON.stringify(payload)}` });
+    await expect(runBenchmarkSemanticJudge(benchmarkReport(), judgeModel, 'key')).rejects.toThrow();
+  });
   it('reports each unavailable prerequisite and provider failure', async () => {
     mocks.resolveSourceText.mockReturnValueOnce(null);
     await expect(runBenchmarkSemanticJudge(benchmarkReport(), judgeModel, 'key')).rejects.toThrow();

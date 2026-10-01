@@ -202,6 +202,51 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
     expect(invokeMock).not.toHaveBeenCalledWith('start_bridge_service', expect.anything());
   });
 
+  it('waits for a slow driver probe on page reload instead of timing out at three seconds', async () => {
+    vi.useFakeTimers();
+    const refreshed = autostartableSnapshot();
+    const started = structuredClone(refreshed);
+    started.bridge.processStatus = 'running';
+    started.bridge.bridgeState = 'running';
+    invokeMock.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
+      if (command === 'bridge_v2' && args?.command?.action === 'refresh') {
+        await new Promise((resolve) => setTimeout(resolve, 3_100));
+        return { data: refreshed, warnings: [] };
+      }
+      if (command === 'start_bridge_service') return started;
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const pending = scheduleBridgeAutostartAfterStartup(structuredClone(appConfigDraftMock), 0).promise;
+    await vi.advanceTimersByTimeAsync(3_100);
+    await pending;
+
+    expect(invokeMock).toHaveBeenCalledWith('start_bridge_service', expect.anything());
+    expect(useAppStore.getState().runtimeSnapshot.bridge.processStatus).toBe('running');
+    expect(useAppStore.getState().runtimeNotifications.some((n) => n.message.includes('bridge_v2.refresh'))).toBe(false);
+  });
+  it('waits for the native Bridge start after a slow service initialization', async () => {
+    vi.useFakeTimers();
+    const refreshed = autostartableSnapshot();
+    const started = structuredClone(refreshed);
+    started.bridge.processStatus = 'running';
+    started.bridge.bridgeState = 'running';
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'bridge_v2') return { data: refreshed, warnings: [] };
+      if (command === 'start_bridge_service') {
+        await new Promise((resolve) => setTimeout(resolve, 8_100));
+        return started;
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const pending = scheduleBridgeAutostartAfterStartup(structuredClone(appConfigDraftMock), 0).promise;
+    await vi.advanceTimersByTimeAsync(8_100);
+    await pending;
+
+    expect(useAppStore.getState().runtimeSnapshot.bridge.processStatus).toBe('running');
+    expect(useAppStore.getState().runtimeNotifications.some((n) => n.message.includes('start_bridge_service'))).toBe(false);
+  });
   it('reports a warning notification when the refresh fails', async () => {
     invokeMock.mockRejectedValue(new Error('probe unavailable'));
 

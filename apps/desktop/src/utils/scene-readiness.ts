@@ -9,6 +9,8 @@ import { isPendingProbeCheckedAt } from './provider-probe';
 import { isProcessLoopbackReady, resolveProcessLoopbackCapability } from './process-loopback-capability';
 import { resolveAecCapability } from './aec-capability';
 import { resolveVirtualDriverCapability, type VirtualDriverCapability } from './virtual-driver-capability';
+import { authorizedCustomDashScopeRealtime } from './custom-dashscope-authority';
+import { resolveRealtimeProfile } from './realtime-profile';
 
 export type SceneMode = ScenarioMode;
 
@@ -84,12 +86,130 @@ function virtualMicUnavailableTitle(capability: VirtualDriverCapability) {
   return i18n.t('audioRouting.unsupportedVirtualMicSpeech');
 }
 
+function modelProtocolBlockers(config: AppConfigDraft, mode: SceneMode): SceneBlocker[] {
+  const voiceModels = mode === "voice-room"
+    ? [config.devices.inboundVoiceModelId, config.devices.outboundVoiceModelId]
+    : [config.devices.inboundVoiceModelId];
+  const requested: Array<{ reference: string; text: boolean; role: "primary-audio" | "primary-text" | "secondary-subtitle" }> =
+    [...new Set(voiceModels)].map((reference) => ({ reference, text: false, role: "primary-audio" }));
+
+  const blockers: SceneBlocker[] = [];
+
+  // Check if primary voice model is ASR / text-worker that requires primary text translation
+  for (const voiceRef of voiceModels) {
+    if (!voiceRef) continue;
+    try {
+      const profile = resolveRealtimeProfile(config, voiceRef) as unknown as {
+        nativeTranslation?: boolean;
+        translationExecution?: "dedicated-realtime" | "prompted-realtime" | "text-worker";
+        invocationOperation?: "native_translate" | "dialogue" | "asr";
+      };
+      const needsTextWorker = profile.translationExecution === "text-worker"
+        || (profile.translationExecution === undefined && !profile.nativeTranslation);
+      if (needsTextWorker) {
+        const textRef = config.devices.primaryTextTranslationModelId;
+        if (textRef) {
+          requested.push({ reference: textRef, text: true, role: "primary-text" });
+        } else {
+          blockers.push({
+            id: mode + "-primary-text-missing",
+            title: i18n.t("audioRouting.primaryTextModelRequired") || "当前语音模型需要选择基础文本翻译模型",
+            route: "/audio-routing",
+          });
+        }
+      }
+    } catch {
+      // Audio protocol resolution error handled below
+    }
+  }
+
+  // The secondary worker is opt-in. A retained selection is irrelevant in native mode.
+  if (config.devices.subtitleTranslationMode === "secondary" && config.devices.subtitleTranslationModelId) {
+    requested.push({ reference: config.devices.subtitleTranslationModelId, text: true, role: "secondary-subtitle" });
+  }
+  for (const item of requested) {
+    const [templateId, modelId] = item.reference.includes("::")
+      ? item.reference.split("::", 2)
+      : ["", item.reference];
+    const provider = templateId
+      ? config.providers.find((entry) => entry.templateId === templateId)
+      : config.providers.find((entry) => entry.model === modelId || entry.candidateModelGroups?.some((group) => group.modelIds.includes(modelId)));
+    if (!provider) {
+      if (item.reference) {
+        const roleLabel = item.role === "primary-text"
+          ? (i18n.t("session.modelRole.primary-text") || "基础文本翻译模型")
+          : item.role === "secondary-subtitle"
+          ? (i18n.t("session.modelRole.secondary-subtitle") || "二次字幕模型")
+          : (i18n.t("session.modelRole.primary-audio") || "主音频模型");
+        blockers.push({
+          id: mode + "-" + item.role + "-unresolved-" + (modelId || "empty"),
+          title: roleLabel + " " + (modelId || "（未选择）") + " 未关联到启用的平台",
+          route: "/providers",
+        });
+      }
+      continue;
+    }
+    // Built-in candidate metadata is advisory too; it must not make an
+    // unregistered or manifest-only DashScope model appear ready to start.
+    if (!item.text && provider.kind === "dashscope" && provider.templateSource !== "custom") {
+      try {
+        resolveRealtimeProfile(config, item.reference);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        blockers.push({
+          id: mode + "-audio-protocol-" + (modelId || "empty"),
+          title: "主音频模型 " + (modelId || "（未选择）") + " 的实时协议不可用：" + reason,
+          route: "/providers",
+        });
+      }
+      continue;
+    }
+    if (item.text && provider.templateSource !== "custom") {
+      const textGroup = provider.candidateModelGroups?.find((g) => g.group === "text-processing");
+      const hasTextModel = textGroup ? textGroup.modelIds.includes(modelId) : (provider.model === modelId || provider.candidateModelGroups?.some((g) => g.modelIds.includes(modelId)));
+      if (!hasTextModel) {
+        const roleLabel = item.role === "primary-text"
+          ? (i18n.t("session.modelRole.primary-text") || "基础文本翻译模型")
+          : (i18n.t("session.modelRole.secondary-subtitle") || "二次字幕模型");
+        blockers.push({
+          id: mode + "-text-protocol-" + (modelId || "empty"),
+          title: roleLabel + " " + (modelId || "（未选择）") + " 缺少文本翻译能力支持",
+          route: "/providers",
+        });
+      }
+      continue;
+    }
+    if (provider.templateSource !== "custom") continue;
+    const matching = (provider.modelProtocolBindings ?? []).filter((binding) => binding.modelId === modelId
+      && (item.text ? binding.operation === "text-translation" : (binding.operation.startsWith("realtime-") || binding.operation === "asr" || binding.operation === "realtime-transcription")));
+    if (modelId && (matching.length === 1
+      || (!item.text && matching.length === 0 && authorizedCustomDashScopeRealtime(provider, modelId)))) continue;
+    const roleLabel = item.role === "primary-text"
+      ? (i18n.t("session.modelRole.primary-text") || "基础文本翻译模型")
+      : item.role === "secondary-subtitle"
+      ? (i18n.t("session.modelRole.secondary-subtitle") || "二次字幕模型")
+      : (i18n.t("session.modelRole.primary-audio") || "主音频模型");
+    const protocolKind = item.text ? "text" : "audio";
+    blockers.push({
+      id: mode + "-" + protocolKind + "-protocol-" + (modelId || "empty"),
+      title: item.text ? (roleLabel + " " + (modelId || "（未选择）") + " 缺少文本翻译协议绑定")
+        : (roleLabel + " " + (modelId || "（未选择）") + " 缺少实时协议绑定"),
+      route: "/providers",
+    });
+  }
+  const active = config.providers.find((entry) => entry.templateId === config.activeProviderTemplateId);
+  if (active?.templateSource === "custom" && !active.model.trim()
+    && !(active.candidateModelGroups ?? []).some((group) => group.modelIds.length)) {
+    blockers.push({ id: mode + "-empty-custom-platform", title: "自定义平台尚未添加模型", route: "/providers" });
+  }
+  return blockers;
+}
 export function getWatchSceneReadiness(
   configDraft: AppConfigDraft,
   runtimeSnapshot: RuntimeSnapshot,
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
 ): SceneReadiness {
-  const blockers: SceneBlocker[] = [];
+  const blockers: SceneBlocker[] = modelProtocolBlockers(configDraft, 'watch');
 
   if (!hasProviderVerificationAttempt(configDraft)) {
     blockers.push({ id: 'watch-provider', title: i18n.t('sceneReadiness.providerNotVerified'), route: '/providers' });
@@ -183,7 +303,7 @@ export function getGameSceneReadiness(
   runtimeSnapshot: RuntimeSnapshot,
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
 ): SceneReadiness {
-  const blockers: SceneBlocker[] = [];
+  const blockers: SceneBlocker[] = modelProtocolBlockers(configDraft, 'game');
   const aecCapability = resolveAecCapability(audioRuntimeSnapshot);
   const virtualDriver = resolveVirtualDriverCapability(runtimeSnapshot.bridge);
   const virtualDriverSelected = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';
@@ -243,7 +363,7 @@ export function getVoiceRoomSceneReadiness(
   runtimeSnapshot: RuntimeSnapshot,
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
 ): SceneReadiness {
-  const blockers: SceneBlocker[] = [];
+  const blockers: SceneBlocker[] = modelProtocolBlockers(configDraft, 'voice-room');
   const aecCapability = resolveAecCapability(audioRuntimeSnapshot);
   const virtualDriver = resolveVirtualDriverCapability(runtimeSnapshot.bridge);
   const virtualDriverSelected = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';

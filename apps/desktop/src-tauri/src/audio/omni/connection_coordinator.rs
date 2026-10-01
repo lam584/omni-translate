@@ -1463,8 +1463,8 @@ impl OmniConnectionCoordinator {
             &target_language,
             output_mode,
         );
-        if crate::audio::events::is_livetranslate_route_model(provider, &provider.model) {
-            crate::audio::bailian_protocol::admit_livetranslate_client_event_for_provider(
+        if provider.kind == "dashscope" {
+            crate::audio::bailian_dialogue::admit_client_event_for_provider(
                 provider,
                 &session_cfg,
             )?;

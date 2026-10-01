@@ -84,6 +84,7 @@ describe('DesktopApiV2 configuration client', () => {
     const config = { providers: [] } as never;
 
     await api.provider.fetchModels(provider);
+    await api.provider.fetchModelMetadata(provider);
     await api.provider.probe(provider);
     await api.provider.smoke(provider, 'hello', 'en', 'zh-CN');
     await api.session.snapshot();
@@ -210,7 +211,7 @@ describe('DesktopApiV2 configuration client', () => {
       'provider_v2',
       { command: { action: 'runModelBenchmark', ...benchmarkPayload } },
     ]);
-    expect(calls).toHaveLength(60);
+    expect(calls).toHaveLength(61);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {
@@ -308,8 +309,9 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
   const provider = structuredClone(config.providers[0]);
 
   const calls: Array<[string, () => Promise<unknown>]> = [
-    ['provider.resolveRealtimeProfile', () => api.provider.resolveRealtimeProfile(config, config.devices.inboundVoiceModelId)],
+    ['provider.resolveRealtimeProfile', () => api.provider.resolveRealtimeProfile(config, config.devices.inboundVoiceModelId, 'native_translate')],
     ['provider.fetchModels', () => api.provider.fetchModels(provider)],
+    ['provider.fetchModelMetadata', () => api.provider.fetchModelMetadata(provider)],
     ['provider.probe', () => api.provider.probe(provider)],
     ['provider.smoke', () => api.provider.smoke(provider, 'hello', 'en', 'zh-CN')],
     ['benchmark.runModelBenchmark', () => api.benchmark.runModelBenchmark({
@@ -475,6 +477,7 @@ describe('desktop-api-v2 command fixture (renderer→shell wire pin)', () => {
       'history_v2:listSessions',
       'history_v2:playCueAudio',
       'history_v2:stopPlayback',
+      'provider_v2:fetchModelMetadata',
       'provider_v2:fetchModels',
       'provider_v2:probe',
       'provider_v2:resolveRealtimeProfile',

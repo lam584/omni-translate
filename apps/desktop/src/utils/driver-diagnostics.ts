@@ -68,6 +68,12 @@ export function resolveDriverDiagnosis(bridge: RuntimeSnapshot['bridge']): Drive
     return { key: 'operationFailed', tone: 'error', recommendedAction, reason };
   }
   if (bridge.driverHealth === 'not-installed') {
+    if (bridge.rootDeviceCount > 0 || Boolean(bridge.endpointName) || Boolean(bridge.abiVersion) || bridge.ioctlAvailable) {
+      if (bridge.bridgeState !== 'running') {
+        return { key: 'bridgeStopped', tone: 'warning', recommendedAction, reason };
+      }
+      return { key: 'ready', tone: 'success', recommendedAction, reason };
+    }
     return { key: 'notInstalled', tone: 'warning', recommendedAction, reason };
   }
   if (bridge.driverHealth === 'damaged' || bridge.driverHealth === 'version-mismatch') {

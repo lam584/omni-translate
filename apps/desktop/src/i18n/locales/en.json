@@ -338,6 +338,7 @@
     }
   },
   "audioRouting": {
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Audio Routing",
     "pageSubtitle": "White surface · embedded flow · single model entry · live save · mobile-friendly",
     "overviewAria": "Audio route overview",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Speech recognition · Translation · Speech",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Primary text model",
+    "scenarioPrimaryTextCaption": "Base text translation for speech recognition pipeline",
+    "primaryTextModelRequired": "The current voice model requires selecting a base text translation model"
   },
   "overlay": {
     "bootstrapFailed": "Subtitle overlay failed to initialize",
@@ -930,6 +934,7 @@
       "scenarioBadge": "Scenario: {{scenario}}",
       "editCapabilitiesTitle": "Edit capability registry",
       "refreshTitle": "Refresh model catalog",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Close model list",
       "allScenarios": "All",
       "searchPlaceholder": "Search models...",
@@ -1035,6 +1040,28 @@
       "secretPlaceholder": "Secret",
       "hideSecret": "Hide secret",
       "showSecret": "Show secret"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Scene models",

@@ -9,8 +9,10 @@ import type {
   ProviderResponseModality,
   ProviderSceneModelAssignment,
   ProviderScenario,
+  CandidateModelGroupId,
   RealtimeAudioMode,
 } from '../../schema/config';
+import { candidateModelGroupOrder } from '../../utils/candidate-model-groups';
 import type { ProviderCapability, ProviderInteractionCapability, ProviderKind, ProviderTransport } from '../../schema/provider-contract';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
 import type { ModelPreset, ProviderTemplate } from '../../schema/provider-template';
@@ -35,10 +37,10 @@ export type ModelCatalogState = {
   endpoint: string | null;
 };
 
-export type ModelCatalogScenarioFilter = 'all' | ProviderScenario;
+export type ModelCatalogScenarioFilter = 'all' | CandidateModelGroupId | ProviderScenario;
 
 export type PendingModelRegistration = {
-  scenario: ProviderScenario;
+  group: CandidateModelGroupId;
   model: ProviderModelRuntime;
   capabilities: ProviderCapability[];
   realtimeAudioMode: RealtimeAudioMode;
@@ -63,7 +65,8 @@ function formatTransportLabel(transport: ProviderTransport | string) {
   return i18n.t('providers.labels.http');
 }
 
-function formatScenarioLabel(scenario: AudioRouteMode | ProviderScenario) {
+function formatScenarioLabel(scenario: AudioRouteMode | ProviderScenario | CandidateModelGroupId) {
+  if (candidateModelGroupOrder.includes(scenario as CandidateModelGroupId)) return i18n.t(`providers.candidateModels.groups.${scenario}`);
   if (scenario === 'watch') {
     return i18n.t('providers.labels.scenario.watch');
   }
@@ -252,7 +255,7 @@ function resolveDashscopeOrigin(baseUrl: string) {
     const normalized = baseUrl.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:');
     const parsed = new URL(normalized);
 
-    if (/^dashscope(-intl)?\.aliyuncs\.com$/i.test(parsed.hostname)) {
+    if (/^dashscope(-intl)?\.aliyuncs\.com$/i.test(parsed.hostname) || /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/i.test(parsed.hostname)) {
       return parsed.origin;
     }
   } catch {
@@ -285,7 +288,17 @@ function normalizeBaseUrlForComparison(value: string) {
 }
 
 function shouldUseTemplatePresetModels(template: ProviderTemplate, currentBaseUrl: string) {
-  return normalizeBaseUrlForComparison(template.defaultDraft.baseUrl) === normalizeBaseUrlForComparison(currentBaseUrl);
+  if (normalizeBaseUrlForComparison(template.defaultDraft.baseUrl) === normalizeBaseUrlForComparison(currentBaseUrl)) return true;
+  if (template.id !== 'template-dashscope-workspace') return false;
+  try {
+    const url = new URL(currentBaseUrl);
+    return (url.protocol === 'wss:' || url.protocol === 'https:')
+      && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/i.test(url.hostname)
+      && ['/api-ws/v1/realtime', '/api/v1', '/compatible-mode/v1'].includes(normalizeBaseUrlForComparison(url.pathname))
+      && !url.username && !url.password && !url.port && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
 }
 
 function buildModelCatalogSignature(provider: ProviderDraft) {
@@ -415,6 +428,8 @@ function createEmptyModelCatalog(signature: string, status: ModelCatalogState['s
 }
 
 function hasCachedModelCatalog(cache: ProviderModelCatalogCache, signature: string) {
+  // Discard errors cached by the old WebSocket-to-HTTP path concatenation bug.
+  if (cache.endpoint?.includes('/api-ws/v1/realtime/compatible-mode/v1/models')) return false;
   return cache.signature === signature && (cache.models.length > 0 || cache.error !== null || cache.fetchedAt !== null);
 }
 
@@ -440,6 +455,20 @@ function buildModelCatalogStateFromCache(
   };
 }
 
+function withFallbackModelCatalog(
+  catalog: ModelCatalogState,
+  template: ProviderTemplate,
+  currentModel: string,
+  registry: ProviderModelCapabilityRegistryEntry[],
+  currentBaseUrl: string,
+): ModelCatalogState {
+  const fallbackModels = buildFallbackModels(template, currentModel, registry, currentBaseUrl);
+  return {
+    ...catalog,
+    source: catalog.models.length ? catalog.source : fallbackModels.length ? 'preset' : catalog.source,
+    models: dedupeModels([...catalog.models, ...fallbackModels]),
+  };
+}
 function buildModelCatalogCache(
   signature: string,
   source: 'runtime' | 'preset',
@@ -617,6 +646,7 @@ export const providersPageHelpers = {
   presetToRuntimeModel,
   createDerivedRuntimeModel,
   buildFallbackModels,
+  withFallbackModelCatalog,
   dedupeModels,
   cacheItemToRuntimeModel,
   runtimeModelToCacheItem,

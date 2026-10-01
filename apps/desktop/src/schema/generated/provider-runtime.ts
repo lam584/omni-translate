@@ -21,6 +21,10 @@ export type ProviderModelRuntime = { id: string, displayName: string, ownedBy: s
 
 export type ProviderModelCatalogRuntime = { providerId: string, endpoint: string, fetchedAt: string, models: Array<ProviderModelRuntime>, error: ProviderRuntimeError | null, };
 
+export type BailianModelMetadataRuntime = { modelId: string, categories: Array<string>, requestModalities: Array<string>, responseModalities: Array<string>, };
+
+export type ProviderModelMetadataRuntime = { providerId: string, endpoint: string, fetchedAt: string, models: Array<BailianModelMetadataRuntime>, error: ProviderRuntimeError | null, };
+
 export type CredentialRefStatus = { reference: string, backend: string, hasSecret: boolean, };
 
 export type CredentialSecretPayload = { reference: string, backend: string, secret: string | null, };

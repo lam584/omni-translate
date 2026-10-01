@@ -317,7 +317,7 @@ body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capa
 }
 
 body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section-header strong {
-  font-size: 0.85rem !important;
+  font-size: 0.94rem !important;
 }
 
 body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-capability-section-header p {
@@ -383,7 +383,7 @@ body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-mode
 }
 
 body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-model-item-copy strong {
-  font-size: 0.84rem !important;
+  font-size: 0.94rem !important;
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
@@ -406,7 +406,7 @@ body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-mode
 
 body:not(:has(.subtitle-overlay-root)) .provider-model-list-modal .provider-meta-chip {
   padding: 2px 6px !important;
-  font-size: 0.72rem !important;
+  font-size: 0.78rem !important;
   border-radius: 6px !important;
   gap: 4px !important;
 }

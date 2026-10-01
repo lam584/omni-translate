@@ -23,6 +23,7 @@ import {
 import { providerTemplates } from '../defaults/provider-templates';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
+import { effectiveProviderModelRegistry } from '../utils/provider-model-capabilities-registry';
 import { writeExportArtifactRuntime } from '../runtime/export-artifact-runtime';
 import { openExportDirectoryRuntime } from '../runtime/diagnostics-runtime';
 import {
@@ -74,15 +75,15 @@ export default function GlossaryPage() {
     };
 
     return collectProviderModelOptions(configDraft.providers, {
-      scenarios: ['subtitle-translate'],
       templateFilter: enabledTemplateIds,
       dedupeKey: 'model',
       project: ({ modelId, provider }) => ({
         modelId,
         displayName: resolveDisplayName(provider, modelId),
         providerName: provider.displayName,
+        textCapable: effectiveProviderModelRegistry(provider).some((entry) => entry.modelId === modelId && !entry.hidden && entry.capabilities.includes('text-generation')),
       }),
-    });
+    }).filter((entry) => entry.textCapable);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configDraft.providers, catalogVersion]);
 

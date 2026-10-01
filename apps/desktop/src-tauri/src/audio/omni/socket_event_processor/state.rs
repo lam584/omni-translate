@@ -60,6 +60,7 @@ pub(in crate::audio::omni) struct OmniSocketEventContext<'a, R: tauri::Runtime =
     pub(in crate::audio::omni) pre_session_audio_queue_len: usize,
     pub(in crate::audio::omni) pre_session_audio_dropped: u64,
     pub(in crate::audio::omni) echo_guard_enabled: bool,
+    pub(in crate::audio::omni) dialogue_draining: bool,
 }
 
 pub(in crate::audio::omni) struct OmniSocketPollResult<S: RealtimeSocket> {

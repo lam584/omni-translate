@@ -226,6 +226,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     installDesktopApi(new TauriDesktopApi());
 
     const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.providers[0]!.candidateModelGroups = [
+      { group: 'audio-understanding', modelIds: ['qwen3.5-livetranslate-flash-realtime', 'qwen3.5-omni-plus-realtime'] },
+      { group: 'text-processing', modelIds: ['qwen3.6-flash-2026-04-16'] },
+    ];
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
 
@@ -534,9 +538,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
   it('automatically judges a completed reference fixture exactly once and persists the final v2 score', async () => {
     const state = useAppStore.getState();
     const provider = structuredClone(state.configDraft.providers[0]!);
-    provider.sceneModelAssignments = provider.sceneModelAssignments.map((assignment) =>
-      assignment.scenario === 'subtitle-translate'
-        ? { ...assignment, modelIds: ['qwen3.5-omni-plus-realtime'] }
+    provider.candidateModelGroups = (provider.candidateModelGroups ?? []).map((assignment) =>
+      assignment.group === 'text-processing'
+        ? { ...assignment, modelIds: ['qwen3.8-flash'] }
         : assignment,
     );
     useAppStore.setState({
@@ -563,6 +567,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     await renderPageAndFlush();
     await clickAndSettle(findButtonByText(container, '开始基准测试'));
     await settleUi();
+    const judgeSelect = container.querySelector<HTMLSelectElement>('.benchmark-semantic-judge select');
+    expect(judgeSelect?.options.length).toBe(2);
+    expect(judgeSelect?.options[1]?.value).toBe('template-dashscope-realtime::qwen3.8-flash');
+
 
     const judgeCalls = fake.commandCalls('provider_v2').filter((call) => call.action === 'smoke');
     expect(judgeCalls).toHaveLength(1);
@@ -597,6 +605,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
     await renderPageAndFlush();
     await clickAndSettle(findButtonByText(container, '开始基准测试'));
     await settleUi();
+    const judgeSelect = container.querySelector<HTMLSelectElement>('.benchmark-semantic-judge select');
+    expect(judgeSelect?.options.length).toBe(1);
+
 
     expect(fake.commandCalls('provider_v2').filter((call) => call.action === 'smoke')).toHaveLength(0);
     const persistedMissingModel = fake.commandCalls('diagnostics_v2')
@@ -725,7 +736,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
         ...state.configDraft,
         providers: state.configDraft.providers.map((provider) => ({
           ...provider,
-          sceneModelAssignments: [],
+          candidateModelGroups: [],
           modelCatalogCache: { ...provider.modelCatalogCache, models: [] },
         })),
       },
@@ -739,7 +750,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     const nextState = useAppStore.getState();
     const provider = structuredClone(appConfigDraftMock.providers[0]);
-    provider.sceneModelAssignments = [{ scenario: 'watch', modelIds: ['live-model'] }];
+    provider.candidateModelGroups = [{ group: 'audio-understanding', modelIds: ['live-model'] }];
+    provider.modelCapabilityOverrides = [{ modelId: 'live-model', capabilities: ['speech-to-text'], source: 'user' }];
     provider.modelCatalogCache = { ...provider.modelCatalogCache, models: [] };
     useAppStore.setState({
       ...nextState,
@@ -765,11 +777,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
   it('updates benchmark model selection and reports missing provider secrets', async () => {
     const state = useAppStore.getState();
     const provider = structuredClone(state.configDraft.providers[0]);
-    provider.sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['first-live', 'second-live'] },
-      { scenario: 'game', modelIds: [] },
-      { scenario: 'voice-room', modelIds: [] },
-      { scenario: 'subtitle-translate', modelIds: [] },
+    provider.candidateModelGroups = [
+      { group: 'audio-understanding', modelIds: ['first-live', 'second-live'] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
+      { group: 'text-processing', modelIds: [] },
     ];
     useAppStore.setState({
       ...state,
@@ -778,6 +790,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
         providers: [provider],
       },
     });
+    provider.modelCapabilityOverrides = ['first-live', 'second-live'].map((modelId) => ({ modelId, capabilities: ['speech-to-text'], source: 'user' as const }));
     // No secret stored for this reference: the keyring answers `secret: null`.
     fake.setProviderSecret(providerSecretRef, null);
 
@@ -1172,8 +1185,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
     const baseProvider = configDraft.providers[0]!;
     configDraft.providers = [
       { ...baseProvider, authRef: undefined as never, localModelCapabilityRegistry: undefined as never,
-        sceneModelAssignments: [{ scenario: 'watch', modelIds: ['plain-model', 'scope::', 'scope::api', 'plain-model'] }] },
-      { ...baseProvider, templateId: 'sparse-provider', sceneModelAssignments: undefined as never },
+        candidateModelGroups: [{ group: 'audio-understanding', modelIds: ['plain-model', 'scope::', 'scope::api', 'plain-model'] }] },
+      { ...baseProvider, templateId: 'sparse-provider', candidateModelGroups: undefined as never },
     ];
     configDraft.speech.localPlaybackEnabled = undefined as never;
     configDraft.speech.virtualMicOutputEnabled = undefined as never;

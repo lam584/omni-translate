@@ -9,7 +9,7 @@ use crate::provider::model_protocol_profile::{
     AuthorizedModelProtocolProfile,
     ModelProtocolAuthorizationRequest, ModelProtocolRequestedAudio,
 };
-use crate::provider::provider_manifest::authorize_realtime_provider;
+use crate::provider::provider_manifest::authorize_realtime_provider_for_model;
 
 #[path = "route_config/session_contract.rs"]
 mod session_contract;
@@ -33,10 +33,10 @@ pub(crate) use self::provider_resolution::{
 use self::subtitle_policy::{is_legacy_default_instructions, subtitle_translate_mode_and_model};
 use self::model_protocol_authority::{
     bailian_protocol_from_authority, parse_realtime_protocol, registry_protocol,
-    resolve_bailian_model_protocol_authority,
+    resolve_bailian_model_protocol_authority, primary_bailian_operation,
 };
 pub(crate) use self::model_protocol_authority::{
-    authorize_bailian_model_operation, authorize_bailian_native_translate,
+    authorize_bailian_model_operation, authorize_bailian_native_translate, authorize_bailian_realtime,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedRouteKind {
@@ -64,6 +64,7 @@ impl ResolvedRouteKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeProtocol {
     DashscopeOmni,
+    DashscopeQwenAudio,
     DashscopeLivetranslate,
     DashscopeAsr,
     OpenAiConversation,
@@ -77,6 +78,7 @@ impl RealtimeProtocol {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DashscopeOmni => "dashscope-omni",
+            Self::DashscopeQwenAudio => "dashscope-qwen-audio",
             Self::DashscopeLivetranslate => "dashscope-livetranslate",
             Self::DashscopeAsr => "dashscope-asr",
             Self::OpenAiConversation => "openai-conversation",
@@ -122,6 +124,8 @@ pub(crate) struct ResolvedRealtimeProfile {
     pub(crate) sample_rate: u32,
     pub(crate) server_segmentation: bool,
     pub(crate) native_translation: bool,
+    pub(crate) invocation_operation: String,
+    pub(crate) translation_execution: String,
     pub(crate) native_audio_output: bool,
     pub(crate) secondary_translation_policy: String,
     pub(crate) speech_dispatch_policy: String,
@@ -221,16 +225,20 @@ impl ResolvedRoutePlan {
         let secondary_subtitle_provider = secondary_requested
             .then(|| resolve_model_provider_from_config_value(config, subtitle_model_id))
             .flatten();
-        let mut configuration_error = (secondary_requested && secondary_subtitle_provider.is_none()).then(|| {
-            super::super::omni::session_errors::with_error_markers(
-                &format!("Configured subtitle translation model '{subtitle_model_id}' cannot be resolved to an enabled provider"),
-                super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
-            )
-        });
+        // Secondary subtitles are optional. Retain unavailable saved references,
+        // but use the native translation route for this session.
+        let mut configuration_error = None;
         if configuration_error.is_none() {
             configuration_error = realtime_profile.model_protocol_error.as_ref().map(|error| {
+                let context = serde_json::json!({
+                    "modelRole": "primary-audio",
+                    "modelId": realtime_profile.model_id,
+                    "providerId": realtime_profile.provider_id,
+                    "modelReference": requested_voice_model,
+                    "direction": direction,
+                });
                 super::super::omni::session_errors::with_error_markers(
-                    error,
+                    &format!("{error} | modelContext: {context}"),
                     super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
                 )
             });
@@ -242,6 +250,12 @@ impl ResolvedRoutePlan {
                     super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
                 )
             });
+        }
+        // Task ASR only produces transcription. Its separately selected text
+        // translator must be admitted before any audio/network route starts.
+        if configuration_error.is_none() && realtime_profile.model_protocol_authority.as_ref()
+            .is_some_and(|a| a.adapter_id == "desktop-qwen-audio-task-asr-v1") {
+            configuration_error = crate::audio::translate::resolve_primary_text_provider(config).err();
         }
         let subtitle_translate_active = secondary_subtitle_provider.is_some();
         let subtitle_fallback_policy = if subtitle_translate_active {
@@ -404,20 +418,17 @@ fn resolve_realtime_voice(
     configured_voice: &str,
 ) -> String {
     let configured_voice = configured_voice.trim();
-    if authority.is_some_and(|authority| {
-        authority.profile_id == "bailian.qwen-audio-chat.realtime.ws"
-            && authority.profile_version == 1
-            && authority.wire_dialect == "bailian-qwen-audio-chat-realtime-ws-v1"
-    })
-        && (configured_voice.is_empty() || configured_voice.eq_ignore_ascii_case("Ethan"))
-    {
-        // Ethan is an Omni/OpenAI-style preset and Qwen-Audio rejects it.
-        // Use Qwen-Audio's documented system default so the first session does
-        // not fail and reconnect without a usable voice.
-        "longanqian".to_string()
-    } else {
-        configured_voice.to_string()
+    if configured_voice.is_empty() || ["auto", "default", "Ethan"].iter().any(|value| configured_voice.eq_ignore_ascii_case(value)) {
+        // Ethan is the legacy app-wide default, not a valid selectable voice
+        // for these exact Bailian adapters. Only that inherited default is
+        // upgraded; a different explicit voice still undergoes typed admission.
+        if let Some(authority) = authority.filter(|a| crate::audio::bailian_dialogue::is_supported_authority(a)) {
+            return if authority.adapter_id == "desktop-omni-session-v2" { "Tina" }
+                else if authority.exact_model_id == "qwen-audio-3.1-realtime-plus" { "longanqian_v3.1" }
+                else { "longanqian" }.to_string();
+        }
     }
+    configured_voice.to_string()
 }
 
 /// Effective translation target for a route direction. Inbound keeps the
@@ -489,7 +500,11 @@ pub(crate) fn resolve_realtime_profile(
     provider: &ProviderDraftInput,
     model: &str,
 ) -> ResolvedRealtimeProfile {
-    let manifest_realtime = if is_dashscope_provider(provider) { Ok(None) } else { authorize_realtime_provider(provider) };
+    resolve_realtime_profile_for_operation(provider, model, None)
+}
+
+pub(crate) fn resolve_realtime_profile_for_operation(provider: &ProviderDraftInput, model: &str, operation: Option<&str>) -> ResolvedRealtimeProfile {
+    let manifest_realtime = if is_dashscope_provider(provider) { Ok(None) } else { authorize_realtime_provider_for_model(provider, model) };
     let (manifest_protocol, manifest_route_kind, manifest_authority, manifest_error) = match manifest_realtime {
         Ok(Some(authority)) => {
             let route = realtime_route(&authority.adapter_id, &authority.operation);
@@ -535,8 +550,12 @@ pub(crate) fn resolve_realtime_profile(
     } else {
         Vec::new()
     };
-    let bailian_authorization = is_dashscope_provider(provider)
-        .then(|| resolve_bailian_model_protocol_authority(provider, model, "native_translate"));
+    let requested_operation = operation.map(str::to_string).map(Ok)
+        .unwrap_or_else(|| primary_bailian_operation(provider, model).map(str::to_string));
+    let bailian_authorization = is_dashscope_provider(provider).then(|| {
+        let operation = requested_operation.as_ref().map_err(Clone::clone)?;
+        resolve_bailian_model_protocol_authority(provider, model, operation)
+    });
     let (model_protocol_authority, bailian_protocol_error) = match bailian_authorization {
         Some(Ok(authority)) => (Some(authority), None),
         Some(Err(error)) => (None, Some(error)),
@@ -634,7 +653,7 @@ pub(crate) fn resolve_realtime_profile(
     let interaction_capabilities = effective.get("interactionCapabilities").and_then(Value::as_array)
         .map(|values| values.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
     let route_kind = manifest_route_kind.unwrap_or_else(|| match protocol_dialect {
-        Some(RealtimeProtocol::DashscopeOmni | RealtimeProtocol::DashscopeLivetranslate) => {
+        Some(RealtimeProtocol::DashscopeOmni | RealtimeProtocol::DashscopeQwenAudio | RealtimeProtocol::DashscopeLivetranslate) => {
             ResolvedRouteKind::Omni
         }
         Some(RealtimeProtocol::DashscopeAsr) => ResolvedRouteKind::DashscopeStt,
@@ -647,10 +666,17 @@ pub(crate) fn resolve_realtime_profile(
         ) => ResolvedRouteKind::OpenAiRealtime,
         None => ResolvedRouteKind::LocalVad,
     });
+    let translation_execution = match protocol_dialect {
+        Some(RealtimeProtocol::DashscopeOmni | RealtimeProtocol::DashscopeQwenAudio) => "prompted-realtime",
+        Some(RealtimeProtocol::DashscopeLivetranslate | RealtimeProtocol::OpenAiTranslation) => "dedicated-realtime",
+        _ if route_kind == ResolvedRouteKind::TencentSpeechTranslate => "dedicated-realtime",
+        _ => "text-worker",
+    };
     let native_translation = route_kind == ResolvedRouteKind::TencentSpeechTranslate || matches!(
         protocol_dialect,
         Some(
             RealtimeProtocol::DashscopeOmni
+                | RealtimeProtocol::DashscopeQwenAudio
                 | RealtimeProtocol::DashscopeLivetranslate
                 | RealtimeProtocol::OpenAiTranslation
         )
@@ -681,7 +707,7 @@ pub(crate) fn resolve_realtime_profile(
     };
     let server_segmentation = route_kind != ResolvedRouteKind::LocalVad;
     let preconnect_allowed = route_kind == ResolvedRouteKind::Omni;
-    let secondary_translation_policy = if native_translation { "native" } else { "secondary" };
+    let secondary_translation_policy = if translation_execution != "text-worker" { "native" } else { "secondary" };
     let speech_dispatch_policy = if native_audio_output {
         "native-audio"
     } else if native_translation {
@@ -694,13 +720,14 @@ pub(crate) fn resolve_realtime_profile(
         protocol_dialect,
         Some(
             RealtimeProtocol::DashscopeOmni
+                | RealtimeProtocol::DashscopeQwenAudio
                 | RealtimeProtocol::DashscopeLivetranslate
                 | RealtimeProtocol::DashscopeAsr
         )
     );
     let input_format = if matches!(
         protocol_dialect,
-        Some(RealtimeProtocol::DashscopeLivetranslate | RealtimeProtocol::DashscopeAsr)
+        Some(RealtimeProtocol::DashscopeLivetranslate | RealtimeProtocol::DashscopeAsr | RealtimeProtocol::DashscopeOmni | RealtimeProtocol::DashscopeQwenAudio)
     ) {
         "pcm"
     } else {
@@ -728,6 +755,8 @@ pub(crate) fn resolve_realtime_profile(
         },
         server_segmentation,
         native_translation,
+        invocation_operation: model_protocol_authority.as_ref().map(|a| a.operation.clone()).unwrap_or_else(|| requested_operation.unwrap_or_else(|_| "native_translate".to_string())),
+        translation_execution: translation_execution.to_string(),
         native_audio_output,
         secondary_translation_policy: secondary_translation_policy.to_string(),
         speech_dispatch_policy: speech_dispatch_policy.to_string(),
@@ -812,4 +841,70 @@ pub(super) fn should_start_secondary_speech_dispatch(
         && speech_dispatch_state == "idle"
         && speech::resolve_translation_audio_source(config, true)
             == speech::TranslationAudioSource::SubtitleTts
+}
+
+#[cfg(test)]
+mod primary_audio_authorization_context_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn task_asr_missing_primary_text_is_rejected_at_route_plan_boundary() {
+        let config = json!({
+            "providers": [{"templateId":"task", "providerId":"task-provider", "kind":"dashscope",
+                "displayName":"Task", "model":"qwen-audio-3.1-asr-flash-streaming",
+                "baseUrl":"https://dashscope.aliyuncs.com/api/v1", "region":"cn-beijing",
+                "transport":"websocket", "streamEnabled":true, "timeoutMs":1000,
+                "authRef":{"kind":"header","reference":"fixture", "headerName":"Authorization", "scheme":"Bearer"},
+                "systemPromptTemplate":"", "modelRegistryVersion":2}],
+            "devices":{"primaryTextTranslationModelId":"", "subtitleTranslationMode":"native", "subtitleTranslationModelId":"stale::unused"}
+        });
+        let reference="task::qwen-audio-3.1-asr-flash-streaming";
+        let provider=resolve_model_provider_from_config_value(&config,reference).unwrap();
+        let plan=ResolvedRoutePlan::from_resolved_provider("inbound", &config, reference.to_string(), provider);
+        assert!(plan.model_protocol_authority.is_some());
+        let error=plan.configuration_error.unwrap();
+        assert!(error.contains("primary-text")); assert!(error.contains("session.model-reference-invalid"));
+        assert!(plan.secondary_subtitle_provider.is_none());
+    }
+
+    #[test]
+    fn primary_audio_authorization_failure_keeps_actual_model_and_native_subtitle_role() {
+        for model in ["qwen3.8-omni-flash-realtime-unknown", "qwen3.5-omni-plus-realtime"] {
+            let config = json!({
+                "providers": [{
+                    "templateId": "template-dashscope-workspace",
+                    "providerId": "provider-context-fixture",
+                    "kind": "dashscope",
+                    "displayName": "Route context fixture",
+                    "model": "qwen3.8-livetranslate-flash-realtime",
+                    "baseUrl": "wss://llm-context.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+                    "transport": "websocket",
+                    "authRef": {"kind": "header", "reference": "redacted", "headerName": "Authorization", "scheme": "Bearer"},
+                    "region": "cn-beijing", "streamEnabled": true, "timeoutMs": 1000,
+                    "systemPromptTemplate": "", "modelRegistryVersion": 2
+                }],
+                "devices": {"subtitleTranslationMode": "native", "subtitleTranslationModelId": ""}
+            });
+            let reference = format!("template-dashscope-workspace::{model}");
+            let provider = resolve_model_provider_from_config_value(&config, &reference).unwrap();
+            let raw_error = resolve_realtime_profile(&provider, model).model_protocol_error.unwrap();
+            for direction in ["inbound", "outbound"] {
+                let plan = ResolvedRoutePlan::from_resolved_provider(direction, &config, reference.clone(), provider.clone());
+                assert!(plan.secondary_subtitle_provider.is_none());
+                assert_eq!(plan.subtitle_fallback_policy, SubtitleFallbackPolicy::Native);
+                let error = plan.configuration_error.expect("primary authorization must remain fail-closed");
+                assert!(error.starts_with(&raw_error));
+                assert!(error.contains("code: session.model-reference-invalid"));
+                let context = error.split(" | modelContext: ").nth(1).unwrap().split(" | code:").next().unwrap();
+                let context: Value = serde_json::from_str(context).unwrap();
+                assert_eq!(context["modelRole"], "primary-audio");
+                assert_eq!(context["modelId"], model);
+                assert_eq!(context["providerId"], "provider-context-fixture");
+                assert_eq!(context["modelReference"], reference);
+                assert_eq!(context["direction"], direction);
+                assert!(context.get("alternate").is_none());
+            }
+        }
+    }
 }

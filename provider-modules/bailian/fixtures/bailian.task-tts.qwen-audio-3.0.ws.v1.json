@@ -8,12 +8,15 @@
   "kind": "wire",
   "provenance": {
     "sourceDocumentationIds": [
-      "bailian.docs.22",
-      "bailian.docs.24"
+      "bailian.docs.41",
+      "bailian.docs.42",
+      "bailian.docs.43",
+      "bailian.docs.44",
+      "bailian.docs.45"
     ],
     "capturedFromLive": false,
     "sanitized": true,
-    "notes": "Generated documentation fixture projection from apps/desktop/src-tauri/fixtures/model-protocol/task-tts-duplex.json; never authorizes paid calls."
+    "notes": "Generated documentation fixture projection from provider-modules/bailian/fixtures/qwen-audio-task-tts.json; never authorizes paid calls."
   },
   "scenario": "Exact bailian.task-tts.qwen-audio-3.0.ws protocol replay",
   "data": {
@@ -73,10 +76,10 @@
             "task_group": "audio",
             "task": "tts",
             "function": "SpeechSynthesizer",
-            "model": "cosyvoice-v3-flash",
+            "model": "qwen-audio-3.0-tts-plus",
             "parameters": {
               "text_type": "PlainText",
-              "voice": "longxiaochun",
+              "voice": "longanlingxi",
               "format": "pcm",
               "sample_rate": 24000
             },
@@ -128,7 +131,13 @@
             "attributes": {}
           },
           "payload": {
-            "output": {}
+            "output": {
+              "type": "sentence-synthesis",
+              "sentence": {
+                "index": 0,
+                "words": []
+              }
+            }
           }
         },
         "type": "result-generated"
@@ -189,10 +198,10 @@
             "task_group": "audio",
             "task": "tts",
             "function": "SpeechSynthesizer",
-            "model": "cosyvoice-v3-flash",
+            "model": "qwen-audio-3.0-tts-plus",
             "parameters": {
               "text_type": "PlainText",
-              "voice": "longxiaochun",
+              "voice": "longanlingxi",
               "format": "pcm",
               "sample_rate": 24000
             },
@@ -244,7 +253,13 @@
             "attributes": {}
           },
           "payload": {
-            "output": {}
+            "output": {
+              "type": "sentence-synthesis",
+              "sentence": {
+                "index": 0,
+                "words": []
+              }
+            }
           }
         },
         "type": "result-generated"

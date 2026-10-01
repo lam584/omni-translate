@@ -202,15 +202,20 @@ describe('WatchSessionReportPanel interactions', () => {
     expect(view.container.textContent).toContain('session-problem');
     expect(view.container.querySelector('.watch-report-session-events')).not.toBeNull();
 
+    expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(statuses.length);
+    for (const status of statuses) {
+      expect(view.container.textContent).toContain(`cue-${status}`);
+    }
+
     const selects = Array.from(view.container.querySelectorAll<HTMLSelectElement>('.watch-report-controls select'));
+    await selectValue(selects[0]!, 'issues');
+    expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(5);
+
     await selectValue(selects[0]!, 'different');
     expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(2);
 
     await selectValue(selects[0]!, 'all');
     expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(statuses.length);
-    for (const status of statuses) {
-      expect(view.container.textContent).toContain(`cue-${status}`);
-    }
 
     await selectValue(selects[1]!, 'latency');
     expect(view.container.querySelector('.watch-report-cue strong')?.textContent).toBe('cue-formatting-only');
@@ -221,6 +226,14 @@ describe('WatchSessionReportPanel interactions', () => {
     expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(1);
     expect(view.container.textContent).toContain('cue-exact');
     await selectValue(selects[2]!, 'all');
+
+    await selectValue(selects[2]!, 'session');
+    expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(0);
+    expect(view.container.textContent).toContain('watchReport.controls.noCues');
+    const resetButton = view.container.querySelector<HTMLButtonElement>('.watch-report-reset-filter');
+    expect(resetButton).not.toBeNull();
+    await click(resetButton!);
+    expect(view.container.querySelectorAll('.watch-report-cue')).toHaveLength(statuses.length);
 
     const details = Array.from(view.container.querySelectorAll<HTMLDetailsElement>('.watch-report-events'));
     await act(async () => {

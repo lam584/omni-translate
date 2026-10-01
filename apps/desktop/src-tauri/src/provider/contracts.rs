@@ -462,6 +462,26 @@ pub(crate) struct ProviderModelCatalogRuntime {
     pub error: Option<ProviderRuntimeError>,
 }
 
+/// Advisory catalog data only. It does not authorize a model protocol or route.
+#[derive(Clone, Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BailianModelMetadataRuntime {
+    pub model_id: String,
+    pub categories: Vec<String>,
+    pub request_modalities: Vec<String>,
+    pub response_modalities: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderModelMetadataRuntime {
+    pub provider_id: String,
+    pub endpoint: String,
+    pub fetched_at: String,
+    pub models: Vec<BailianModelMetadataRuntime>,
+    pub error: Option<ProviderRuntimeError>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct TtsAudioChunk {
     pub sample_rate_hz: u32,

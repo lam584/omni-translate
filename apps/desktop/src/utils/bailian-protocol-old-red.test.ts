@@ -11,7 +11,7 @@ function unknownDashscopeProvider(): ProviderDraft {
   provider.kind = 'dashscope';
   provider.templateId = 'template-dashscope-realtime';
   provider.model = 'future-unknown-voice-model-2099';
-  provider.sceneModelAssignments = [];
+  provider.candidateModelGroups = [];
   provider.localModelCapabilityRegistry = [];
   delete provider.templateRealtimeProtocol;
   delete provider.realtimeProtocol;

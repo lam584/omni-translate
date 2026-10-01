@@ -15,6 +15,32 @@ import ProviderTemplateCatalog from './ProviderTemplateCatalog';
 import ProviderVerificationPanel from './ProviderVerificationPanel';
 import { AudioModeHelpDialog, PendingModelRegistrationDialog } from './ProviderModelDialogs';
 
+describe('model catalog delayed progress', () => {
+  it('shows indeterminate progress only after 500ms and removes it when loading ends', () => {
+    vi.useFakeTimers();
+    const catalog = { signature: 'progress', status: 'loading', source: 'preset', endpoint: null, fetchedAt: null, error: null, models: [] } as ModelCatalogState;
+    const props = {
+      catalog, catalogSections: [], description: '', manualModelIdDraft: '', query: '',
+      selectedScenario: 'all' as const, targetScenario: 'text-processing' as const, uncategorizedModels: [],
+      isModelAdded: () => false, onClose: vi.fn(), onManualAdd: vi.fn(), onManualDraftChange: vi.fn(),
+      onOpenCapabilityRegistry: vi.fn(), onQueryChange: vi.fn(), onRefresh: vi.fn(), onScenarioChange: vi.fn(), onToggleModel: vi.fn(),
+    };
+    const { container, root } = render(<ProviderModelCatalog {...props} />);
+    act(() => { vi.advanceTimersByTime(499); });
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(container.querySelector('[role="progressbar"]')).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector('[role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false);
+    act(() => root.render(<ProviderModelCatalog {...props} catalog={{ ...catalog, status: 'ready' }} />));
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    act(() => root.render(<ProviderModelCatalog {...props} catalog={catalog} />));
+    act(() => root.unmount());
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    container.remove();
+    vi.useRealTimers();
+  });
+});
 function render(element: React.ReactNode) {
   const container = document.createElement('div');
   document.body.appendChild(container);
@@ -179,7 +205,7 @@ describe('provider catalog components', () => {
         onToggleModel={onToggleModel}
         query=""
         selectedScenario="all"
-        targetScenario="watch"
+        targetScenario="realtime-multimodal"
         uncategorizedModels={[uncategorized]}
       />,
     ));
@@ -189,7 +215,7 @@ describe('provider catalog components', () => {
     expect(container.textContent).toContain('model-b');
     expect(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')?.value).toBe('manual-model');
     await click(container.querySelector('.provider-model-item-active button'));
-    expect(onToggleModel).toHaveBeenCalledWith('watch', categorized);
+    expect(onToggleModel).toHaveBeenCalledWith('realtime-multimodal', categorized);
 
     const manualInput = container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
     await change(manualInput, 'new-model');
@@ -366,7 +392,7 @@ describe('provider catalog components', () => {
       catalogSections={[{ capability: 'text-generation', models: [model] }]} description="d" isModelAdded={() => false}
       manualModelIdDraft="" onClose={vi.fn()} onManualAdd={onManualAdd} onManualDraftChange={vi.fn()}
       onOpenCapabilityRegistry={vi.fn()} onQueryChange={vi.fn()} onRefresh={vi.fn()} onScenarioChange={vi.fn()}
-      onToggleModel={vi.fn()} query="" selectedScenario="watch" targetScenario="watch" uncategorizedModels={[]} />));
+      onToggleModel={vi.fn()} query="" selectedScenario="realtime-multimodal" targetScenario="realtime-multimodal" uncategorizedModels={[]} />));
     await act(async () => container!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')
       ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(onManualAdd).not.toHaveBeenCalled();
@@ -375,7 +401,7 @@ describe('provider catalog components', () => {
 
   it('handles pending model audio-mode changes and renders audio help', async () => {
     const pending = {
-      scenario: 'watch' as const,
+      group: 'realtime-multimodal' as const,
       model: { id: 'm', displayName: 'M', ownedBy: null, createdAt: null, capabilities: [] } as ProviderModelRuntime,
       capabilities: ['speech-to-text' as const], realtimeAudioMode: 'server_vad' as const,
       interactionCapabilities: ['streaming' as const],

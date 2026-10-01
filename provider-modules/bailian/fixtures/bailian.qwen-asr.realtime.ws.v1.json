@@ -8,7 +8,7 @@
   "kind": "wire",
   "provenance": {
     "sourceDocumentationIds": [
-      "bailian.docs.10"
+      "bailian.docs.11"
     ],
     "capturedFromLive": false,
     "sanitized": true,
@@ -18,7 +18,7 @@
   "data": {
     "endpointStatus": "verified",
     "networkAuthorized": false,
-    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "connectionUrl": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime",
     "authContract": {
       "profileId": "bailian.auth.bearer",
       "parameters": [

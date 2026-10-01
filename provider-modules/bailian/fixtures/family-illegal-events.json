@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "model-protocol-invalid-fixtures/v1",
+  "checkedAt": "2026-09-30",
+  "sanitized": true,
+  "capturedFromLive": false,
+  "cases": [
+    {
+      "id": "omni-lt-v2-turn-detection-is-not-omni",
+      "dialectId": "bailian-omni-realtime-ws-v2",
+      "event": {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.update",
+        "wire": {
+          "type": "session.update",
+          "session": {
+            "audio": {
+              "input": {
+                "turn_detection": null,
+                "format": {
+                  "type": "pcm",
+                  "sample_rate": 16000
+                }
+              },
+              "output": {
+                "format": {
+                  "type": "pcm",
+                  "sample_rate": 24000
+                }
+              }
+            }
+          }
+        }
+      },
+      "expectedFailure": "session.turn_detection required"
+    },
+    {
+      "id": "omni-does-not-use-lt-terminal",
+      "dialectId": "bailian-omni-realtime-ws-v2",
+      "event": {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.finished",
+        "wire": {
+          "type": "session.finished"
+        }
+      },
+      "expectedFailure": "outside the server allowlist"
+    },
+    {
+      "id": "qwen-turn-invalid-is-reason-not-event",
+      "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+      "event": {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "turn_invalid",
+        "wire": {
+          "type": "turn_invalid"
+        }
+      },
+      "expectedFailure": "outside the server allowlist"
+    },
+    {
+      "id": "asr-does-not-use-session-protocol",
+      "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
+      "event": {
+        "direction": "server",
+        "frameKind": "json",
+        "eventType": "session.finished",
+        "wire": {
+          "type": "session.finished"
+        }
+      },
+      "expectedFailure": "outside the server allowlist"
+    },
+    {
+      "id": "tts-does-not-use-response-protocol",
+      "dialectId": "bailian-speech-synthesizer-duplex-task-ws-v1",
+      "event": {
+        "direction": "server",
+        "frameKind": "json-base64",
+        "eventType": "response.audio.delta",
+        "wire": {
+          "type": "response.audio.delta",
+          "delta": "AAA="
+        }
+      },
+      "expectedFailure": "outside the server allowlist"
+    },
+    {
+      "id": "qwen-smart-turn-control-is-not-implemented",
+      "dialectId": "bailian-qwen-audio-chat-realtime-ws-v1",
+      "event": {
+        "direction": "client",
+        "frameKind": "json",
+        "eventType": "session.update",
+        "wire": {
+          "type": "session.update",
+          "session": {
+            "input_audio_format": "pcm",
+            "output_audio_format": "pcm",
+            "turn_detection": {
+              "type": "smart_turn"
+            }
+          }
+        }
+      },
+      "expectedFailure": "only server_vad/manual"
+    }
+  ]
+}

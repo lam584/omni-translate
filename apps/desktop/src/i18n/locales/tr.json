@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Süreç dışlama yeteneği araştırması başarısız oldu: {{detail}}",
     "feedbackProcessExclusionProbing": "Süreç dışlama desteği henüz onaylanmadı. Seçimden sonra Bridge, İzleme başladığında incelemeyi tamamlar; sonda hazır olana kadar yakalama başlamayacaktır.",
     "feedbackNoneSelected": "Eski geri beslemesiz kontrol ayarı hala seçili. Siz açıkça süreç hariç tutmayı, Sanal Sürücüyü veya yankı iptalini seçmediğiniz sürece izleme, çevrilmiş konuşmayla başlayamaz.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Ses Yönlendirme",
     "pageSubtitle": "Beyaz yüzey · gömülü akış · tek model girişi · canlı kaydetme · mobil uyumlu",
     "overviewAria": "Ses rotasına genel bakış",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Konuşma tanıma · Çeviri · Konuşma",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Birincil metin modeli",
+    "scenarioPrimaryTextCaption": "Konuşma tanıma işlem hattı için temel metin çevirisi",
+    "primaryTextModelRequired": "Mevcut ses modeli için bir temel metin çeviri modeli seçilmesi gerekir"
   },
   "overlay": {
     "bootstrapFailed": "Altyazı katmanı başlatılamadı",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Senaryo: {{scenario}}",
       "editCapabilitiesTitle": "Yetenek kaydını düzenleyin",
       "refreshTitle": "Model kataloğunu yenile",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Model listesini kapat",
       "allScenarios": "Hepsi",
       "searchPlaceholder": "Modelleri ara...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Gizli",
       "hideSecret": "Sırrı gizle",
       "showSecret": "Sırrı göster"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Sahne modelleri",

@@ -1,3 +1,4 @@
+import { LEGACY_DEFAULT_OVERLAY_FONT_FAMILY } from './overlay/overlayFontFamily';
 import { useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -22,7 +23,7 @@ import {
 } from './overlay/overlayDomain';
 
 const fontOptions = [
-  { value: '"Segoe UI", "Microsoft YaHei UI", sans-serif', label: 'Segoe UI / Microsoft YaHei UI' },
+  { value: LEGACY_DEFAULT_OVERLAY_FONT_FAMILY, label: 'Auto (display language)' },
   { value: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif', label: 'Microsoft YaHei' },
   { value: '"MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif', label: 'MiSans / HarmonyOS Sans SC' },
   { value: '"Source Han Sans SC", "Noto Sans SC", sans-serif', label: 'Source Han Sans SC / Noto Sans SC' },

@@ -226,6 +226,7 @@ pub(super) fn is_session_ready_event(event_type: &str) -> bool {
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct OmniEventDiagnostics {
+    pub(super) dialogue_server_state: crate::audio::bailian_dialogue::DialogueServerState,
     pub(super) livetranslate_server_state:
         crate::audio::bailian_protocol::LiveTranslateServerState,
     pub(super) readiness_event: Option<String>,
@@ -350,8 +351,10 @@ impl OmniEventDiagnostics {
     }
 
     pub(super) fn native_response_active(&self) -> bool {
-        self.response_lifecycle.is_active()
+        self.response_lifecycle.is_active() || self.dialogue_server_state.has_active_responses()
     }
+
+    pub(super) fn input_speech_active(&self) -> bool { self.server_vad_speech_active }
 
     const SOURCE_CONTINUITY_MAX_GAP_MS: u64 = 1_200;
 
@@ -617,6 +620,67 @@ impl OmniEventDiagnostics {
             .rev()
             .find(|owner| owner.input_item_id == input_item_id)
             .map(|owner| owner.cue_id.clone())
+    }
+
+    fn response_bound_dialogue_cues(&self, item_id: &str) -> std::collections::BTreeSet<String> {
+        let mut protected = std::collections::BTreeSet::new();
+        // Exact source lookup on a snapshot: bind_response cannot guess FIFO
+        // when an explicit, unknown source is supplied. Never mutate live
+        // ownership while deciding what invalid-input cleanup may remove.
+        if let Some(lineage) = self.response_ledger.clone().bind_response(None, Some(item_id), None, None) {
+            if lineage.response_id.is_some() { protected.insert(lineage.cue_id); }
+        }
+        if self.native_response_id.is_some() {
+            if let Some(cue) = &self.native_response_cue_id { protected.insert(cue.clone()); }
+        }
+        for owner in self.pending_native_response_owners.iter().chain(self.completed_native_response_owners.iter()) {
+            if owner.response_id.is_some() { protected.insert(owner.cue_id.clone()); }
+        }
+        protected
+    }
+
+    pub(super) fn abandon_manual_dialogue_input(&mut self, item_id: &str, response_create_sent: bool) -> Result<(), String> {
+        let protected = self.response_bound_dialogue_cues(item_id);
+        let source_bound = self.response_ledger.clone().bind_response(None, Some(item_id), None, None)
+            .is_some_and(|lineage| lineage.response_id.is_some() || protected.contains(&lineage.cue_id));
+        if source_bound || self.asr_cue_for_input_item(item_id).is_some_and(|cue| protected.contains(&cue))
+            || (self.native_response_item_id.as_deref() == Some(item_id) && self.native_response_id.is_some())
+            || self.pending_native_response_owners.iter().chain(self.completed_native_response_owners.iter())
+                .any(|owner| owner.input_item_id.as_deref() == Some(item_id) && owner.response_id.is_some()) {
+            return Err("model_protocol.identity_mismatch: manual input owns a response cue".to_string());
+        }
+        self.dialogue_server_state.abandon_manual_input(item_id, response_create_sent)?;
+        // Retire the skipped source from fallback ownership as well: a later
+        // real response must not claim this locally abandoned turn via FIFO.
+        self.discard_invalid_dialogue_input(item_id);
+        // Speech-stopped can have armed the old id-less first-output timer.
+        // Only an explicitly skipped turn with no typed response may release it.
+        if !self.dialogue_server_state.has_active_responses() && self.native_response_id.is_none() {
+            self.response_lifecycle.clear();
+        }
+        Ok(())
+    }
+
+    pub(super) fn discard_invalid_dialogue_input(&mut self, item_id: &str) -> Vec<String> {
+        let protected = self.response_bound_dialogue_cues(item_id);
+        let candidates = self.response_ledger.clone().discard_unanswered_source(item_id);
+        let mut cues = if candidates.iter().any(|cue| protected.contains(cue)) {
+            Vec::new()
+        } else { self.response_ledger.discard_unanswered_source(item_id) };
+        if let Some(cue) = self.asr_cue_for_input_item(item_id) {
+            if !protected.contains(&cue) && !cues.contains(&cue) { cues.push(cue); }
+        }
+        cues.retain(|cue| !protected.contains(cue));
+        self.asr_cue_owners.retain(|owner| owner.input_item_id != item_id || protected.contains(&owner.cue_id));
+        self.pending_native_response_owners.retain(|owner| owner.input_item_id.as_deref() != Some(item_id)
+            || owner.response_id.is_some() || protected.contains(&owner.cue_id));
+        for cue in &cues { self.register_ignored_native_response_owner_lineage(cue, item_id); }
+        if self.current_vad_item_id.as_deref() == Some(item_id) { self.current_vad_item_id = None; }
+        if self.last_asr_delta_item_id.as_deref() == Some(item_id) {
+            self.last_asr_delta_item_id = None; self.last_asr_delta_text.clear(); self.last_asr_delta_at_ms = None;
+        }
+        self.note_server_vad_speech_state(self.dialogue_server_state.has_speech_active());
+        cues
     }
 
     pub(super) fn clear_asr_cue_owners(&mut self) {
@@ -3162,7 +3226,7 @@ fn build_dashscope_session_update_with_languages_and_output_mode(
     output_mode: OmniOutputMode,
 ) -> Result<Value, String> {
     let is_livetranslate = match protocol {
-        crate::audio::events::RealtimeProtocol::DashscopeOmni => false,
+        crate::audio::events::RealtimeProtocol::DashscopeOmni | crate::audio::events::RealtimeProtocol::DashscopeQwenAudio => false,
         crate::audio::events::RealtimeProtocol::DashscopeLivetranslate => true,
         other => return Err(format!("unsupported DashScope session protocol: {other:?}")),
     };
@@ -3399,6 +3463,9 @@ pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
 ) -> Value {
     let realtime_profile =
         crate::audio::events::resolve_realtime_profile(provider, &provider.model);
+    if let Some(authority) = realtime_profile.model_protocol_authority.as_ref().filter(|a| crate::audio::bailian_dialogue::is_supported_authority(a)) {
+        return crate::audio::bailian_dialogue::session_update(authority, voice, instructions, audio_mode.as_str(), output_mode == OmniOutputMode::TextAndAudio);
+    }
     let protocol = realtime_profile.protocol_dialect;
     #[cfg(test)]
     let protocol = protocol.or_else(|| {
@@ -6573,5 +6640,111 @@ mod omni_playback_tests {
             normalize_native_translation_fidelity(source, "站内将维持空气和水的平衡。"),
             "站内将维持空气和水的平衡（人工生物圈）"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod dialogue_input_retirement_tests {
+    use super::*;
+    use crate::audio::bailian_dialogue::{session_update, DialogueServerState};
+    use crate::provider::model_protocol_profile::{authorize_model_protocol_invocation, AuthorizedModelProtocolProfile, ModelProtocolAuthorizationRequest, ModelProtocolRequestedAudio};
+
+    fn ready_manual() -> (AuthorizedModelProtocolProfile, DialogueServerState) {
+        let a=authorize_model_protocol_invocation(ModelProtocolAuthorizationRequest {
+            exact_model_id:"qwen-audio-3.1-realtime-plus", operation:"dialogue", transport:"websocket",
+            region:"cn-beijing", endpoint_host:"test.cn-beijing.maas.aliyuncs.com",
+            audio_input:Some(ModelProtocolRequestedAudio { codec:"pcm", sample_rate_hz:16000, channels:1 }),
+            audio_output:Some(ModelProtocolRequestedAudio { codec:"pcm", sample_rate_hz:24000, channels:1 }),
+            declared_registry_version:None, declared_profile_id:None, declared_profile_version:None,
+            declared_wire_dialect:None, declared_endpoint_family:None, declared_terminal_lifecycle:None,
+        }).unwrap();
+        let mut state=DialogueServerState::default(); let update=session_update(&a,"auto","","manual",true);
+        state.record_client_session_update(&a,&update).unwrap();
+        state.admit(&a,&json!({"type":"session.created","session":{"id":"s"}})).unwrap();
+        let mut echo=update["session"].clone(); echo["id"]=json!("s");
+        state.admit(&a,&json!({"type":"session.updated","session":echo})).unwrap();
+        (a,state)
+    }
+    fn pending_owner(cue: &str, item: &str, response: Option<&str>) -> NativeResponseOwner {
+        NativeResponseOwner { cue_id:cue.to_string(), input_item_id:Some(item.to_string()), response_id:response.map(str::to_string), audio_start_ms:None, audio_end_ms:None, continuity_id:0 }
+    }
+    #[test]
+    fn invalid_wrapper_preserves_ledger_bound_cue_despite_ambiguous_typed_association() {
+        let (a,state)=ready_manual(); let mut d=OmniEventDiagnostics { dialogue_server_state:state, ..Default::default() };
+        for (item,cue) in [("invalid","active-cue"),("other","other-cue")] {
+            d.dialogue_server_state.admit(&a,&json!({"type":"input_audio_buffer.committed","item_id":item})).unwrap();
+            d.response_ledger.record_source(cue,Some(item)); d.record_asr_cue_owner(item,cue.to_string());
+            d.pending_native_response_owners.push_back(pending_owner(cue,item,None));
+        }
+        d.dialogue_server_state.admit(&a,&json!({"type":"response.created","response":{"id":"r","status":"in_progress"}})).unwrap();
+        // Legacy FIFO can bind invalid while typed state correctly leaves both
+        // pending. The wrapper must respect the bound ledger, not erase ASR.
+        assert_eq!(d.response_ledger.bind_response(Some("r"),None,None,None).unwrap().cue_id,"active-cue");
+        d.dialogue_server_state.admit(&a,&json!({"type":"input_audio_buffer.speech_stopped","item_id":"invalid","audio_end_ms":100,"reason":"turn_invalid"})).unwrap();
+        assert!(d.discard_invalid_dialogue_input("invalid").is_empty());
+        assert_eq!(d.asr_cue_for_input_item("invalid").as_deref(),Some("active-cue"));
+        assert!(d.pending_native_response_owners.iter().any(|o| o.cue_id=="active-cue"));
+        assert!(d.ignored_native_response_cue_for_input_item("invalid").is_none());
+        assert_eq!(d.response_ledger.bind_response(Some("r"),Some("invalid"),None,None).unwrap().cue_id,"active-cue");
+        assert_eq!(d.asr_cue_for_input_item("other").as_deref(),Some("other-cue"));
+        assert!(d.native_response_active());
+    }
+    #[test]
+    fn invalid_wrapper_removes_unbound_and_asr_only_but_preserves_bound_owner_pools() {
+        let mut d=OmniEventDiagnostics::default();
+        d.response_ledger.record_source("unbound",Some("invalid"));
+        d.record_asr_cue_owner("invalid","unbound".to_string());
+        d.pending_native_response_owners.push_back(pending_owner("unbound","invalid",None));
+        d.pending_native_response_owners.push_back(pending_owner("bound","invalid",Some("r")));
+        d.native_response_cue_id=Some("previous".to_string()); d.native_response_item_id=Some("previous-input".to_string()); d.native_response_id=Some("previous-response".to_string());
+        assert_eq!(d.discard_invalid_dialogue_input("invalid"),vec!["unbound"]);
+        assert!(d.asr_cue_for_input_item("invalid").is_none());
+        assert_eq!(d.pending_native_response_owners.len(),1); assert_eq!(d.pending_native_response_owners[0].cue_id,"bound");
+        assert_eq!(d.native_response_cue_id.as_deref(),Some("previous")); assert_eq!(d.native_response_id.as_deref(),Some("previous-response"));
+        d.record_asr_cue_owner("asr-only","asr-only-cue".to_string());
+        assert_eq!(d.discard_invalid_dialogue_input("asr-only"),vec!["asr-only-cue"]);
+        assert!(d.asr_cue_for_input_item("asr-only").is_none());
+        assert_eq!(d.ignored_native_response_cue_for_input_item("asr-only").as_deref(),Some("asr-only-cue"));
+    }
+    #[test]
+    fn invalid_wrapper_preserves_completed_ledger_and_shared_active_cue() {
+        let mut d=OmniEventDiagnostics::default();
+        d.response_ledger.record_source("completed",Some("done-input")); d.response_ledger.bind_response(Some("done-r"),Some("done-input"),None,None).unwrap();
+        d.response_ledger.complete_response(Some("done-r")); d.record_asr_cue_owner("done-input","completed".to_string());
+        assert!(d.discard_invalid_dialogue_input("done-input").is_empty());
+        assert_eq!(d.asr_cue_for_input_item("done-input").as_deref(),Some("completed"));
+        assert!(d.response_ledger.has_complete_lineage("completed","done-input","done-r"));
+        // ASR can point at an active cue with a different input owner. Protect
+        // by cue identity as well as source ID, including unbound ledger rows.
+        d.response_ledger.record_source("shared",Some("invalid")); d.record_asr_cue_owner("invalid","shared".to_string());
+        d.native_response_cue_id=Some("shared".to_string()); d.native_response_item_id=Some("actual-input".to_string()); d.native_response_id=Some("actual-response".to_string());
+        assert!(d.discard_invalid_dialogue_input("invalid").is_empty());
+        assert_eq!(d.asr_cue_for_input_item("invalid").as_deref(),Some("shared"));
+        assert_eq!(d.response_ledger.bind_response(None,Some("invalid"),None,None).unwrap().cue_id,"shared");
+    }
+    #[test]
+    fn manual_abandon_wrapper_retires_fallback_without_touching_previous_response() {
+        let (a,state)=ready_manual(); let mut d=OmniEventDiagnostics { dialogue_server_state:state, ..Default::default() };
+        d.dialogue_server_state.admit(&a,&json!({"type":"input_audio_buffer.committed","item_id":"previous"})).unwrap();
+        d.dialogue_server_state.admit(&a,&json!({"type":"response.created","response":{"id":"previous-r","status":"in_progress"}})).unwrap();
+        d.response_ledger.record_source("previous-cue",Some("previous")); d.response_ledger.bind_response(Some("previous-r"),Some("previous"),None,None).unwrap();
+        d.record_asr_cue_owner("previous","previous-cue".to_string());
+        d.native_response_cue_id=Some("previous-cue".to_string()); d.native_response_item_id=Some("previous".to_string()); d.native_response_id=Some("previous-r".to_string()); d.begin_native_response_lifecycle(Some("previous-r"));
+        d.dialogue_server_state.admit(&a,&json!({"type":"input_audio_buffer.committed","item_id":"skipped"})).unwrap();
+        d.dialogue_server_state.admit(&a,&json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"skipped","content_index":0,"transcript":""})).unwrap();
+        d.response_ledger.record_source("skipped-cue",Some("skipped")); d.record_asr_cue_owner("skipped","skipped-cue".to_string());
+        d.pending_native_response_owners.push_back(pending_owner("skipped-cue","skipped",None));
+        assert!(d.abandon_manual_dialogue_input("previous",false).is_err()); assert!(d.dialogue_server_state.has_pending_input_turn());
+        assert!(d.abandon_manual_dialogue_input("skipped",true).is_err()); assert!(d.dialogue_server_state.has_pending_input_turn());
+        d.abandon_manual_dialogue_input("skipped",false).unwrap();
+        assert!(!d.dialogue_server_state.has_pending_input_turn()); assert!(d.native_response_active());
+        assert_eq!(d.native_response_cue_id.as_deref(),Some("previous-cue")); assert_eq!(d.native_response_id.as_deref(),Some("previous-r"));
+        assert!(d.asr_cue_for_input_item("skipped").is_none()); assert!(d.response_ledger.bind_response(None,Some("skipped"),None,None).is_none());
+        assert!(d.pending_native_response_owners.is_empty());
+        d.dialogue_server_state.admit(&a,&json!({"type":"response.done","response":{"id":"previous-r","status":"cancelled"}})).unwrap();
+        d.response_lifecycle.complete(Some("previous-r")); d.response_ledger.complete_response(Some("previous-r"));
+        d.response_ledger.record_source("next-cue",Some("next"));
+        assert_eq!(d.response_ledger.bind_response(Some("next-r"),None,None,None).unwrap().cue_id,"next-cue");
     }
 }

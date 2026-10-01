@@ -360,6 +360,10 @@ fn start_omni_inbound_route(
     plan: ResolvedRoutePlan,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let mut omni_route_config = config;
+    // Normalize only the session copy; keep the user's saved model selection.
+    if plan.subtitle_fallback_policy == SubtitleFallbackPolicy::Native {
+        omni_route_config["devices"]["subtitleTranslationMode"] = Value::String("native".into());
+    }
     let subtitle_translate_mode = match plan.subtitle_fallback_policy {
         SubtitleFallbackPolicy::Secondary => "secondary",
         SubtitleFallbackPolicy::Native => "native",
@@ -551,6 +555,10 @@ fn start_openai_inbound_route(
     config: Value,
     plan: ResolvedRoutePlan,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    let mut config = config;
+    if plan.subtitle_fallback_policy == SubtitleFallbackPolicy::Native {
+        config["devices"]["subtitleTranslationMode"] = Value::String("native".into());
+    }
     let speech_dispatch_state = state.snapshot().speech.dispatch_state;
     let mut st_active = false;
     if let Some(text_provider) = plan.secondary_subtitle_provider.clone() {

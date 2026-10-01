@@ -4,6 +4,7 @@ import {
   calculateChrF2,
   scoreBenchmarkReport,
   scoreLatencyRamp,
+  scoreLatencyV2,
   type BenchmarkSemanticJudgeEvidence,
 } from './benchmarkReportScore';
 
@@ -85,7 +86,20 @@ describe('benchmark-score/v2', () => {
     const slow = report();
     slow.runs[0]!.audioToRenderFirstMs = 5_000;
     slow.runs[0]!.audioToRenderFinalMs = 10_000;
-    expect(score(slow).dimensions.latency.score).toBe(50);
+    expect(score(slow).dimensions.latency.score).toBe(55);
+  });
+
+  it('distinguishes a severely delayed first complete translation from a fast first token', () => {
+    expect(scoreLatencyV2(2_000, 2_000, 8_000)).toBe(100);
+    expect(scoreLatencyV2(8_000, 2_000, 8_000)).toBe(10);
+    expect(scoreLatencyV2(15_000, 5_000, 15_000)).toBe(10);
+    expect(scoreLatencyV2(30_000, 5_000, 15_000)).toBe(2.5);
+    expect(scoreLatencyV2(114_075, 5_000, 15_000)).toBeLessThan(scoreLatencyV2(30_000, 5_000, 15_000)!);
+    const slow = report();
+    slow.runs[0]!.audioToRenderFirstMs = 607.1;
+    slow.runs[0]!.audioToRenderFinalMs = 114_075;
+    expect(score(slow).dimensions.latency.score).toBe(4.2);
+    expect(score(slow).dimensions.latency.evidence.runs).toEqual([{ runIndex: 0, score: 4.2 }]);
   });
 
   it('requires latency evidence for every run rather than treating a gap as zero', () => {

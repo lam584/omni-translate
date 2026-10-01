@@ -20,13 +20,14 @@ import { describeUnknownError } from '../utils/describe-unknown-error';
 import { resolveRecommendedDriverAction } from '../utils/driver-management';
 import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../utils/provider-model-capabilities';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
+import { effectiveProviderModelRegistry } from '../utils/provider-model-capabilities-registry';
 import { isOverlayVisible } from '../utils/scene-readiness';
 import { LogLevelControl } from './diagnostics/LogLevelControl';
 import { BenchmarkHistoryPanel } from './diagnostics/BenchmarkHistoryPanel';
 import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsActions';
 import { CUSTOM_AUDIO_VALUE } from './diagnostics/benchmark-audio-fixtures';
 import { useBenchmarkController, type BenchmarkVoiceModel } from './diagnostics/useBenchmarkController';
-import { formatSemanticJudgeError, runBenchmarkSemanticJudge, type BenchmarkJudgeModel, type BenchmarkSemanticJudgeResult } from './diagnostics/benchmarkSemanticJudge';
+import { formatSemanticJudgeError, resolveBenchmarkJudgeTextProvider, runBenchmarkSemanticJudge, type BenchmarkJudgeModel, type BenchmarkSemanticJudgeResult } from './diagnostics/benchmarkSemanticJudge';
 import { scoreBenchmarkReport, type BenchmarkJudgeState, type BenchmarkRunState, type BenchmarkScoreV2 } from './diagnostics/benchmarkReportScore';
 import { resolveBenchmarkReferenceTranslation, resolveBenchmarkSourceText } from './diagnostics/benchmarkReferenceText';
 import { benchmarkScoreFromHistory, historyScoreStatus, type BenchmarkHistoryRecord } from './diagnostics/benchmarkHistory';
@@ -125,7 +126,6 @@ function DiagnosticsPage() {
   const exportScope = exportScopeOverride ?? diagnostics.lastExportScope ?? configDraft.diagnostics.lastExportScope;
   const voiceModelOptions = useMemo(
     () => collectProviderModelOptions(configDraft.providers, {
-      scenarios: ['watch', 'game', 'voice-room'],
       dedupeKey: 'provider-model',
       project: ({ templateId, modelId, provider }): BenchmarkVoiceModel => {
         const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
@@ -143,25 +143,25 @@ function DiagnosticsPage() {
           provider,
         };
       },
+    }).filter((model) => {
+      if (!model.provider) return false;
+      const entry = effectiveProviderModelRegistry(model.provider).find((candidate) => candidate.modelId === model.apiModelId);
+      return Boolean(entry && !entry.hidden && entry.capabilities.some((capability) => capability === 'speech-to-text' || capability === 'speech-to-speech'));
     }),
     [configDraft.providers],
   );
-  const semanticJudgeModels = useMemo(
-    () => collectProviderModelOptions(configDraft.providers, {
-      scenarios: ['subtitle-translate'],
-      dedupeKey: 'provider-model',
-      project: ({ templateId, modelId, provider }): BenchmarkJudgeModel => {
-        const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
-        return {
-          modelId: `${templateId}::${modelId}`,
-          displayName: `${provider.displayName ?? templateId}: ${modelId}`,
-          authReference: provider.authRef?.reference ?? '',
-          provider: { ...provider, model: apiModelId },
-        };
-      },
-    }),
-    [configDraft.providers],
-  );
+  const semanticJudgeModels = useMemo(() => collectProviderModelOptions(configDraft.providers, {
+    dedupeKey: 'provider-model',
+    project: ({ templateId, modelId, provider }): BenchmarkJudgeModel => {
+      const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
+      return {
+        modelId: `${templateId}::${modelId}`,
+        displayName: `${provider.displayName ?? templateId}: ${modelId}`,
+        authReference: provider.authRef?.reference ?? '',
+        provider: { ...provider, model: apiModelId },
+      };
+    },
+  }).filter((model) => resolveBenchmarkJudgeTextProvider(model.provider) !== null), [configDraft.providers]);
 
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const {
@@ -180,6 +180,11 @@ function DiagnosticsPage() {
   const [historyDetail, setHistoryDetail] = useState<BenchmarkHistoryRecord | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyMutationError, setHistoryMutationError] = useState<string | null>(null);
+  const [historySemanticJudgeModelId, setHistorySemanticJudgeModelId] = useState('');
+  const [historySemanticJudgeRunning, setHistorySemanticJudgeRunning] = useState(false);
+  const [historySemanticJudgeError, setHistorySemanticJudgeError] = useState<string | null>(null);
+  const [historySemanticJudgeResult, setHistorySemanticJudgeResult] = useState<BenchmarkSemanticJudgeResult | null>(null);
+  const [historySemanticJudgeEvidenceMissing, setHistorySemanticJudgeEvidenceMissing] = useState<readonly string[]>([]);
   const hasNativeShell = desktopApi.capabilities.hasNativeShell;
   const persistBenchmarkHistory = useCallback(async ({
     error = null,
@@ -267,6 +272,7 @@ function DiagnosticsPage() {
     ? semanticJudgeModelId
     : semanticJudgeModels[0]?.modelId ?? '';
   const selectedSemanticJudgeModel = semanticJudgeModels.find((model) => model.modelId === effectiveSemanticJudgeModelId) ?? null;
+  const automaticJudgeModel = selectedSemanticJudgeModel;
   const judgeScoreContext = useMemo(() => ({
     missingEvidence: selectedSemanticJudgeModel
       ? semanticJudgeEvidenceMissing
@@ -274,9 +280,10 @@ function DiagnosticsPage() {
     model: selectedSemanticJudgeModel?.displayName ?? null,
     rubricVersion: 'benchmark-semantic-judge/v1',
   }), [selectedSemanticJudgeModel, semanticJudgeEvidenceMissing]);
-  const runSemanticJudge = useCallback(async () => {
+  const runSemanticJudge = useCallback(async (modelOverride?: BenchmarkJudgeModel | null) => {
+    const judgeModel = modelOverride === undefined ? selectedSemanticJudgeModel : modelOverride;
     if (!benchmarkReport) return;
-    if (!selectedSemanticJudgeModel) {
+    if (!judgeModel) {
       setSemanticJudgeEvidenceMissing(['judge-model-unavailable']);
       setSemanticJudgeError(null);
       setSemanticJudgeResult(null);
@@ -301,7 +308,7 @@ function DiagnosticsPage() {
         report: benchmarkReport,
         runStatus: 'completed',
         score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'idle', null, {
-          model: selectedSemanticJudgeModel.displayName,
+          model: judgeModel.displayName,
           rubricVersion: 'benchmark-semantic-judge/v1',
         }),
       });
@@ -309,7 +316,7 @@ function DiagnosticsPage() {
     }
     let credential: string | null = null;
     try {
-      credential = (await readProviderSecret(selectedSemanticJudgeModel.authReference)).secret;
+      credential = (await readProviderSecret(judgeModel.authReference)).secret;
     } catch (caught) {
       // The judge endpoint is deliberately not called when credential
       // evidence cannot be read from the configured credential store.
@@ -325,7 +332,7 @@ function DiagnosticsPage() {
         runStatus: 'completed',
         score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'idle', null, {
           missingEvidence,
-          model: selectedSemanticJudgeModel.displayName,
+          model: judgeModel.displayName,
           rubricVersion: 'benchmark-semantic-judge/v1',
         }),
       });
@@ -339,12 +346,12 @@ function DiagnosticsPage() {
       report: benchmarkReport,
       runStatus: 'completed',
       score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'running', null, {
-        model: selectedSemanticJudgeModel.displayName,
+        model: judgeModel.displayName,
         rubricVersion: 'benchmark-semantic-judge/v1',
       }),
     });
     try {
-      const result = await runBenchmarkSemanticJudge(benchmarkReport, selectedSemanticJudgeModel, credential);
+      const result = await runBenchmarkSemanticJudge(benchmarkReport, judgeModel, credential);
       setSemanticJudgeResult(result);
       await persistBenchmarkHistory({
         report: benchmarkReport,
@@ -359,7 +366,7 @@ function DiagnosticsPage() {
         report: benchmarkReport,
         runStatus: 'completed',
         score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'failed', error, {
-          model: selectedSemanticJudgeModel.displayName,
+          model: judgeModel.displayName,
           rubricVersion: 'benchmark-semantic-judge/v1',
         }),
       });
@@ -377,7 +384,7 @@ function DiagnosticsPage() {
     judgeScoreContext,
   ) : null, [benchmarkReport, benchmarkState, judgeScoreContext, semanticJudgeError, semanticJudgeResult, semanticJudgeRunning]);
   const benchmarkJudgeKey = benchmarkReport
-    ? `${benchmarkReport.model}|${benchmarkReport.audioFile}|${benchmarkReport.runs.map((run) => `${run.runIndex}:${run.responseDoneMs ?? ''}:${run.translationFinal}`).join('|')}|${effectiveSemanticJudgeModelId || 'judge-model-unavailable'}`
+    ? `${benchmarkReport.model}|${benchmarkReport.audioFile}|${benchmarkReport.runs.map((run) => `${run.runIndex}:${run.responseDoneMs ?? ''}:${run.translationFinal}`).join('|')}|${automaticJudgeModel?.modelId || 'judge-model-unavailable'}`
     : null;
   useEffect(() => {
     if (
@@ -390,12 +397,12 @@ function DiagnosticsPage() {
       || automaticJudgeKey.current === benchmarkJudgeKey
     ) return;
     automaticJudgeKey.current = benchmarkJudgeKey;
-    void runSemanticJudge().catch((caught) => {
+    void runSemanticJudge(automaticJudgeModel).catch((caught) => {
       automaticJudgeKey.current = null;
       setSemanticJudgeRunning(false);
       setSemanticJudgeError(formatSemanticJudgeError(caught));
     });
-  }, [benchmarkJudgeKey, benchmarkReport, benchmarkState, runSemanticJudge, semanticJudgeError, semanticJudgeResult, semanticJudgeRunning]);
+  }, [automaticJudgeModel, benchmarkJudgeKey, benchmarkReport, benchmarkState, runSemanticJudge, semanticJudgeError, semanticJudgeResult, semanticJudgeRunning]);
   const startBenchmark = () => {
     automaticJudgeKey.current = null;
     setSemanticJudgeResult(null);
@@ -404,16 +411,149 @@ function DiagnosticsPage() {
     setHistoryMutationError(null);
     void runBenchmarkTest();
   };
+  const effectiveHistoryJudgeModelId = semanticJudgeModels.some((model) => model.modelId === historySemanticJudgeModelId)
+    ? historySemanticJudgeModelId
+    : semanticJudgeModels[0]?.modelId ?? '';
+  const selectedHistoryJudgeModel = semanticJudgeModels.find((model) => model.modelId === effectiveHistoryJudgeModelId) ?? null;
+  const historyJudgeScoreContext = useMemo(() => ({
+    missingEvidence: selectedHistoryJudgeModel
+      ? historySemanticJudgeEvidenceMissing
+      : ['judge-model-unavailable'],
+    model: selectedHistoryJudgeModel?.displayName ?? null,
+    rubricVersion: 'benchmark-semantic-judge/v1',
+  }), [selectedHistoryJudgeModel, historySemanticJudgeEvidenceMissing]);
+  const effectiveHistoryScore = useMemo(() => {
+    if (!historyDetail?.report) return null;
+    return buildBenchmarkScore(
+      historyDetail.report,
+      historyDetail.runStatus === 'completed' ? 'completed' : 'failed',
+      historySemanticJudgeResult,
+      historySemanticJudgeRunning ? 'running' : historySemanticJudgeError ? 'failed' : historySemanticJudgeResult ? 'completed' : 'idle',
+      historySemanticJudgeError,
+      historyJudgeScoreContext,
+    );
+  }, [historyDetail, historySemanticJudgeResult, historySemanticJudgeRunning, historySemanticJudgeError, historyJudgeScoreContext]);
+
+  const runHistorySemanticJudge = useCallback(async () => {
+    if (!historyDetail?.report) return;
+    const report = historyDetail.report;
+    const runStatus = historyDetail.runStatus;
+    if (!selectedHistoryJudgeModel) {
+      setHistorySemanticJudgeEvidenceMissing(['judge-model-unavailable']);
+      setHistorySemanticJudgeError(null);
+      setHistorySemanticJudgeResult(null);
+      return;
+    }
+    const sourceText = resolveBenchmarkSourceText(report.audioFile);
+    const referenceTranslation = resolveBenchmarkReferenceTranslation(report.audioFile);
+    if (!sourceText || !referenceTranslation) {
+      setHistorySemanticJudgeEvidenceMissing([]);
+      setHistorySemanticJudgeError(null);
+      setHistorySemanticJudgeResult(null);
+      return;
+    }
+    let credential: string | null = null;
+    try {
+      credential = (await readProviderSecret(selectedHistoryJudgeModel.authReference)).secret;
+    } catch (caught) {
+      recordBenchmarkJudgeCredentialFailure(caught);
+    }
+    if (!credential) {
+      setHistorySemanticJudgeEvidenceMissing(['judge-credential-unavailable']);
+      setHistorySemanticJudgeError(null);
+      setHistorySemanticJudgeResult(null);
+      return;
+    }
+    setHistorySemanticJudgeRunning(true);
+    setHistorySemanticJudgeError(null);
+    setHistorySemanticJudgeResult(null);
+    setHistorySemanticJudgeEvidenceMissing([]);
+    try {
+      const result = await runBenchmarkSemanticJudge(report, selectedHistoryJudgeModel, credential);
+      setHistorySemanticJudgeResult(result);
+      const updatedScore = buildBenchmarkScore(
+        report,
+        runStatus === 'completed' ? 'completed' : 'failed',
+        result,
+        'completed',
+      );
+      const persisted = await saveBenchmarkHistoryRecord({
+        recordId: historyDetail.recordId,
+        runId: historyDetail.runId,
+        model: report.model,
+        runStatus,
+        scoreStatus: historyScoreStatus(updatedScore),
+        scoreVersion: updatedScore.version,
+        totalScore: updatedScore.total,
+        grade: updatedScore.grade,
+        report,
+        score: updatedScore,
+        error: historyDetail.error,
+      });
+      setHistoryDetail(persisted);
+      void refreshBenchmarkHistory().catch(() => undefined);
+    } catch (caught) {
+      const error = formatSemanticJudgeError(caught);
+      setHistorySemanticJudgeError(error);
+      const failedScore = buildBenchmarkScore(
+        report,
+        runStatus === 'completed' ? 'completed' : 'failed',
+        null,
+        'failed',
+        error,
+        {
+          model: selectedHistoryJudgeModel.displayName,
+          rubricVersion: 'benchmark-semantic-judge/v1',
+        },
+      );
+      const persisted = await saveBenchmarkHistoryRecord({
+        recordId: historyDetail.recordId,
+        runId: historyDetail.runId,
+        model: report.model,
+        runStatus,
+        scoreStatus: historyScoreStatus(failedScore),
+        scoreVersion: failedScore.version,
+        totalScore: failedScore.total,
+        grade: failedScore.grade,
+        report,
+        score: failedScore,
+        error,
+      });
+      setHistoryDetail(persisted);
+      void refreshBenchmarkHistory().catch(() => undefined);
+    } finally {
+      setHistorySemanticJudgeRunning(false);
+    }
+  }, [historyDetail, refreshBenchmarkHistory, saveBenchmarkHistoryRecord, selectedHistoryJudgeModel]);
+
   const openBenchmarkHistory = useCallback(async (recordId: string) => {
     try {
       const record = await getStoredBenchmarkHistory(recordId);
       setHistoryDetail(record);
+      setHistorySemanticJudgeError(null);
+      setHistorySemanticJudgeEvidenceMissing([]);
+      const initialScore = benchmarkScoreFromHistory(record.score);
+      const existingJudge = initialScore?.dimensions?.semantic?.evidence?.judge;
+      if (existingJudge && existingJudge.state === 'completed' && existingJudge.model && existingJudge.average != null) {
+        setHistorySemanticJudgeResult({
+          model: existingJudge.model,
+          rubricVersion: existingJudge.rubricVersion ?? 'benchmark-semantic-judge/v1',
+          score: existingJudge.average,
+          runs: existingJudge.runs,
+        });
+        const matched = semanticJudgeModels.find((m) => m.displayName === existingJudge.model);
+        if (matched) {
+          setHistorySemanticJudgeModelId(matched.modelId);
+        }
+      } else {
+        setHistorySemanticJudgeResult(null);
+      }
       setHistoryModalOpen(true);
       setHistoryMutationError(null);
     } catch (caught) {
       setHistoryMutationError(describeUnknownError(caught));
     }
-  }, [getStoredBenchmarkHistory]);
+  }, [getStoredBenchmarkHistory, semanticJudgeModels]);
   const deleteBenchmarkHistory = useCallback(async (recordId: string) => {
     if (!window.confirm(i18n.t('diagnostics.benchmark.deleteHistoryConfirm'))) return;
     try {
@@ -1050,7 +1190,7 @@ function DiagnosticsPage() {
                     historyDetail.report!,
                     base,
                     format,
-                    benchmarkScoreFromHistory(historyDetail.score) ?? undefined,
+                    effectiveHistoryScore ?? undefined,
                   ));
                 }} />
               ) : null}
@@ -1063,8 +1203,20 @@ function DiagnosticsPage() {
           {historyDetail.report ? (
             <BenchmarkReportDetail
               benchmarkState={historyDetail.runStatus === 'completed' ? 'completed' : 'failed'}
+              onRunSemanticJudge={() => void runHistorySemanticJudge().catch(() => undefined)}
+              onSemanticJudgeModelChange={(modelId) => {
+                setHistorySemanticJudgeModelId(modelId);
+                setHistorySemanticJudgeResult(null);
+                setHistorySemanticJudgeError(null);
+                setHistorySemanticJudgeEvidenceMissing([]);
+              }}
               report={historyDetail.report}
-              score={benchmarkScoreFromHistory(historyDetail.score) ?? undefined}
+              score={effectiveHistoryScore ?? undefined}
+              semanticJudgeError={historySemanticJudgeError}
+              semanticJudgeModelId={effectiveHistoryJudgeModelId}
+              semanticJudgeModels={semanticJudgeModels}
+              semanticJudgeResult={historySemanticJudgeResult}
+              semanticJudgeRunning={historySemanticJudgeRunning}
             />
           ) : <p className="benchmark-empty">{i18n.t('diagnostics.benchmark.historyReportUnavailable')}</p>}
         </ModalDialog>

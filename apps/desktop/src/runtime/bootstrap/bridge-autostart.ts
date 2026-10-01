@@ -5,14 +5,13 @@ import { useAppStore } from '../../stores/app-store';
 import { bridgeCaptureRouteMatches, bridgeProcessIsRunning } from '../../utils/bridge-capture-route';
 import { resolveProcessLoopbackCapability } from '../../utils/process-loopback-capability';
 import { activeDesktopApi } from '../desktop-api';
+import { BRIDGE_REFRESH_TIMEOUT_MS, BRIDGE_START_TIMEOUT_MS } from '../bridge-runtime';
 import { invokeWithTimeout } from './invoke';
 import { pushDesktopRuntimeNotification } from './notifications';
 import { scheduleStartupTask } from './schedule';
 import { shouldSuppressGenericStartupAutostart } from './watch-mode';
 
 export const BRIDGE_AUTOSTART_AFTER_READY_DELAY_MS = 0;
-const BRIDGE_STARTUP_REFRESH_TIMEOUT_MS = 3000;
-const BRIDGE_STARTUP_START_TIMEOUT_MS = 8000;
 
 type RuntimeCleanup = () => void;
 
@@ -56,7 +55,7 @@ async function refreshAndAutostartBridgeStartup(config: AppConfigDraft) {
       const startedSnapshot = await invokeWithTimeout(
         () => activeDesktopApi().legacyBridge.start(config),
         'start_bridge_service',
-        BRIDGE_STARTUP_START_TIMEOUT_MS,
+        BRIDGE_START_TIMEOUT_MS,
       );
       assertAutostartCaptureRoute(startedSnapshot, config);
       useAppStore.getState().setRuntimeSnapshot(startedSnapshot);
@@ -66,7 +65,7 @@ async function refreshAndAutostartBridgeStartup(config: AppConfigDraft) {
     const driverSnapshot = await invokeWithTimeout(
       () => activeDesktopApi().bridge.refresh(),
       'bridge_v2.refresh',
-      BRIDGE_STARTUP_REFRESH_TIMEOUT_MS,
+      BRIDGE_REFRESH_TIMEOUT_MS,
     );
     useAppStore.getState().setRuntimeSnapshot(driverSnapshot);
 
@@ -77,7 +76,7 @@ async function refreshAndAutostartBridgeStartup(config: AppConfigDraft) {
     const startedSnapshot = await invokeWithTimeout(
       () => activeDesktopApi().legacyBridge.start(config),
       'start_bridge_service',
-      BRIDGE_STARTUP_START_TIMEOUT_MS,
+      BRIDGE_START_TIMEOUT_MS,
     );
     assertAutostartCaptureRoute(startedSnapshot, config);
     useAppStore.getState().setRuntimeSnapshot(startedSnapshot);

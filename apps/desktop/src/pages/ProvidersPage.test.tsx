@@ -17,6 +17,7 @@ const readProviderSecretMock = vi.fn();
 const runProviderProbeMock = vi.fn();
 const runProviderSmokeMock = vi.fn();
 const fetchProviderModelsMock = vi.fn();
+const fetchProviderModelMetadataMock = vi.fn();
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -25,6 +26,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('../runtime/provider-runtime', () => ({
   fetchProviderModels: (...args: unknown[]) => fetchProviderModelsMock(...args),
+  fetchProviderModelMetadata: (...args: unknown[]) => fetchProviderModelMetadataMock(...args),
   getProviderSecretStatus: (...args: unknown[]) => getProviderSecretStatusMock(...args),
   saveProviderSecret: (...args: unknown[]) => saveProviderSecretMock(...args),
   readProviderSecret: (...args: unknown[]) => readProviderSecretMock(...args),
@@ -124,7 +126,7 @@ function sceneAddButtons(container: HTMLElement) {
 }
 
 function manualModelAddButton(container: HTMLElement) {
-  return container.querySelector<HTMLButtonElement>('.provider-scene-manual-row button');
+  return modelCatalogDialog(container)?.querySelector<HTMLButtonElement>('.provider-scene-manual-row button');
 }
 
 function pendingRegistrationDialog(container: HTMLElement, modelId: string) {
@@ -165,13 +167,6 @@ async function selectValue(element: HTMLSelectElement, value: string) {
     element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   });
-}
-
-async function selectFirstCustomProviderProfile(container: HTMLElement) {
-  const select = container.querySelector<HTMLSelectElement>('.provider-modal select');
-  const profileKey = select?.options[1]?.value;
-  expect(profileKey?.length).toBeGreaterThan(0);
-  await selectValue(select!, profileKey!);
 }
 
 async function inputTextarea(element: HTMLTextAreaElement, value: string) {
@@ -266,6 +261,7 @@ describe('ProvidersPage', () => {
       routingDecision: { subtitlePriority: 'subtitle-first', speechDisposition: 'deferred', rationale: 'test' },
       error: null,
     });
+    fetchProviderModelMetadataMock.mockReset().mockImplementation(async (provider: { providerId: string }) => ({ providerId: provider.providerId, endpoint: 'https://dashscope.aliyuncs.com/api/v1/models', fetchedAt: new Date().toISOString(), models: [], error: null }));
     fetchProviderModelsMock.mockReset().mockResolvedValue({
       providerId: appConfigDraftMock.providers[0].providerId,
       endpoint: 'https://example.test/models',
@@ -453,11 +449,11 @@ describe('ProvidersPage', () => {
 
   it('restores cached scene assignments when switching back to a provider template', async () => {
     const state = cloneStoreState();
-    state.configDraft.providers[0].sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['cached-watch-model'] },
-      { scenario: 'game', modelIds: ['cached-game-model'] },
-      { scenario: 'voice-room', modelIds: [] },
-      { scenario: 'subtitle-translate', modelIds: [] },
+    state.configDraft.providers[0].candidateModelGroups = [
+      { group: 'text-processing', modelIds: ['cached-watch-model'] },
+      { group: 'audio-understanding', modelIds: ['cached-game-model'] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
     ];
     useAppStore.setState((current) => ({ ...current, ...state }));
 
@@ -470,8 +466,8 @@ describe('ProvidersPage', () => {
     await click(directoryItems(container)[1]);
 
     const restored = useAppStore.getState().configDraft.providers.find((provider) => provider.templateId === originalTemplateId);
-    expect(restored?.sceneModelAssignments.find((item) => item.scenario === 'watch')?.modelIds).toContain('cached-watch-model');
-    expect(restored?.sceneModelAssignments.find((item) => item.scenario === 'game')?.modelIds).toContain('cached-game-model');
+    expect(restored?.candidateModelGroups?.find((item) => item.group === 'text-processing')?.modelIds).toContain('cached-watch-model');
+    expect(restored?.candidateModelGroups?.find((item) => item.group === 'audio-understanding')?.modelIds).toContain('cached-game-model');
   });
 
   it('creates a custom provider and switches to it', async () => {
@@ -479,9 +475,7 @@ describe('ProvidersPage', () => {
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'OpenRouter Custom');
-    await inputText(modalInput(container, 1), 'custom-model');
-    await inputText(modalInput(container, 2), 'https://openrouter.ai/api/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://openrouter.ai/api/v1');
     await click(buttonByText(container, '创建平台'));
 
     const created = useAppStore.getState().configDraft.providers.find(
@@ -496,9 +490,7 @@ describe('ProvidersPage', () => {
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Editable Custom');
-    await inputText(modalInput(container, 1), 'custom-model');
-    await inputText(modalInput(container, 2), 'https://editable.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://editable.example/v1');
     await click(buttonByText(container, '创建平台'));
 
     await click(buttonContainingText(container, '高级设置'));
@@ -515,16 +507,12 @@ describe('ProvidersPage', () => {
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'First Custom');
-    await inputText(modalInput(container, 1), 'first-custom-model');
-    await inputText(modalInput(container, 2), 'https://first.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://first.example/v1');
     await click(buttonByText(container, '创建平台'));
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Second Custom');
-    await inputText(modalInput(container, 1), 'second-custom-model');
-    await inputText(modalInput(container, 2), 'https://second.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://second.example/v1');
     await click(buttonByText(container, '创建平台'));
 
     await click(buttonContainingText(container, '高级设置'));
@@ -543,12 +531,12 @@ describe('ProvidersPage', () => {
     await renderPage();
 
     await click(sceneAddButtons(container)[0]);
-    await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'manual-scene-model');
+    await inputText(modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'manual-scene-model');
     await click(buttonByText(container, '手动添加'));
     expect(pendingRegistrationDialog(container, 'manual-scene-model')).toBeInstanceOf(HTMLElement);
     await confirmPendingModelRegistration(container);
 
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('manual-scene-model');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).toContain('manual-scene-model');
     expect(useAppStore.getState().configDraft.providers[0].localModelCapabilityRegistry[0]).toMatchObject({
       modelId: 'manual-scene-model',
       realtimeAudioMode: 'server_vad',
@@ -593,7 +581,7 @@ describe('ProvidersPage', () => {
     }));
 
     await renderPage();
-    await click(sceneAddButtons(container)[0]);
+    await click(sceneAddButtons(container)[1]);
 
     expect(fetchProviderModelsMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -609,7 +597,7 @@ describe('ProvidersPage', () => {
     const modelRow = Array.from(container.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('qwen-extra-live'));
     await click(modelRow!.querySelector<HTMLButtonElement>('.provider-row-action'));
 
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('qwen-extra-live');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![1]?.modelIds).toContain('qwen-extra-live');
   });
 
   it('updates provider advanced settings', async () => {
@@ -661,9 +649,7 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Temporary Custom');
-    await inputText(modalInput(container, 1), 'custom-model');
-    await inputText(modalInput(container, 2), 'https://custom.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://custom.example/v1');
     await click(buttonByText(container, '创建平台'));
 
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
@@ -680,9 +666,7 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Undeletable Custom');
-    await inputText(modalInput(container, 1), 'custom-model');
-    await inputText(modalInput(container, 2), 'https://custom.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://custom.example/v1');
     await click(buttonByText(container, '创建平台'));
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
 
@@ -701,9 +685,7 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Only Visible Custom');
-    await inputText(modalInput(container, 1), 'custom-model');
-    await inputText(modalInput(container, 2), 'https://only-visible.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://only-visible.example/v1');
     await click(buttonByText(container, '创建平台'));
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
     window.localStorage.setItem('omni.providerTemplateCatalogPrefs', JSON.stringify(providerTemplates.map((template, order) => ({
@@ -722,13 +704,13 @@ describe('ProvidersPage', () => {
   it('removes a manually added scene model', async () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
-    await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'remove-me');
+    await inputText(modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'remove-me');
     await click(buttonByText(container, '手动添加'));
     await confirmPendingModelRegistration(container);
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('remove-me');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).toContain('remove-me');
 
     await click(deleteSceneModelButton(container, 'remove-me'));
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).not.toContain('remove-me');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).not.toContain('remove-me');
   });
 
   it('adds, edits, disables and deletes a custom request header', async () => {
@@ -875,13 +857,12 @@ describe('ProvidersPage', () => {
     const dialog = container.querySelector<HTMLElement>('.provider-modal')!;
     const selects = dialog.querySelectorAll<HTMLSelectElement>('select');
 
-    await selectValue(selects[1], 'dashscope');
+    await selectValue(selects[0], 'dashscope');
     await inputText(dialog.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')!, 'cn-shanghai');
     await inputText(dialog.querySelector<HTMLInputElement>('input[type="number"]')!, '23000');
 
     expect(dialog.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')?.value).toBe('cn-shanghai');
-    await selectValue(selects[1], 'openai-compatible');
-    await selectFirstCustomProviderProfile(container);
+    await selectValue(selects[0], 'openai-compatible');
     await click(Array.from(dialog.querySelectorAll<HTMLButtonElement>('.provider-modal-actions button')).at(0));
     expect(container.querySelector('.provider-modal')).toBeNull();
   });
@@ -1001,7 +982,7 @@ describe('ProvidersPage', () => {
     const dialog = modelCatalogDialog(container)!;
     const existingRow = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('qwen3.5-livetranslate-flash-realtime'))!;
     await click(existingRow.querySelector<HTMLButtonElement>('.provider-row-action'));
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).not.toContain('qwen3.5-livetranslate-flash-realtime');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).not.toContain('qwen3.5-livetranslate-flash-realtime');
 
     const uncategorizedRow = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('uncategorized-runtime-model'))!;
     await click(uncategorizedRow.querySelector<HTMLButtonElement>('.provider-row-action'));
@@ -1013,11 +994,11 @@ describe('ProvidersPage', () => {
   it('marks models as added across all catalog scenarios without changing the target scenario', async () => {
     const state = cloneStoreState();
     state.configDraft.devices.routeMode = 'watch';
-    state.configDraft.providers[0].sceneModelAssignments = [
-      { scenario: 'watch', modelIds: [] },
-      { scenario: 'game', modelIds: ['qwen-plus'] },
-      { scenario: 'voice-room', modelIds: [] },
-      { scenario: 'subtitle-translate', modelIds: [] },
+    state.configDraft.providers[0].candidateModelGroups = [
+      { group: 'text-processing', modelIds: [] },
+      { group: 'audio-understanding', modelIds: ['qwen-plus'] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
     ];
     state.configDraft.providers[0].modelCatalogCache = {
       signature: providersPageHelpers.buildModelCatalogSignature(state.configDraft.providers[0]),
@@ -1048,9 +1029,9 @@ describe('ProvidersPage', () => {
     expect(row.classList.contains('provider-model-item-active')).toBe(true);
 
     await click(row.querySelector<HTMLButtonElement>('.provider-row-action'));
-    const assignments = useAppStore.getState().configDraft.providers[0].sceneModelAssignments;
-    expect(assignments.find((item) => item.scenario === 'watch')?.modelIds).toContain('qwen-plus');
-    expect(assignments.find((item) => item.scenario === 'game')?.modelIds).toContain('qwen-plus');
+    const assignments = useAppStore.getState().configDraft.providers[0].candidateModelGroups;
+    expect(assignments?.find((item) => item.group === 'realtime-multimodal')?.modelIds).toContain('qwen-plus');
+    expect(assignments?.find((item) => item.group === 'audio-understanding')?.modelIds).toContain('qwen-plus');
   });
 
   it('closes capability registry and verification dialogs through their close controls', async () => {
@@ -1162,19 +1143,13 @@ describe('ProvidersPage', () => {
     expect(container.textContent).toContain('平台名称不能为空');
 
     await inputText(modalInput(container, 0), 'Incomplete Provider');
-    await inputText(modalInput(container, 2), '');
+    await inputText(modalInput(container, 1), '');
     await click(buttonByText(container, '创建平台'));
     expect(container.textContent).toContain('接口地址不能为空');
 
-    await inputText(modalInput(container, 2), 'https://custom.example/v1');
+    await inputText(modalInput(container, 1), 'https://custom.example/v1');
     await click(buttonByText(container, '创建平台'));
-    expect(container.textContent).toContain('必须填写模型 ID');
-
-    await inputText(modalInput(container, 1), 'custom-model');
-    const profileSelect = container.querySelector<HTMLSelectElement>('.provider-modal select')!;
-    await selectValue(profileSelect, '');
-    await click(buttonByText(container, '创建平台'));
-    expect(container.textContent).toContain('必须显式选择版本化 Protocol Profile');
+    expect(container.querySelector('.provider-modal')).toBeNull();
   });
 
   it('surfaces corrupt custom-provider storage without discarding the original bytes', async () => {
@@ -1188,9 +1163,7 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Persistence Failure');
-    await inputText(modalInput(container, 1), 'custom-model');
-    await inputText(modalInput(container, 2), 'https://custom.example/v1');
-    await selectFirstCustomProviderProfile(container);
+    await inputText(modalInput(container, 1), 'https://custom.example/v1');
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('storage denied');
     });
@@ -1239,7 +1212,7 @@ describe('ProvidersPage', () => {
     await click(sceneAddButtons(container)[0]);
     const dialog = modelCatalogDialog(container)!;
     await click(Array.from(dialog.querySelectorAll<HTMLButtonElement>('.provider-scenario-pill')).at(-1));
-    expect(dialog.textContent).toContain('字幕翻译');
+    expect(dialog.textContent).toContain('实时语音与多模态');
   });
 
   it('covers directory empty state and ignored pointer drag inputs', async () => {
@@ -1418,14 +1391,14 @@ describe('ProvidersPage', () => {
   it('adds and removes a manual scene model from the Enter keyboard path', async () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
-    const input = container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
+    const input = modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
     await inputText(input, 'keyboard-model');
     await dispatch(input, new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
     await confirmPendingModelRegistration(container);
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('keyboard-model');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).toContain('keyboard-model');
 
     await click(deleteSceneModelButton(container, 'keyboard-model'));
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).not.toContain('keyboard-model');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).not.toContain('keyboard-model');
   });
 
   it('hydrates a matching cached model catalog without fetching it again', async () => {
@@ -1449,7 +1422,7 @@ describe('ProvidersPage', () => {
   it('toggles pending manual model registration capabilities before confirming', async () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
-    const input = container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
+    const input = modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
 
     await inputText(input, 'custom-vision-chat');
     await click(manualModelAddButton(container));
@@ -1480,17 +1453,17 @@ describe('ProvidersPage', () => {
     const state = cloneStoreState();
     state.configDraft.devices.routeMode = 'watch';
     state.configDraft.providers[0].model = 'qwen3.5-omni-plus-realtime';
-    state.configDraft.providers[0].sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['qwen3.5-omni-plus-realtime'] },
-      { scenario: 'game', modelIds: [] },
-      { scenario: 'voice-room', modelIds: [] },
-      { scenario: 'subtitle-translate', modelIds: [] },
+    state.configDraft.providers[0].candidateModelGroups = [
+      { group: 'text-processing', modelIds: ['qwen3.5-omni-plus-realtime'] },
+      { group: 'audio-understanding', modelIds: [] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
     ];
     useAppStore.setState((current) => ({ ...current, ...state }));
 
     await renderPage();
     await click(sceneAddButtons(container)[1]);
-    await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'manual-game-model');
+    await inputText(modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'manual-game-model');
     await click(manualModelAddButton(container));
 
     const dialog = pendingRegistrationDialog(container, 'manual-game-model')!;
@@ -1500,7 +1473,7 @@ describe('ProvidersPage', () => {
     await confirmPendingModelRegistration(container);
 
     const provider = useAppStore.getState().configDraft.providers[0];
-    expect(provider.sceneModelAssignments.find((item) => item.scenario === 'game')?.modelIds).toContain('manual-game-model');
+    expect(provider.candidateModelGroups?.find((item) => item.group === 'audio-understanding')?.modelIds).toContain('manual-game-model');
     expect(provider.model).toBe('qwen3.5-omni-plus-realtime');
     expect(provider.localModelCapabilityRegistry.find((entry) => entry.modelId === 'manual-game-model')?.interactionCapabilities).not.toContain(
       activeInteraction.title,
@@ -1510,7 +1483,7 @@ describe('ProvidersPage', () => {
   it('ignores empty manual model submissions and closes pending registration from the backdrop', async () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
-    const input = container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
+    const input = modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!;
 
     await inputText(input, '   ');
     await click(manualModelAddButton(container));
@@ -1522,7 +1495,7 @@ describe('ProvidersPage', () => {
     expect(dialog).not.toBeUndefined();
     await click(dialog.parentElement);
     expect(pendingRegistrationDialog(container, 'cancel-me')).toBeUndefined();
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).not.toContain('cancel-me');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).not.toContain('cancel-me');
   });
 
   it('uses an existing registry entry for manual model add without reopening registration', async () => {
@@ -1540,11 +1513,11 @@ describe('ProvidersPage', () => {
 
     await renderPage();
     await click(sceneAddButtons(container)[0]);
-    await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'existing-manual');
+    await inputText(modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'existing-manual');
     await click(manualModelAddButton(container));
 
     expect(pendingRegistrationDialog(container, 'existing-manual')).toBeUndefined();
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('existing-manual');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds).toContain('existing-manual');
   });
 
   it('polls desktop storage recovery and falls back to bootstrap on the final attempt', async () => {
@@ -1698,8 +1671,8 @@ describe('ProvidersPage', () => {
 
   it('reorders scene models through drag and drop handlers', async () => {
     const state = cloneStoreState();
-    state.configDraft.providers[0].sceneModelAssignments[0] = {
-      scenario: 'watch',
+    state.configDraft.providers[0].candidateModelGroups![0] = {
+      group: 'text-processing',
       modelIds: ['first-drag-model', 'second-drag-model'],
     };
     state.configDraft.providers[0].localModelCapabilityRegistry = [
@@ -1718,7 +1691,7 @@ describe('ProvidersPage', () => {
     await dispatch(second, new Event('drop', { bubbles: true }));
     await dispatch(first, new Event('dragend', { bubbles: true }));
 
-    expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds[0]).toBe('second-drag-model');
+    expect(useAppStore.getState().configDraft.providers[0].candidateModelGroups![0]?.modelIds[0]).toBe('second-drag-model');
   });
 
   it('renders registry fallback values and preserves inherited module rows after deleting user overrides', async () => {
@@ -1752,16 +1725,16 @@ describe('ProvidersPage', () => {
     const state = cloneStoreState();
     state.configDraft.devices.routeMode = 'watch';
     state.configDraft.providers[0].model = 'qwen3.5-omni-plus-realtime';
-    state.configDraft.providers[0].sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['qwen3.5-omni-plus-realtime'] },
-      { scenario: 'game', modelIds: [] },
-      { scenario: 'voice-room', modelIds: [] },
-      { scenario: 'subtitle-translate', modelIds: [] },
+    state.configDraft.providers[0].candidateModelGroups = [
+      { group: 'text-processing', modelIds: ['qwen3.5-omni-plus-realtime'] },
+      { group: 'audio-understanding', modelIds: [] },
+      { group: 'audio-generation', modelIds: [] },
+      { group: 'realtime-multimodal', modelIds: [] },
     ];
     useAppStore.setState((current) => ({ ...current, ...state }));
 
     await renderPage();
-    await click(sceneAddButtons(container)[1]);
+    await click(sceneAddButtons(container)[2]);
     let row: HTMLElement | undefined;
     await waitForExpectation(() => {
       row = Array.from(modelCatalogDialog(container)!.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) =>
@@ -1773,14 +1746,14 @@ describe('ProvidersPage', () => {
     await click(row!.querySelector<HTMLButtonElement>('.provider-row-action'));
 
     const provider = useAppStore.getState().configDraft.providers[0];
-    expect(provider.sceneModelAssignments.find((item) => item.scenario === 'game')?.modelIds).toContain('qwen-audio-3.0-tts-plus');
+    expect(provider.candidateModelGroups?.find((item) => item.group === 'audio-generation')?.modelIds).toContain('qwen-audio-3.0-tts-plus');
     expect(provider.model).toBe('qwen3.5-omni-plus-realtime');
   });
 
   it('renders scene model fallback capability footnote', async () => {
     const state = cloneStoreState();
-    state.configDraft.providers[0].sceneModelAssignments[0] = {
-      scenario: 'watch',
+    state.configDraft.providers[0].candidateModelGroups![0] = {
+      group: 'text-processing',
       modelIds: ['unknown-capability-model'],
     };
     state.configDraft.providers[0].localModelCapabilityRegistry = [];
@@ -1801,7 +1774,7 @@ describe('ProvidersPage', () => {
   it('falls back on invalid pending and registry realtime mode selections', async () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
-    await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'invalid-mode-model');
+    await inputText(modelCatalogDialog(container)!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'invalid-mode-model');
     await click(manualModelAddButton(container));
 
     const pending = pendingRegistrationDialog(container, 'invalid-mode-model')!;

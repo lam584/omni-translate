@@ -3,7 +3,7 @@ use tauri::{AppHandle, Manager};
 use crate::diagnostics::events::append_diagnostics_log;
 
 use super::contracts::{
-    ProviderDraftInput, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime,
+    ProviderDraftInput, ProviderModelCatalogRuntime, ProviderModelMetadataRuntime, ProviderProbeProfileRuntime,
     ProviderSmokeResult,
 };
 use super::gateway::ProviderGateway;
@@ -37,6 +37,11 @@ pub(crate) async fn fetch_provider_models(
         None,
     );
     result
+}
+
+// Independent official Bailian metadata endpoint; no persistent catalog writes.
+pub(crate) async fn fetch_provider_model_metadata(provider: ProviderDraftInput) -> ProviderModelMetadataRuntime {
+    ProviderGateway::new().fetch_model_metadata(provider)
 }
 
 // `async fn`: blocking network probe, kept off the main thread.

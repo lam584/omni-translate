@@ -8,6 +8,8 @@ use super::contracts::{ConfigExportArtifact, ConfigSnapshotRecord};
 use crate::common::MapErrToString;
 
 mod json_merge;
+mod primary_text_translation;
+pub(crate) use primary_text_translation::resolve_exact_model_value;
 mod model_registry;
 mod benchmark_history;
 mod persisters;
@@ -100,7 +102,8 @@ impl ConfigRepository {
             .map_err_str()?;
 
         if let Some(config_json) = persisted {
-            let stored: Value = serde_json::from_str(&config_json).map_err_str()?;
+            let mut stored: Value = serde_json::from_str(&config_json).map_err_str()?;
+            primary_text_translation::migrate_config(&mut stored);
             merge_objects(&mut root, &stored);
             enforce_current_driver_contract(&mut root, &defaults);
         }
@@ -138,6 +141,7 @@ impl ConfigRepository {
         fail_on_step: Option<&str>,
     ) -> Result<(), String> {
         let mut reconciled = config.clone();
+        primary_text_translation::migrate_config(&mut reconciled);
         super::credential_verification::reconcile_config(&mut reconciled);
         let config = &reconciled;
         let check = |step: &str| -> Result<(), String> {
@@ -305,6 +309,12 @@ impl ConfigRepository {
                     [],
                 )
                 .map_err_str()?;
+        }
+        if !table_has_column(connection, "audio_device_preferences", "primary_text_translation_model_id")? {
+            connection.execute(
+                "ALTER TABLE audio_device_preferences ADD COLUMN primary_text_translation_model_id TEXT",
+                [],
+            ).map_err_str()?;
         }
         connection
             .execute_batch(CREATE_BENCHMARK_HISTORY_SCHEMA_SQL)
@@ -612,6 +622,51 @@ mod tests {
             )
             .expect("config document should insert");
         (temp_dir, repository)
+    }
+
+    #[test]
+    fn primary_text_model_round_trips_independently_in_document_and_relational_column() {
+        let (_temp_dir, repository) = initialized_repository();
+        let mut config = default_config_value().unwrap();
+        config["devices"]["primaryTextTranslationModelId"] = json!("primary-template::primary-text");
+        config["devices"]["subtitleTranslationModelId"] = json!("secondary-template::secondary-text");
+        let providers = config["providers"].clone();
+        repository.save_config(&config).unwrap();
+        let reopened = ConfigRepository::new(repository.db_path.clone(), repository.export_dir.clone(), repository.snapshot_dir.clone());
+        let loaded = reopened.load_config().unwrap();
+        assert_eq!(loaded["devices"]["primaryTextTranslationModelId"], "primary-template::primary-text");
+        assert_eq!(loaded["devices"]["subtitleTranslationModelId"], "secondary-template::secondary-text");
+        assert_eq!(loaded["providers"][0]["model"], providers[0]["model"]);
+        assert_eq!(loaded["providers"][0]["authRef"], providers[0]["authRef"]);
+        let connection = reopened.open_connection().unwrap();
+        let stored: String = connection.query_row(
+            "SELECT primary_text_translation_model_id FROM audio_device_preferences WHERE id = 1", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored, "primary-template::primary-text");
+        config["devices"]["primaryTextTranslationModelId"] = json!("");
+        reopened.save_config(&config).unwrap();
+        assert_eq!(reopened.load_config().unwrap()["devices"]["primaryTextTranslationModelId"], "");
+    }
+
+    #[test]
+    fn primary_text_column_upgrade_is_additive_and_legacy_migration_precedes_defaults() {
+        let mut config = default_config_value().unwrap();
+        config["devices"].as_object_mut().unwrap().remove("primaryTextTranslationModelId");
+        config["devices"]["inboundVoiceModelId"] = json!("template-dashscope-realtime::qwen3-asr-flash-realtime");
+        config["devices"]["subtitleTranslationModelId"] = json!("template-dashscope-realtime::qwen-plus");
+        let (_temp_dir, repository) = repository_with_config_document(&serde_json::to_string(&config).unwrap());
+        let connection = repository.open_connection().unwrap();
+        connection.execute("ALTER TABLE audio_device_preferences DROP COLUMN primary_text_translation_model_id", []).unwrap();
+        drop(connection);
+        let loaded = repository.load_config().unwrap();
+        assert_eq!(loaded["devices"]["primaryTextTranslationModelId"], "template-dashscope-realtime::qwen-plus");
+        assert_eq!(loaded["devices"]["subtitleTranslationModelId"], config["devices"]["subtitleTranslationModelId"]);
+        let connection = repository.open_connection().unwrap();
+        assert!(table_has_column(&connection, "audio_device_preferences", "primary_text_translation_model_id").unwrap());
+        let document: String = connection.query_row("SELECT config_json FROM config_documents WHERE id = 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&document).unwrap(), config);
+        repository.save_config(&loaded).unwrap();
+        assert_eq!(repository.load_config().unwrap()["devices"]["primaryTextTranslationModelId"], loaded["devices"]["primaryTextTranslationModelId"]);
     }
 
     #[test]

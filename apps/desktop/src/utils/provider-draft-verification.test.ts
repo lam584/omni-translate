@@ -42,6 +42,12 @@ describe('provider verification is configuration scoped', () => {
     next.status = 'draft';
     next.modelCatalogCache.models = [];
     next.modelCatalogCache.fetchedAt = '2026-09-20T12:00:00Z';
+    next.modelMetadataCache = {
+      source: 'bailian-api',
+      fetchedAt: '2026-09-20T12:00:00Z',
+      endpoint: 'https://dashscope.aliyuncs.com/api/v1/models',
+      models: [{ modelId: 'cached', categories: ['TG'], requestModalities: ['Text'], responseModalities: ['Text'] }],
+    };
     expect(providerVerificationIdentity(next)).toBe(providerVerificationIdentity(previous));
     expect(invalidateChangedProvider(previous, next)).toBe(next);
     expect(next.probe.checkedAt).toBe('2026-09-20T12:00:00Z');

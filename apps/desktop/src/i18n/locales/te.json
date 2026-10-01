@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "ప్రాసెస్-మినహాయింపు సామర్థ్యం ప్రోబ్ విఫలమైంది: {{detail}}",
     "feedbackProcessExclusionProbing": "ప్రక్రియ-మినహాయింపు మద్దతు ఇంకా నిర్ధారించబడలేదు. ఎంపిక తర్వాత, వాచ్ ప్రారంభించినప్పుడు బ్రిడ్జ్ ప్రోబ్‌ను పూర్తి చేస్తుంది; ప్రోబ్ సిద్ధమయ్యే వరకు సంగ్రహణ ప్రారంభం కాదు.",
     "feedbackNoneSelected": "లెగసీ నో-ఫీడ్‌బ్యాక్-నియంత్రణ సెట్టింగ్ ఇప్పటికీ ఎంచుకోబడింది. మీరు ప్రాసెస్ మినహాయింపు, వర్చువల్ డ్రైవర్ లేదా ఎకో రద్దును స్పష్టంగా ఎంచుకునే వరకు వాచ్ అనువదించబడిన ప్రసంగంతో ప్రారంభించబడదు.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "ఆడియో రూటింగ్",
     "pageSubtitle": "తెలుపు ఉపరితలం · అంతర్నిర్మిత ఫ్లో · ఏక మోడల్ ఎంట్రీ · లైవ్ సేవ్ · మొబైల్-అనుకూలం",
     "overviewAria": "ఆడియో రూట్ అవలోకనం",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "స్పీచ్ గుర్తింపు · అనువాదం · స్పీచ్",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "ప్రాథమిక వచన మోడల్",
+    "scenarioPrimaryTextCaption": "స్పీచ్ రికగ్నిషన్ పైప్‌లైన్ కోసం ప్రాథమిక వచన అనువాదం",
+    "primaryTextModelRequired": "ప్రస్తుత వాయిస్ మోడల్‌కు బేస్ టెక్స్ట్ ట్రాన్స్‌లేషన్ మోడల్‌ను ఎంచుకోవడం అవసరం"
   },
   "overlay": {
     "bootstrapFailed": "ఉపశీర్షిక ఓవర్లే ప్రారంభం కాలేదు",
@@ -876,6 +880,7 @@
       "scenarioBadge": "సన్నివేశం: {{scenario}}",
       "editCapabilitiesTitle": "సామర్థ్య రిజిస్ట్రీని సవరించు",
       "refreshTitle": "మోడల్ కేటలాగ్ రిఫ్రెష్ చేయి",
+      "loading": "Loading models and capability data…",
       "closeTitle": "మోడల్ జాబితాను మూసివేయి",
       "allScenarios": "అన్నీ",
       "searchPlaceholder": "మోడల్స్ వెతకండి...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "సీక్రెట్",
       "hideSecret": "సీక్రెట్‌ను దాచండి",
       "showSecret": "సీక్రెట్‌ను చూపించండి"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "సీన్ మోడల్స్",

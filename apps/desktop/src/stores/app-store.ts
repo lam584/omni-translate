@@ -1,6 +1,8 @@
 import { invalidateChangedProvider, reconcilePersistedProviderVerification } from '../utils/provider-draft-verification';
 import { migrateProviderModelRegistry } from '../utils/provider-model-capabilities-registry';
+import { migrateProviderCandidateModelGroups } from '../utils/candidate-model-groups';
 import { create } from 'zustand';
+import { PROVIDER_MANIFEST_REGISTRY } from '../provider-manifest/bundle';
 import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
 import { appConfigDraftMock } from '../defaults/app-config';
 import { navItems, presets } from '../defaults/app-content';
@@ -182,6 +184,82 @@ const defaultPageId = resolveInitialPageId(navItems);
 const defaultPresetId = resolveInitialPresetId(appConfigDraftMock.onboarding.activePresetId, presets);
 const initialSubtitleIndex = indexSubtitleBaseline(audioRuntimeSnapshotMock);
 
+// Only exact legacy ASR identities or a manifest-authorized ASR pipeline can
+// inherit the old translator. Name patterns and advisory catalog groups do not
+// establish an executable pipeline.
+const LEGACY_ASR_MODELS = new Set([
+  'whisper-1', 'gpt-realtime-whisper', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe',
+  'qwen3-asr-flash-realtime', 'qwen3-asr-flash', 'qwen3-asr-flash-filetrans',
+  'fun-asr-realtime', 'fun-asr', 'paraformer-realtime-v2', 'paraformer-v2',
+]);
+
+const LEGACY_OPENAI_ASR_MODELS = new Set([
+  'whisper-1', 'gpt-realtime-whisper', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe',
+]);
+
+function legacyAsrPipeline(provider: ProviderDraft, modelId: string) {
+  return LEGACY_ASR_MODELS.has(modelId) && (LEGACY_OPENAI_ASR_MODELS.has(modelId)
+    ? provider.kind === 'openai-compatible'
+    : provider.kind === 'dashscope');
+}
+
+function exactMigrationModel(config: AppConfigDraft, reference: string) {
+  const separator = reference.indexOf('::');
+  const templateId = separator < 0 ? null : reference.slice(0, separator);
+  const modelId = separator < 0 ? reference : reference.slice(separator + 2);
+  if (!modelId || modelId !== modelId.trim()) return null;
+  const matches = (config.providers ?? []).filter((provider) => (
+    (provider as ProviderDraft & { enabled?: boolean }).enabled !== false
+    && (templateId !== null ? provider.templateId === templateId : (
+      provider.model === modelId
+      || provider.localModelCapabilityRegistry?.some((entry) => entry.modelId === modelId)
+      || provider.modelProtocolBindings?.some((binding) => binding.modelId === modelId)
+      || provider.candidateModelGroups?.some((group) => group.modelIds.includes(modelId))
+    ))
+  ));
+  return matches.length === 1 ? { provider: matches[0], modelId } : null;
+}
+
+function migrationOperationAllowed(provider: ProviderDraft, modelId: string, operation: 'asr' | 'text-translation') {
+  const bindings = provider.modelProtocolBindings?.filter((binding) => binding.modelId === modelId && binding.operation === operation) ?? [];
+  if (bindings.length > 1) return false;
+  const binding = bindings[0];
+  try {
+    const authority = PROVIDER_MANIFEST_REGISTRY.resolve({
+      providerId: provider.providerId, templateId: provider.templateId, modelId, operation,
+      deploymentId: provider.deploymentId, modelRegistryVersion: provider.modelRegistryVersion,
+      declaredProfileId: binding?.profileId, declaredProfileVersion: binding?.profileVersion,
+      declaredManifestVersion: binding?.manifestVersion, declaredAuthProfileId: binding?.authProfileId,
+      baseUrl: provider.baseUrl, transport: provider.transport, region: provider.region,
+      authHeaderName: provider.authRef.headerName, authScheme: provider.authRef.scheme === 'bearer' || provider.authRef.scheme === 'api-key' ? provider.authRef.scheme : undefined,
+      customProvider: provider.templateId.startsWith('template-custom-'),
+    });
+    return !binding || authority.profileOwnerProviderId === binding.profileOwnerProviderId;
+  } catch {
+    return false;
+  }
+}
+
+function migratePrimaryTextTranslationModel(config: AppConfigDraft): string {
+  // Must run on the incoming document, before default merging creates the key.
+  if (Object.prototype.hasOwnProperty.call(config.devices, 'primaryTextTranslationModelId')) {
+    return config.devices.primaryTextTranslationModelId;
+  }
+  const translator = exactMigrationModel(config, config.devices.subtitleTranslationModelId ?? '');
+  if (!translator) return '';
+  const hasText = translator.provider.localModelCapabilityRegistry?.some((entry) => (
+    entry.modelId === translator.modelId && entry.capabilities.includes('text-generation')
+  )) || migrationOperationAllowed(translator.provider, translator.modelId, 'text-translation');
+  if (!hasText) return '';
+  const hasAsrPipeline = [config.devices.inboundVoiceModelId, config.devices.outboundVoiceModelId]
+    .some((reference) => {
+      const selected = exactMigrationModel(config, reference ?? '');
+      return selected && (legacyAsrPipeline(selected.provider, selected.modelId)
+        || migrationOperationAllowed(selected.provider, selected.modelId, 'asr'));
+    });
+  return hasAsrPipeline ? config.devices.subtitleTranslationModelId : '';
+}
+
 function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDraft {
   const incomingSubtitles = configDraft.subtitles as Partial<SubtitleDraft>;
   const legacyTextColor = incomingSubtitles.overlayTextColor ?? appConfigDraftMock.subtitles.overlayTextColor;
@@ -191,11 +269,13 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
     providers: (configDraft.providers ?? appConfigDraftMock.providers)
       .map(hydrateLegacyProviderManifestAuthority)
       .map(migrateProviderModelRegistry)
+      .map(migrateProviderCandidateModelGroups)
       .map(reconcilePersistedProviderVerification),
     activeProviderTemplateId: configDraft.activeProviderTemplateId ?? appConfigDraftMock.activeProviderTemplateId,
     devices: {
       ...appConfigDraftMock.devices,
       ...configDraft.devices,
+      primaryTextTranslationModelId: migratePrimaryTextTranslationModel(configDraft),
       inboundRoute: {
         ...appConfigDraftMock.devices.inboundRoute,
         ...configDraft.devices.inboundRoute,
@@ -255,6 +335,7 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
 }
 
 export const appStoreTestHelpers = {
+  migratePrimaryTextTranslationModel,
   mergeConfigDraftWithDefaults,
   resolveInitialPageId,
   resolveInitialPresetId,
@@ -431,7 +512,7 @@ export const useAppStore = create<AppStoreState>((set) => ({
         p.templateId === templateId ? invalidateChangedProvider(p, { ...p, ...patch }) : p,
       );
       return {
-        configDraft: { ...state.configDraft, providers },
+        configDraft: { ...state.configDraft, providers: providers.map(migrateProviderCandidateModelGroups) },
       };
     }),
   updateDeviceDraft: (patch) =>
@@ -517,7 +598,7 @@ export const useAppStore = create<AppStoreState>((set) => ({
         ...state.configDraft,
         providers: providers.map((provider) => {
           const previous = state.configDraft.providers.find((candidate) => candidate.providerId === provider.providerId && candidate.templateId === provider.templateId);
-          return previous ? invalidateChangedProvider(previous, provider) : provider;
+          return migrateProviderCandidateModelGroups(previous ? invalidateChangedProvider(previous, provider) : provider);
         }),
       },
     })),

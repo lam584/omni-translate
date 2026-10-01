@@ -391,6 +391,7 @@ impl ReplayHarness {
                 buffer_size: 0,
                 pre_session_audio_queue_len: 0,
                 pre_session_audio_dropped: 0,
+                dialogue_draining: false,
                 echo_guard_enabled: false,
             },
             &self.connector,

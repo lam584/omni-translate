@@ -3,10 +3,6 @@ import { useTranslation } from 'react-i18next';
 
 import AppIcon from '../../components/icons/AppIcon';
 import ModalDialog from '../../components/ModalDialog';
-import {
-  customProviderProtocolProfileOptions,
-  resolveCustomProviderProtocolProfileOption,
-} from '../../provider-manifest/custom-profile-options';
 import type { ProviderKind } from '../../schema/provider-contract';
 import type { CustomProviderTemplateDraft } from '../../utils/custom-provider-templates';
 import { ProviderDialogHeader } from './ProviderDialogShared';
@@ -29,7 +25,6 @@ export default function CustomProviderDialog({
   setDraft,
 }: CustomProviderDialogProps) {
   const { t } = useTranslation();
-  const protocolProfiles = customProviderProtocolProfileOptions(draft.kind);
 
   return (
     <ModalDialog aria-label={t('providers.customDialog.title')} className="provider-modal content-card page-card compact-card" onClose={onClose} variant="provider">
@@ -39,35 +34,6 @@ export default function CustomProviderDialog({
           <label className="field-stack">
             <span>{t('providers.customDialog.platformName')}</span>
             <input className="text-input" onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} placeholder={t('providers.customDialog.platformNamePlaceholder')} value={draft.displayName} />
-          </label>
-          <label className="field-stack">
-            <span>{t('providers.customDialog.model', { defaultValue: '模型 ID' })}</span>
-            <input className="text-input" onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))} placeholder="gpt-4o" value={draft.model} />
-          </label>
-          <label className="field-stack field-span-full">
-            <span>{t('providers.customDialog.protocolProfile', { defaultValue: 'Protocol Profile（精确版本）' })}</span>
-            <select
-              className="select-input"
-              onChange={(event) => {
-                const option = resolveCustomProviderProtocolProfileOption(draft.kind, event.target.value);
-                setDraft((current) => ({
-                  ...current,
-                  protocolProfileKey: event.target.value,
-                  ...(option ? {
-                    transport: option.transport,
-                    authHeaderName: option.authHeaderName,
-                    authScheme: option.authScheme,
-                  } : {}),
-                }));
-              }}
-              required
-              value={draft.protocolProfileKey}
-            >
-              <option value="">{t('providers.customDialog.protocolProfilePlaceholder', { defaultValue: '请选择（不会自动推断）' })}</option>
-              {protocolProfiles.map((profile) => (
-                <option key={profile.key} value={profile.key}>{profile.label}</option>
-              ))}
-            </select>
           </label>
           <label className="field-stack">
             <span>{t('providers.customDialog.platformType')}</span>

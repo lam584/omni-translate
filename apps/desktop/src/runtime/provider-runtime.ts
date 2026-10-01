@@ -5,6 +5,7 @@ import type {
   CredentialSecretPayload,
   CredentialRefStatus,
   ProviderModelCatalogRuntime,
+  ProviderModelMetadataRuntime,
   ProviderProbeProfileRuntime,
   ProviderSmokeResult,
 } from '../schema/provider-runtime';
@@ -223,8 +224,8 @@ export async function runProviderProbe(provider: ProviderDraft): Promise<Provide
   );
 }
 
-export async function resolveRealtimeProfileRuntime(config: AppConfigDraft, modelReference: string) {
-  return activeDesktopApi().provider.resolveRealtimeProfile(config, modelReference);
+export async function resolveRealtimeProfileRuntime(config: AppConfigDraft, modelReference: string, operation?: import('../model-protocol/profile-registry').ModelProtocolOperation) {
+  return activeDesktopApi().provider.resolveRealtimeProfile(config, modelReference, operation);
 }
 
 export async function fetchProviderModels(
@@ -240,6 +241,14 @@ export async function fetchProviderModels(
   );
 }
 
+export async function fetchProviderModelMetadata(provider: ProviderDraft): Promise<ProviderModelMetadataRuntime> {
+  return invokeWithTimeout(
+    () => activeDesktopApi().provider.fetchModelMetadata(provider),
+    '更新百炼模型能力',
+    Math.max(provider.timeoutMs + 30_000, 120_000),
+    'provider-model-metadata',
+  );
+}
 export async function runProviderSmoke(
   provider: ProviderDraft,
   sourceText: string,

@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "প্রসেস-বর্জন ক্ষমতা প্রোব ব্যর্থ হয়েছে: {{detail}}",
     "feedbackProcessExclusionProbing": "প্রক্রিয়া-বর্জন সমর্থন এখনও নিশ্চিত করা হয়নি। নির্বাচনের পর, ঘড়ি শুরু হলে ব্রিজ প্রোব সম্পূর্ণ করে; প্রোব প্রস্তুত না হওয়া পর্যন্ত ক্যাপচার শুরু হবে না।",
     "feedbackNoneSelected": "উত্তরাধিকার নো-ফিডব্যাক-নিয়ন্ত্রণ সেটিং এখনও নির্বাচন করা আছে৷ আপনি স্পষ্টভাবে প্রসেস এক্সক্লুশন, ভার্চুয়াল ড্রাইভার বা ইকো ক্যান্সেলেশন বেছে না নেওয়া পর্যন্ত ওয়াচ অনূদিত বক্তৃতা দিয়ে শুরু করা যাবে না।",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "অডিও রাউটিং",
     "pageSubtitle": "সাদা পৃষ্ঠতল · এমবেডেড ফ্লো · একক মডেল এন্ট্রি · লাইভ সংরক্ষণ · মোবাইল-বান্ধব",
     "overviewAria": "অডিও রুটের সংক্ষিপ্ত বিবরণ",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "স্পিচ শনাক্তকরণ · অনুবাদ · স্পিচ",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "প্রাথমিক পাঠ্য মডেল",
+    "scenarioPrimaryTextCaption": "ভয়েস রিকগনিশন পাইপলাইনের জন্য মৌলিক পাঠ্য অনুবাদ",
+    "primaryTextModelRequired": "বর্তমান ভয়েস মডেলের জন্য একটি মৌলিক পাঠ্য অনুবাদ মডেল নির্বাচন করা আবশ্যক"
   },
   "overlay": {
     "bootstrapFailed": "সাবটাইটেল ওভারলে চালু করা যায়নি",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Scenario দৃশ্য: {{scenario}}",
       "editCapabilitiesTitle": "সক্ষমতা রেজিস্ট্রি সম্পাদনা করুন",
       "refreshTitle": "মডেল ক্যাটালগ রিফ্রেশ করুন",
+      "loading": "Loading models and capability data…",
       "closeTitle": "মডেল তালিকা বন্ধ করুন",
       "allScenarios": "সব",
       "searchPlaceholder": "মডেল খুঁজুন...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "সিক্রেট",
       "hideSecret": "সিক্রেট লুকান",
       "showSecret": "সিক্রেট দেখান"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "দৃশ্য মডেল",

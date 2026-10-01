@@ -1314,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn secondary_tts_rejects_livetranslate_and_omni_as_tts_before_connect() {
+    fn secondary_tts_rejects_native_translate_and_dialogue_only_profiles_before_connect() {
         let result = SpeechConfig::from_value(&json!({
           "providers": [
             {
@@ -1325,8 +1325,8 @@ mod tests {
               "model": "qwen3.5-livetranslate-flash-realtime",
               "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
               "transport": "websocket",
-              "authRef": { "kind": "credential-ref", "reference": "credential://provider/dashscope/default", "headerName": "Authorization", "scheme": "Bearer" },
-              "region": null,
+              "authRef": { "kind": "credential-ref", "reference": "credential://provider/dashscope/default", "headerName": "Authorization", "scheme": "bearer" },
+              "region": "cn-beijing",
               "streamEnabled": false,
               "timeoutMs": 1000,
               "systemPromptTemplate": "video-realtime-cn"
@@ -1342,15 +1342,17 @@ mod tests {
           },
           "speech": {
             "translationAudioSource": "subtitle-tts",
-            "textToSpeechModelId": "qwen3.5-omni-plus-realtime"
+            "textToSpeechModelId": "template-dashscope-realtime::qwen3.5-omni-plus-realtime"
           }
         }));
         let error = match result {
-            Ok(_) => panic!("neither LiveTranslate nor Omni is a TTS product profile"),
+            Ok(_) => panic!("native_translate and dialogue authority must not grant Task TTS"),
             Err(error) => error,
         };
 
-        assert!(error.contains("model_protocol.operation_not_supported"));
+        assert!(error.contains("model_protocol.operation_not_supported"), "{error}");
+        assert!(error.contains("speech-output"), "{error}");
+        assert!(error.contains("qwen3.5-omni-plus-realtime"), "{error}");
     }
 
     #[test]

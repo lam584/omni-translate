@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from './config';
 import { appConfigDraftMock } from '../defaults/app-config';
@@ -44,6 +44,17 @@ describe('config draft persistence vs UI language', () => {
     resetStore();
   });
 
+  it('applies language changes from another Webview without altering the subtitle draft', async () => {
+    const originalDraft = JSON.stringify(useAppStore.getState().configDraft);
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'omni-translate.uiLanguage',
+      newValue: 'en',
+      storageArea: window.localStorage,
+    }));
+    await vi.waitFor(() => expect(i18n.language).toBe('en'));
+    expect(document.documentElement.lang).toBe('en');
+    expect(JSON.stringify(useAppStore.getState().configDraft)).toBe(originalDraft);
+  });
   it('persists byte-identical config drafts under zh-CN and en', async () => {
     expect(i18n.resolvedLanguage).toBe('zh-CN');
     expect(i18n.t(PROBE_KEY)).toBe('运行中');

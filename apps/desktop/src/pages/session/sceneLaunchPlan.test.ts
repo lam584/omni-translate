@@ -131,4 +131,150 @@ describe('buildSceneLaunchPlan', () => {
 
     expect(plan.config.devices.inboundRoute.routeId).toBe('audio-route-inbound-watch-attempt-42');
   });
+
+  it("omits translate-worker when translationExecution is prompted-realtime even if nativeTranslation is false", () => {
+    const promptedRealtimeProfile = {
+      nativeTranslation: false,
+      speechDispatchPolicy: "subtitle-tts" as const,
+      translationExecution: "prompted-realtime" as const,
+      invocationOperation: "dialogue" as const,
+    };
+    const plan = buildSceneLaunchPlan({
+      mode: "watch",
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: promptedRealtimeProfile,
+      speechPatch: { enabled: false },
+      secondarySubtitleTranslationEnabled: false,
+    });
+    expect(plan.stages).not.toContain("translate-worker");
+    expect(plan.stages).toEqual(["bridge-ready", "inbound-route"]);
+  });
+
+  it("includes translate-worker when translationExecution is explicitly text-worker", () => {
+    const asrTextProfile = {
+      nativeTranslation: false,
+      speechDispatchPolicy: "subtitle-tts" as const,
+      translationExecution: "text-worker" as const,
+      invocationOperation: "asr" as const,
+    };
+    const plan = buildSceneLaunchPlan({
+      mode: "watch",
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: asrTextProfile,
+      speechPatch: { enabled: false },
+      secondarySubtitleTranslationEnabled: false,
+    });
+    expect(plan.stages).toContain("translate-worker");
+    expect(plan.stages).toEqual(["bridge-ready", "inbound-route", "translate-worker"]);
+  });
+
+  it('launches translate-worker when conversation inbound is native translate but outbound is ASR/text-worker', () => {
+    const plan = buildSceneLaunchPlan({
+      mode: 'voice-room',
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: {
+        nativeTranslation: true,
+        speechDispatchPolicy: 'native-audio',
+        translationExecution: 'dedicated-realtime',
+        invocationOperation: 'native_translate',
+      },
+      outboundRealtimeProfile: {
+        nativeTranslation: false,
+        speechDispatchPolicy: 'subtitle-tts',
+        translationExecution: 'text-worker',
+        invocationOperation: 'asr',
+      },
+      speechPatch: { enabled: true },
+      secondarySubtitleTranslationEnabled: false,
+    });
+    expect(plan.stages).toContain('translate-worker');
+    expect(plan.stages).toContain('outbound-route');
+  });
+
+  it('ignores stale outboundRealtimeProfile in watch mode', () => {
+    const plan = buildSceneLaunchPlan({
+      mode: 'watch',
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: {
+        nativeTranslation: true,
+        speechDispatchPolicy: 'native-audio',
+        translationExecution: 'dedicated-realtime',
+        invocationOperation: 'native_translate',
+      },
+      outboundRealtimeProfile: {
+        nativeTranslation: false,
+        speechDispatchPolicy: 'subtitle-tts',
+        translationExecution: 'text-worker',
+        invocationOperation: 'asr',
+      },
+      speechPatch: { enabled: false },
+      secondarySubtitleTranslationEnabled: false,
+    });
+    expect(plan.stages).not.toContain('translate-worker');
+    expect(plan.stages).not.toContain('outbound-route');
+    expect(plan.stages).toEqual(['bridge-ready', 'inbound-route']);
+  });
+
+  it('launches translate-worker when voice-room inbound is ASR/text-worker but outbound is native translate', () => {
+    const plan = buildSceneLaunchPlan({
+      mode: 'voice-room',
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: {
+        nativeTranslation: false,
+        speechDispatchPolicy: 'subtitle-tts',
+        translationExecution: 'text-worker',
+        invocationOperation: 'asr',
+      },
+      outboundRealtimeProfile: {
+        nativeTranslation: true,
+        speechDispatchPolicy: 'native-audio',
+        translationExecution: 'dedicated-realtime',
+        invocationOperation: 'native_translate',
+      },
+      speechPatch: { enabled: true },
+      secondarySubtitleTranslationEnabled: false,
+    });
+    expect(plan.stages).toContain('translate-worker');
+    expect(plan.stages).toContain('outbound-route');
+    expect(plan.stages).toContain('inbound-route');
+  });
+
+
+  it('includes speech-dispatch when inbound is native translate but outbound is ASR with speech enabled', () => {
+    const plan = buildSceneLaunchPlan({
+      mode: 'voice-room',
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: {
+        ...structuredClone(audioRuntimeSnapshotMock),
+        speech: { ...structuredClone(audioRuntimeSnapshotMock.speech), dispatchState: 'idle' },
+      },
+      overlayVisible: false,
+      realtimeProfile: {
+        nativeTranslation: true,
+        speechDispatchPolicy: 'native-audio',
+        translationExecution: 'dedicated-realtime',
+        invocationOperation: 'native_translate',
+      },
+      outboundRealtimeProfile: {
+        nativeTranslation: false,
+        speechDispatchPolicy: 'subtitle-tts',
+        translationExecution: 'text-worker',
+        invocationOperation: 'asr',
+      },
+      speechPatch: { enabled: true },
+      secondarySubtitleTranslationEnabled: false,
+    });
+    expect(plan.stages).toContain('speech-dispatch');
+    expect(plan.stages).toContain('translate-worker');
+  });
 });

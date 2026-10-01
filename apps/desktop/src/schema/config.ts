@@ -22,6 +22,8 @@ export type AudioRouteMode = ScenarioMode;
 
 export type ProviderScenario = 'watch' | 'game' | 'voice-room' | 'subtitle-translate';
 
+export type CandidateModelGroupId = 'text-processing' | 'audio-understanding' | 'audio-generation' | 'realtime-multimodal';
+
 export type SubtitleTranslationMode = 'native' | 'secondary';
 
 export type VirtualMicState = 'not-installed' | 'pending' | 'ready';
@@ -209,6 +211,7 @@ export type RealtimeProtocol =
   | 'dashscope-omni'
   | 'dashscope-livetranslate'
   | 'dashscope-asr'
+  | 'dashscope-qwen-audio'
   | 'openai-conversation'
   | 'openai-translation'
   | 'openai-transcription'
@@ -220,6 +223,11 @@ export type ProviderCustomHeaderDraft = {
   name: string;
   value: string;
   enabled: boolean;
+};
+
+export type ProviderCandidateModelGroup = {
+  group: CandidateModelGroupId;
+  modelIds: string[];
 };
 
 export type ProviderSceneModelAssignment = {
@@ -267,7 +275,18 @@ export type ProviderDraft = {
   maxOutputTokens: number;
   responseModalities: ProviderResponseModality[];
   customHeaders: ProviderCustomHeaderDraft[];
-  sceneModelAssignments: ProviderSceneModelAssignment[];
+  candidateModelGroups?: ProviderCandidateModelGroup[];
+  modelMetadataCache?: {
+    source: 'bailian-api';
+    fetchedAt: string;
+    endpoint?: string;
+    models: Array<{
+      modelId: string;
+      categories: string[];
+      requestModalities: string[];
+      responseModalities: string[];
+    }>;
+  };
   modelProtocolBindings?: ProviderModelProtocolBinding[];
   modelRegistryVersion?: 2;
   modelCapabilityOverrides?: ProviderModelCapabilityOverride[];
@@ -292,6 +311,7 @@ export type DeviceDraft = {
   textToSpeechModelId: string;
   subtitleTranslationMode: SubtitleTranslationMode;
   subtitleTranslationModelId: string;
+  primaryTextTranslationModelId: string;
   inboundSecondaryAudioModelId: string;
   // Audio processing
   inputLevel: number;
@@ -443,7 +463,7 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'providers[0].authRef.reference', sqliteTable: 'provider_auth_refs', sqliteColumn: 'reference', note: 'Credential reference only; secret stays outside SQLite.' },
   { draftPath: 'providers[0].customHeaders[]', sqliteTable: 'provider_custom_headers', sqliteColumn: 'header_id', note: 'Child table ordered by position.' },
   { draftPath: 'providers[0].responseModalities[]', sqliteTable: 'provider_response_modalities', sqliteColumn: 'modality', note: 'Child table ordered by position.' },
-  { draftPath: 'providers[0].sceneModelAssignments[].modelIds[]', sqliteTable: 'provider_scene_model_ids', sqliteColumn: 'model_id', note: 'Scenario model child rows.' },
+  { draftPath: 'providers[0].candidateModelGroups[].modelIds[]', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Canonical JSON only; candidate groups have no SQLite child-table mirror. Legacy provider_scene_model_ids is not authoritative.' },
   { draftPath: 'providers[0].localModelCapabilityRegistry[].capabilities[]', sqliteTable: 'provider_model_capabilities', sqliteColumn: 'capability', note: 'Model capability child rows.' },
   { draftPath: 'providers[0].modelCatalogCache.models[]', sqliteTable: 'provider_model_catalog_items', sqliteColumn: 'item_id', note: 'Cached model catalog rows.' },
   { draftPath: 'devices.routeMode', sqliteTable: 'audio_device_preferences', sqliteColumn: 'route_mode', note: 'Current route mode.' },
@@ -456,6 +476,7 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'devices.outboundVoiceModelId', sqliteTable: 'audio_device_preferences', sqliteColumn: 'outbound_voice_model_id', note: 'Voice model for microphone to peer translation.' },
   { draftPath: 'devices.textToSpeechModelId', sqliteTable: 'audio_device_preferences', sqliteColumn: 'text_to_speech_model_id', note: 'Text-to-speech model for translated speech output.' },
   { draftPath: 'devices.subtitleTranslationMode', sqliteTable: 'audio_device_preferences', sqliteColumn: 'subtitle_translation_mode', note: 'Subtitle translation mode.' },
+  { draftPath: 'devices.primaryTextTranslationModelId', sqliteTable: 'audio_device_preferences', sqliteColumn: 'primary_text_translation_model_id', note: 'Primary ASR text translation model, independent of optional secondary subtitles.' },
   { draftPath: 'devices.subtitleTranslationModelId', sqliteTable: 'audio_device_preferences', sqliteColumn: 'subtitle_translation_model_id', note: 'Secondary subtitle model.' },
   { draftPath: 'devices.inputLevel', sqliteTable: 'audio_device_preferences', sqliteColumn: 'input_level', note: 'Input gain level (0-100).' },
   { draftPath: 'devices.aecEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'aec_enabled', note: 'Legacy/manual processing toggle outside echo-cancel; the echo-cancel route always forces its WebRTC AEC3 backend on.' },

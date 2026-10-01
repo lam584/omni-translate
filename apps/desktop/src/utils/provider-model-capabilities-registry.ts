@@ -1,3 +1,4 @@
+import { bailianMetadataForProvider, capabilitiesFromBailianMetadata } from './bailian-model-metadata';
 import type { ProviderDraft, ProviderModelCapabilityOverride, ProviderModelCapabilityRegistryEntry } from '../schema/config';
 import frozenSeeds from '../schema/model-registry-v1-seed.json';
 
@@ -56,15 +57,21 @@ export function effectiveProviderModelRegistry(provider: ProviderDraft): Provide
   const migrated = migrateProviderModelRegistry(provider);
   const manifest = PROVIDER_MANIFEST_REGISTRY.findByTemplateId(provider.templateId);
   const defaults = createDefaultLocalModelCapabilityRegistry(provider.templateId).filter((entry) => !manifest || manifest.models.some((model) => model.id === entry.modelId));
+  const upstream = bailianMetadataForProvider(provider);
+  const upstreamById = new Map(upstream.map((entry) => [entry.modelId, entry] as const));
+  const defaultsById = new Map(defaults.map((entry) => [entry.modelId, entry] as const));
   const overrideIds = (migrated.modelCapabilityOverrides ?? []).map((entry) => entry.modelId);
-  const ids = new Set([...(provider.localModelCapabilityRegistry ?? []).filter((entry) => defaults.some((baseline) => baseline.modelId === entry.modelId) || overrideIds.includes(entry.modelId)).map((entry) => entry.modelId), ...defaults.map((entry) => entry.modelId), ...overrideIds]);
+  const ids = new Set([...(provider.localModelCapabilityRegistry ?? []).filter((entry) => defaults.some((baseline) => baseline.modelId === entry.modelId) || overrideIds.includes(entry.modelId)).map((entry) => entry.modelId), ...defaults.map((entry) => entry.modelId), ...upstream.map((entry) => entry.modelId), ...overrideIds]);
   return [...ids].map((modelId) => {
-    const baseline = defaults.find((entry) => entry.modelId === modelId) ?? null;
-    const result = resolveModelCapabilityOverride(modelId, baseline, migrated.modelCapabilityOverrides ?? []);
+    const baseline = defaultsById.get(modelId) ?? null;
+    const metadata = upstreamById.get(modelId);
+    const upstreamCapabilities = metadata ? capabilitiesFromBailianMetadata(metadata) : [];
+    const inherited = upstreamCapabilities.length ? { ...baseline, id: baseline?.id ?? `metadata-${modelId}`, modelId, capabilities: upstreamCapabilities } : baseline;
+    const result = resolveModelCapabilityOverride(modelId, inherited, migrated.modelCapabilityOverrides ?? []);
     return {
       id: provider.localModelCapabilityRegistry?.find((entry) => entry.modelId === modelId)?.id ?? baseline?.id ?? `override-${modelId}`, capabilities: [], ...result.entry,
       modelId,
-      source: result.source === 'override' ? 'manual' as const : baseline?.source,
+      source: result.source === 'override' ? 'manual' as const : upstreamCapabilities.length ? 'runtime' as const : baseline?.source,
       registryDiagnostics: result.diagnostics,
       ...(result.entry?.capabilities === undefined ? { inheritUpstreamCapabilities: true } : {}),
     };

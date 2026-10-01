@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "プロセス除外機能のプローブが失敗しました: {{detail}}",
     "feedbackProcessExclusionProbing": "プロセス除外のサポートはまだ確認されていません。選択後、Watch の開始時に Bridge はプローブを完了します。プローブの準備が完了するまでキャプチャは開始されません。",
     "feedbackNoneSelected": "従来のノーフィードバック制御設定が引き続き選択されています。プロセスの除外、仮想ドライバー、またはエコー キャンセルを明示的に選択するまで、翻訳された音声で Watch を開始することはできません。",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "音声ルーティング",
     "pageSubtitle": "音声ルーティングの設定と状態を確認してください。",
     "overviewAria": "音声ルーティング",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "音声ルーティング - モデル・字幕・翻訳",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "プライマリテキストモデル",
+    "scenarioPrimaryTextCaption": "音声認識パイプラインの基本テキスト翻訳",
+    "primaryTextModelRequired": "現在の音声モデルには基本テキスト翻訳モデルの選択が必要です"
   },
   "overlay": {
     "bootstrapFailed": "字幕オーバーレイを初期化できませんでした",
@@ -876,6 +880,7 @@
       "scenarioBadge": "プロバイダー - シナリオ {{scenario}}",
       "editCapabilitiesTitle": "編集 機能 レジストリ",
       "refreshTitle": "プロバイダー - 更新・タイトル",
+      "loading": "Loading models and capability data…",
       "closeTitle": "プロバイダー - 閉じる・タイトル",
       "allScenarios": "プロバイダー",
       "searchPlaceholder": "プロバイダーの設定と状態を確認してください。",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "プロバイダー - プレースホルダー",
       "hideSecret": "プロバイダー - 非表示",
       "showSecret": "プロバイダー - 表示"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "プロバイダー - タイトル",

@@ -194,10 +194,15 @@ import Ajv2020 from 'ajv/dist/2020.js';
 const bailianRoot = fileURLToPath(new URL('../../', import.meta.url));
 const bailianJson = (p) => JSON.parse(fs.readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8'));
 
-test('Bailian lossless migration preserves the complete pre-3.8 registry, including 3.5 identities', () => {
+test('Bailian family enablement preserves untouched pre-3.8 registry identities and defaults', () => {
   const current = buildBailianCompatibilityRegistry();
-  const old = { ...current, dialects: current.dialects.slice(0, 12), profiles: current.profiles.slice(0, 21) };
-  assert.equal(createHash('sha256').update(JSON.stringify(old)).digest('hex'), '4d544b4003b3a3cb675c5840e619bafb5d0982d191e599c0042aa3d806dd1204');
+  // Only these historically registered families are deliberately re-audited/enabled.
+  // Pin every other historical identity to its original digest, not a new whole-registry hash.
+  const old = { ...current,
+    dialects: current.dialects.slice(0, 12).filter(d => !['bailian-qwen-audio-chat-realtime-ws-v1', 'bailian-qwen-audio-asr-task-ws-v1'].includes(d.dialectId)),
+    profiles: current.profiles.slice(0, 21).filter(p => !['bailian.qwen-audio-chat.realtime.ws', 'bailian.task-asr.qwen-audio-3.0.ws', 'bailian.task-tts.qwen-audio-3.0.ws'].includes(p.profileId)),
+  };
+  assert.equal(createHash('sha256').update(JSON.stringify(old)).digest('hex'), '4c7c11f750ba13365f35cfef83937bb1d3ec326a130cb38c587179a814f50222');
 });
 
 test('Bailian module, bundle, fixtures and compatibility registry are deterministic generated projections', () => {
@@ -207,16 +212,16 @@ test('Bailian module, bundle, fixtures and compatibility registry are determinis
   assert.deepEqual(buildBailianCompatibilityRegistry(), bailianJson('contracts/model-protocol-profiles.v1.json'));
   assert.equal(projection.manifest.provider.kind, 'dashscope');
   assert.equal(projection.manifest.provider.templateId, 'template-dashscope-realtime');
-  assert.equal(projection.manifest.models.length, 60);
-  assert.equal(projection.manifest.protocolProfiles.length, 35);
+  assert.equal(projection.manifest.models.length, 62);
+  assert.equal(projection.manifest.protocolProfiles.length, 37);
   for (const p of projection.manifest.protocolProfiles) {
     if (p.adapter.verification === 'not-implemented') assert.equal(p.adapter.status, 'disabled');
   }
 });
 
-test('only the 3.8 profile requires workspace endpoints, projected without changing legacy defaults', () => {
+test('both enabled 3.8 profiles require workspace endpoints without changing legacy defaults', () => {
   const registry = buildBailianCompatibilityRegistry();
-  assert.deepEqual(registry.profiles.filter(p => p.endpointRequirements).map(p => p.profileId), ['bailian.livetranslate.3_8.realtime.ws']);
+  assert.deepEqual(registry.profiles.filter(p => p.endpointRequirements).map(p => p.profileId), ['bailian.livetranslate.3_8.realtime.ws', 'bailian.omni.3_8.realtime.ws']);
   const profile = registry.profiles.find(p => p.profileId === 'bailian.livetranslate.3_8.realtime.ws');
   assert.deepEqual(profile.endpointRequirements, { workspaceScoped: true });
   assert.deepEqual(profile.regions, ['cn-beijing', 'ap-southeast-1']);
@@ -275,7 +280,7 @@ test('Bailian lossless extension rejects unknown fields, malformed identities an
   }
 });
 
-test('Bailian newly catalogued Qwen Audio 3.1 and Qwen-MT products remain fail-closed with exact sources and regions', () => {
+test('Bailian Qwen Audio 3.1 is fixture-enabled while Qwen-MT remains catalog-only', () => {
   const { manifest } = projectBailianModule(bailianRoot);
   for (const id of ['qwen-audio-3.1-realtime-plus', 'qwen-mt-plus', 'qwen-mt-flash', 'qwen-mt-lite', 'qwen-mt-turbo']) {
     const model = manifest.models.find(m => m.id === id);
@@ -284,13 +289,13 @@ test('Bailian newly catalogued Qwen Audio 3.1 and Qwen-MT products remain fail-c
     assert.ok(model.availability.includes('ap-southeast-1'));
     for (const binding of model.protocolBindings) {
       const profile = manifest.protocolProfiles.find(p => p.id === binding.protocolProfileId);
-      assert.equal(profile.adapter.status, 'disabled');
-      assert.equal(profile.adapter.verification, 'not-implemented');
+      assert.equal(profile.adapter.status, id === 'qwen-audio-3.1-realtime-plus' ? 'enabled' : 'disabled');
+      assert.equal(profile.adapter.verification, id === 'qwen-audio-3.1-realtime-plus' ? 'fixture-only' : 'not-implemented');
       assert.equal(profile.customProviderPolicy, 'forbidden');
     }
     for (const documentId of model.documentationIds) {
       const document = manifest.documentation.find(d => d.id === documentId);
-      assert.equal(document.checkedAt, '2026-09-20');
+      assert.equal(document.checkedAt, id === 'qwen-audio-3.1-realtime-plus' ? '2026-09-30' : '2026-09-20');
       assert.ok(document.url.startsWith('https://help.aliyun.com/zh/model-studio/'));
     }
   }

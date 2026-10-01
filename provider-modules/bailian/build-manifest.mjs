@@ -6,8 +6,27 @@ import path from 'node:path';
 export function projectBailianModule(root) {
   const read = (p) => JSON.parse(fs.readFileSync(path.join(root, p), 'utf8'));
   const registry = read('provider-modules/bailian/model-protocol-registry.json');
+  const families = read('provider-modules/bailian/protocol-families.json');
+  const validateFamilies = new Ajv2020({ strict: true, allErrors: true }).compile(read('contracts/model-protocol-families.schema.json'));
+  if (!validateFamilies(families)) throw new Error('Invalid Bailian protocol families: ' + JSON.stringify(validateFamilies.errors));
+  for (const binding of families.enabledBindings) {
+    const profile = registry.profiles.find((profile) => profile.profileId === binding.profileId);
+    const dialect = registry.dialects.find((dialect) => dialect.dialectId === binding.dialectId);
+    if (!profile || !dialect || profile.adapter.status !== 'enabled'
+      || profile.profileVersion !== binding.profileVersion || profile.dialectId !== binding.dialectId
+      || dialect.dialectVersion !== binding.dialectVersion || profile.adapter.adapterId !== binding.adapterId
+      || JSON.stringify(profile.exactModelIds) !== JSON.stringify(binding.exactModelIds)
+      || JSON.stringify(profile.operations) !== JSON.stringify(binding.operations)) {
+      throw new Error('Bailian owner/version family binding mismatch: ' + binding.profileId);
+    }
+  }
+  if (new Set(families.enabledBindings.map((binding) => binding.profileId)).size !== families.enabledBindings.length
+    || registry.profiles.filter((profile) => profile.adapter.status === 'enabled').length !== families.enabledBindings.length) {
+    throw new Error('Bailian enabled profiles must each have one exact owner/version binding');
+  }
+
   const m = {
-    $schema: '../../contracts/provider-manifest.schema.json', schemaVersion: 'provider-manifest/v1', manifestVersion: 1, checkedAt: '2026-09-20',
+    $schema: '../../contracts/provider-manifest.schema.json', schemaVersion: 'provider-manifest/v1', manifestVersion: 1, checkedAt: '2026-09-30',
     provider: { id: 'bailian', displayName: 'Alibaba Cloud Bailian', templateId: 'template-dashscope-realtime', kind: 'dashscope', source: 'official', description: 'Generated projection of the lossless Bailian protocol registry.', defaultModelId: 'qwen3.5-livetranslate-flash-realtime', defaultApiFamilyId: 'bailian.api.bailian-livetranslate-session-ws-v1', defaultCredentialId: 'bailian.credential.api-key', defaultRegion: 'cn-beijing' },
     documentation: [], credentials: [{ id: 'bailian.credential.api-key', reference: 'credential://provider/bailian/default', fields: [{ id: 'api-key', label: 'DashScope API key', secret: true, required: true, format: 'DashScope API key' }] }],
     authProfiles: [{ id: 'bailian.auth.bearer', type: 'bearer', credentialId: 'bailian.credential.api-key', parameters: [{ location: 'header', name: 'Authorization', source: 'credential', credentialFieldId: 'api-key', scheme: 'Bearer', required: true }] }],
@@ -60,13 +79,23 @@ export function projectBailianModule(root) {
       model.documentationIds = [...new Set([...model.documentationIds, ...documentationIds])];
       for (const operation of p.operations) model.protocolBindings.push({ operation: operationMap[operation], protocolProfileId: p.profileId, protocolProfileVersion: p.profileVersion });
     }
-    const wire = read(d.wireFixture);
+    const binding = families.enabledBindings.find((binding) => binding.profileId === p.profileId && binding.profileVersion === p.profileVersion);
+    const wirePath = binding?.wireFixture ?? d.wireFixture;
+    const wire = read(wirePath);
+    if (p.profileId === 'bailian.qwen-audio.3_1.realtime.ws') {
+      for (const event of wire.sequence) if (event.wire?.session) event.wire.session.voice = 'longanqian_v3.1';
+    }
+    const host = p.endpointRequirements?.workspaceScoped
+      ? registry.endpointHostPolicies.find((policy) => policy.region === p.regions[0]).allowedHostFamilies.find((family) => family.workspaceScoped).hostPattern.replace('*', '{WorkspaceId}')
+      : registry.endpointHostPolicies.find((policy) => policy.region === p.regions[0]).allowedHostFamilies.find((family) => !family.workspaceScoped).hostPattern;
+    const connectionUrl = 'wss://' + host + d.endpointPath + (d.modelPlacement === 'query' ? '?model=' + p.exactModelIds[0] : '');
+
     const events = wire.sequence.map((e) => ({ ...e, type: e.eventType, ...(e.frameKind === 'binary' ? { frameType: 'binary', payloadOmitted: true } : {}) }));
     const terminal = [...events].reverse().find((e) => e.direction === 'server');
     if (terminal) terminal.terminal = true;
     const audio = events.find((e) => d.clientJsonBase64EventTypes.includes(e.eventType));
     if (audio) audio.audio = '<redacted>';
-    const fixture = { $schema: '../../../contracts/provider-wire-fixture.schema.json', schemaVersion: 'provider-wire-fixture/v1', id: fixtureId, providerId: 'bailian', protocolProfileId: p.profileId, protocolProfileVersion: p.profileVersion, kind: 'wire', provenance: { sourceDocumentationIds: documentationIds, capturedFromLive: false, sanitized: true, notes: `Generated documentation fixture projection from ${d.wireFixture}; never authorizes paid calls.` }, scenario: `Exact ${p.profileId} protocol replay`, data: { endpointStatus: 'verified', networkAuthorized: false, connectionUrl: `wss://dashscope.aliyuncs.com${d.endpointPath}`, authContract: { profileId: 'bailian.auth.bearer', parameters: [{ location: 'header', name: 'Authorization', value: 'Bearer <redacted>' }] }, audioContract: { input: d.audioInput, output: d.audioOutput }, events } };
+    const fixture = { $schema: '../../../contracts/provider-wire-fixture.schema.json', schemaVersion: 'provider-wire-fixture/v1', id: fixtureId, providerId: 'bailian', protocolProfileId: p.profileId, protocolProfileVersion: p.profileVersion, kind: 'wire', provenance: { sourceDocumentationIds: documentationIds, capturedFromLive: false, sanitized: true, notes: `Generated documentation fixture projection from ${wirePath}; never authorizes paid calls.` }, scenario: `Exact ${p.profileId} protocol replay`, data: { endpointStatus: 'verified', networkAuthorized: false, connectionUrl, authContract: { profileId: 'bailian.auth.bearer', parameters: [{ location: 'header', name: 'Authorization', value: 'Bearer <redacted>' }] }, audioContract: { input: d.audioInput, output: d.audioOutput }, events } };
     // Output-only audio protocols have no client media frame.
     if (!audio && !events.some((e) => e.direction === 'client' && e.frameType === 'binary')) fixture.data.audio = '<redacted>';
     m.fixtures.push({ id: fixtureId, path: fixturePath, kind: 'wire', sourceDocumentationIds: documentationIds });
@@ -114,6 +143,7 @@ export function projectBailianModule(root) {
     files.set(fixturePath, { $schema: '../../../contracts/provider-wire-fixture.schema.json', schemaVersion: 'provider-wire-fixture/v1', id: fixtureId, providerId: 'bailian', protocolProfileId: id, protocolProfileVersion: 1, kind: 'error', provenance: { sourceDocumentationIds: documentationIds, capturedFromLive: false, sanitized: true, notes: 'Catalog admission denial, not an invented protocol replay.' }, scenario: 'Catalog discovery cannot authorize network I/O', data: { endpointStatus: 'unresolved', networkAuthorized: false, unknowns: entry.unknowns, authContract: { profileId: 'bailian.auth.bearer', parameters: [{ location: 'header', name: 'Authorization', value: 'Bearer <redacted>' }] } } });
   }
   m.models = [...models.values()];
+  files.set('contracts/model-protocol-families.v1.json', families);
   files.set('provider-modules/bailian/manifest.json', m);
   return { manifest: m, files };
 }

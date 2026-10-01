@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "Falha na análise de capacidade de exclusão de processo: {{detail}}",
     "feedbackProcessExclusionProbing": "O suporte à exclusão de processos ainda não foi confirmado. Após a seleção, o Bridge conclui a investigação quando o Watch é iniciado; a captura não começará até que a sonda esteja pronta.",
     "feedbackNoneSelected": "A configuração herdada de controle sem feedback ainda está selecionada. O Watch não pode iniciar com fala traduzida até que você escolha explicitamente exclusão de processo, driver virtual ou cancelamento de eco.",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "Roteamento de áudio",
     "pageSubtitle": "Superfície branca · fluxo incorporado · entrada de modelo único · salvamento ao vivo · compatível com dispositivos móveis",
     "overviewAria": "Visão geral da rota de áudio",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "Reconhecimento de fala · Tradução · Fala",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "Modelo de texto primário",
+    "scenarioPrimaryTextCaption": "Tradução de texto base para o pipeline de reconhecimento de fala",
+    "primaryTextModelRequired": "O modelo de voz atual requer a seleção de um modelo de tradução de texto base"
   },
   "overlay": {
     "bootstrapFailed": "Falha ao inicializar a sobreposição de legendas",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Cenário: {{scenario}}",
       "editCapabilitiesTitle": "Editar registro de capacidade",
       "refreshTitle": "Atualizar catálogo de modelos",
+      "loading": "Loading models and capability data…",
       "closeTitle": "Fechar lista de modelos",
       "allScenarios": "Todos",
       "searchPlaceholder": "Pesquisar modelos...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "Segredo",
       "hideSecret": "Ocultar segredo",
       "showSecret": "Mostrar segredo"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "Modelos de cena",

@@ -58,8 +58,8 @@ impl LivetranslateShutdown {
             provider,
             &provider.model,
         );
-        let authority = enabled
-            .then(|| crate::audio::events::authorize_bailian_native_translate(provider))
+        let authority = (provider.kind == "dashscope")
+            .then(|| crate::audio::events::authorize_bailian_realtime(provider))
             .transpose()?;
         Ok(Self::with_authority(enabled, authority, stop_requested))
     }
@@ -383,10 +383,9 @@ impl<S: RealtimeSocket> RealtimeSocket for LivetranslateSocket<S> {
                     format!("LiveTranslate typed sender requires JSON: {error}"),
                 ))
             })?;
-            crate::audio::bailian_protocol::admit_livetranslate_client_event(
-                authority,
-                &event,
-            )
+            (if crate::audio::bailian_dialogue::is_supported_authority(authority) {
+                crate::audio::bailian_dialogue::admit_client_event(authority, &event)
+            } else { crate::audio::bailian_protocol::admit_livetranslate_client_event(authority, &event) })
             .map_err(|error| {
                 tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidData, error))
             })?;
@@ -414,7 +413,7 @@ pub(super) struct LivetranslateConnector<C> {
 
 impl<C> LivetranslateConnector<C> {
     fn authorize_reconnect(&self) -> Result<(), String> {
-        if self.shared.enabled
+        if (self.shared.enabled || self.shared.authority.as_ref().is_some_and(crate::audio::bailian_dialogue::is_supported_authority))
             && self.shared.shutdown_requested.load(Ordering::SeqCst)
         {
             Err(

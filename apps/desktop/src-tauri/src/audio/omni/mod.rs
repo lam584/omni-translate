@@ -486,7 +486,7 @@ fn initial_connect_backoff(retry_count: usize) -> Duration {
 fn build_dashscope_ws_request(
     provider: &ProviderDraftInput,
 ) -> Result<tungstenite::handshake::client::Request, String> {
-    let authority = crate::audio::events::authorize_bailian_native_translate(provider)?;
+    let authority = crate::audio::events::authorize_bailian_realtime(provider)?;
     let ws_url = to_websocket_url(&provider.base_url, &provider.model)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
     if ws_url.path() != authority.endpoint_path {

@@ -7,7 +7,7 @@ use crate::diagnostics::model_trace::ModelTraceRecorder;
 use crate::shared::time::now_unix_millis_marker;
 
 use super::contracts::{
-    ProviderDraftInput, ProviderModelCatalogRuntime,
+    ProviderDraftInput, ProviderModelCatalogRuntime, ProviderModelMetadataRuntime,
     ProviderProbeProfileRuntime, ProviderRoutingDecision,
     ProviderRuntimeError, ProviderSmokeResult, TtsSynthesisResult,
 };
@@ -57,7 +57,11 @@ fn provider_declares_bailian_voice_protocol(
     // Provider/template defaults are not bound to the selected exact model.
     // Only an exact registry row may opt an otherwise unknown model into the
     // voice-protocol fail-closed boundary.
-    provider.model_protocol_bindings.iter().any(|binding| binding.model_id == exact_model_id)
+    provider.model_protocol_bindings.iter().any(|binding| {
+        binding.model_id == exact_model_id
+            && ["native_translate", "dialogue", "asr", "tts", "voice_clone"].iter().any(|operation|
+                crate::provider::model_protocol_profile::binding_operation_matches(&binding.operation, operation))
+    })
         || provider
         .local_model_capability_registry
         .iter()
@@ -274,6 +278,19 @@ impl ProviderGateway {
         self.model_catalog.fetch(provider)
     }
 
+    pub(crate) fn fetch_model_metadata(&self, provider: ProviderDraftInput) -> ProviderModelMetadataRuntime {
+        if let Err(error) = crate::watch_mode_diagnostic::local_aec_probe::ensure_provider_work_allowed() {
+            return ProviderModelMetadataRuntime {
+                provider_id: provider.provider_id,
+                endpoint: String::new(),
+                fetched_at: crate::shared::time::now_unix_seconds_marker(),
+                models: Vec::new(),
+                error: Some(ProviderRuntimeError::new("request.invalid", error)),
+            };
+        }
+        super::gateway_parts::models::fetch_bailian_metadata(provider)
+    }
+
     pub(crate) fn probe(&self, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
         self.probe_with_livetranslate_authority(provider, false)
     }
@@ -357,8 +374,9 @@ impl ProviderGateway {
         // the exact text-generation declaration check in the DashScope adapter.
         let manifest_authorization = if provider.kind == "dashscope" || matches!(&bailian_authorization, Ok(Some(_))) {
             Ok(None)
-        } else { crate::provider::provider_manifest::authorize_provider_operation(
+        } else { crate::provider::provider_manifest::authorize_provider_operation_for_model(
             &provider,
+            &provider.model,
             "text-translation",
         ) }
         .map_err(provider_manifest_runtime_error)
@@ -492,10 +510,13 @@ impl ProviderGateway {
     pub(crate) fn synthesize_tts(
         &self,
         provider: ProviderDraftInput,
-        _text: String,
-        _target_language: String,
-        _voice_preset_id: String,
+        text: String,
+        target_language: String,
+        voice_preset_id: String,
     ) -> Result<TtsSynthesisResult, ProviderRuntimeError> {
+        if crate::audio::bailian_tasks::is_tts_model(&provider.model) {
+            return super::gateway_parts::task_tts::synthesize(provider, text, target_language, voice_preset_id);
+        }
         Err(ProviderRuntimeError::new(
             "tts.disabled",
             format!(
@@ -1265,6 +1286,246 @@ mod tests {
         assert!(deltas.is_empty());
     }
 
+    #[test]
+    fn text_judge_does_not_enter_voice_authorization_without_voice_declaration() {
+        let mut provider = dashscope_text_provider("https://dashscope.aliyuncs.com/api/v1".to_string());
+        provider.model = "qwen3.8-flash".to_string();
+        provider.transport = "http".to_string();
+        assert!(authorize_bailian_model_operation_before_provider_access(
+            &provider, &provider.model, "native_translate"
+        ).expect("text judge must not be classified as voice").is_none());
+    }
+
+    #[test]
+    fn manifest_text_bindings_do_not_turn_http_judge_into_voice_model() {
+        let (base_url, server) = spawn_http_server(|stream| {
+            write_http_response(
+                stream,
+                "application/json",
+                r#"{"choices":[{"message":{"content":"Judge response"}}]}"#,
+            );
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.model = "qwen3.8-flash".to_string();
+        provider.model_protocol_bindings = ["text", "text-translation"].iter().map(|operation| {
+            serde_json::from_value(json!({
+                "modelId": "qwen3.8-flash",
+                "operation": operation,
+                "profileOwnerProviderId": "bailian",
+                "manifestVersion": 1,
+                "profileId": "bailian.catalog.qwen3.8-flash",
+                "profileVersion": 1
+            })).expect("manifest text binding should deserialize")
+        }).collect();
+        provider.local_model_capability_registry[0].model_id = provider.model.clone();
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider, "judge".to_string(), "en-US".to_string(), "zh-CN".to_string(),
+        );
+        assert_eq!(smoke.status, "completed", "{:?}", smoke.error);
+        assert_eq!(smoke.transcript, "Judge response");
+        server.join().expect("HTTP mock server should stop");
+    }
+
+    #[test]
+    fn dashscope_http_sse_waits_for_completion_and_collects_text() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"score\\\":\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"85}\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (base_url, server) = spawn_http_server(move |stream| {
+            write_http_response(stream, "text/event-stream", body);
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.transport = "streaming-http".to_string();
+        provider.stream_enabled = true;
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider, "judge".to_string(), "en-US".to_string(), "zh-CN".to_string(),
+        );
+        assert_eq!(smoke.status, "completed", "{:?}", smoke.error);
+        assert_eq!(smoke.transport_effective, "streaming-http");
+        assert!(smoke.stream_observed);
+        assert_eq!(smoke.transcript, r#"{"score":85}"#);
+        server.join().expect("SSE mock server should stop");
+    }
+
+    #[test]
+    fn dashscope_semantic_judge_completes_from_valid_stream_content_without_done() {
+        let score = json!({
+            "subscores": {
+                "adequacy": 90, "factsTerminology": 85,
+                "omissionsAdditions": 80, "fluency": 95
+            },
+            "rationale": "译文忠实，但有轻微遗漏。",
+            "criticalErrors": []
+        }).to_string();
+        let body = format!("data: {}\n\n", json!({"choices": [{"delta": {"content": score}}]}));
+        let (base_url, server) = spawn_http_server(move |stream| {
+            write_http_response(stream, "text/event-stream", &body);
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.transport = "streaming-http".to_string();
+        provider.stream_enabled = true;
+        provider.system_prompt_template = "benchmark-semantic-judge-v1".to_string();
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider, "judge".to_string(), "en-US".to_string(), "zh-CN".to_string(),
+        );
+        assert_eq!(smoke.status, "completed", "{:?}", smoke.error);
+        assert!(smoke.stream_observed);
+        assert!(smoke.transcript.contains("factsTerminology"));
+        server.join().expect("SSE mock server should stop");
+    }
+
+    #[test]
+    fn dashscope_semantic_judge_rejects_length_even_with_valid_json() {
+        let score = json!({
+            "subscores": {
+                "adequacy": 90, "factsTerminology": 85,
+                "omissionsAdditions": 80, "fluency": 95
+            },
+            "rationale": "译文质量尚可。", "criticalErrors": []
+        }).to_string();
+        let body = format!("data: {}\n\n", json!({
+            "choices": [{"delta": {"content": score}, "finish_reason": "length"}]
+        }));
+        let (base_url, server) = spawn_http_server(move |stream| {
+            write_http_response(stream, "text/event-stream", &body);
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.transport = "streaming-http".to_string();
+        provider.stream_enabled = true;
+        provider.system_prompt_template = "benchmark-semantic-judge-v1".to_string();
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider, "judge".to_string(), "en-US".to_string(), "zh-CN".to_string(),
+        );
+        assert_eq!(smoke.status, "failed");
+        assert_eq!(smoke.error.expect("length cannot complete score").code, "response.incomplete");
+        server.join().expect("SSE mock server should stop");
+    }
+
+    #[test]
+    fn dashscope_http_sse_rejects_nonterminal_partial_response() {
+        let (base_url, server) = spawn_http_server(|stream| {
+            write_http_response(stream, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"score\\\":85}\"}}]}\n\n");
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.transport = "streaming-http".to_string();
+        provider.stream_enabled = true;
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider, "judge".to_string(), "en-US".to_string(), "zh-CN".to_string(),
+        );
+        assert_eq!(smoke.status, "failed");
+        assert_eq!(smoke.error.expect("missing terminal marker must fail").code, "response.incomplete");
+        server.join().expect("SSE mock server should stop");
+    }
+
+    #[test]
+    fn catalog_only_text_judge_remains_denied_before_network() {
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let mut provider = dashscope_text_provider(base_url);
+        provider.model = "qwen3.8-flash".to_string();
+        provider.local_model_capability_registry.clear();
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "judge".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke.error.expect("catalog-only model must fail closed");
+        assert_eq!(error.code, "request.invalid");
+        assert!(error.message.contains("text-generation registry declaration"));
+        assert!(!error.message.contains("voice model"));
+    }
+
+    #[test]
+    fn exact_qwen38_flash_explicit_text_generation_registry_row_succeeds_over_http() {
+        let (base_url, server) = spawn_http_server(|stream| {
+            write_http_response(
+                stream,
+                "application/json",
+                r#"{"choices":[{"message":{"content":"Mocked text generation output"}}]}"#,
+            );
+        });
+        let mut provider = dashscope_text_provider(base_url);
+        provider.model = "qwen3.8-flash".to_string();
+        provider.transport = "http".to_string();
+        provider.local_model_capability_registry = vec![serde_json::from_value(json!({
+            "id": "custom-qwen3.8-flash-text",
+            "modelId": "qwen3.8-flash",
+            "capabilities": ["text-generation"],
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": [],
+            "source": "official"
+        }))
+        .expect("explicit qwen3.8-flash text registry entry must deserialize")];
+
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "test prompt".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+
+        assert_eq!(smoke.status, "completed");
+        assert_eq!(smoke.transport_effective, "http");
+        assert_eq!(smoke.transcript, "Mocked text generation output");
+        assert_eq!(smoke.connection_attempts, 1);
+        server.join().expect("HTTP mock server should stop");
+    }
+
+    #[test]
+    fn negative_model_without_registry_row_and_voice_model_text_checkbox_cannot_bypass() {
+        // 1. Negative model without row: fails closed before network
+        let (base_url, attempts, stop, server) = spawn_counted_loopback_http_server();
+        let mut provider = dashscope_text_provider(base_url);
+        provider.model = "qwen-negative-no-row".to_string();
+        provider.transport = "http".to_string();
+        provider.local_model_capability_registry.clear();
+
+        let smoke = ProviderGateway::new().execute_smoke(
+            provider,
+            "test prompt".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop.store(true, AtomicOrdering::SeqCst);
+        server.join().expect("counter server should stop");
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 0);
+        let error = smoke.error.expect("model without registry row must fail closed");
+        assert_eq!(error.code, "request.invalid");
+        assert!(error.message.contains("text-generation registry declaration"));
+
+        // 2. Voice model with text capability checkbox cannot bypass voice fail-closed boundary
+        let (base_url2, attempts2, stop2, server2) = spawn_counted_loopback_http_server();
+        let mut voice_provider = dashscope_text_provider(base_url2);
+        voice_provider.model = "qwen3.5-livetranslate-flash-realtime".to_string();
+        voice_provider.transport = "http".to_string();
+        voice_provider.model_registry_version = Some(2);
+        voice_provider.local_model_capability_registry = vec![serde_json::from_value(json!({
+            "id": "spoofed-voice-text",
+            "modelId": "qwen3.5-livetranslate-flash-realtime",
+            "capabilities": ["text-generation"],
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": [],
+            "source": "official"
+        }))
+        .expect("spoofed voice text entry must deserialize")];
+
+        let smoke2 = ProviderGateway::new().execute_smoke(
+            voice_provider,
+            "test prompt".to_string(),
+            "en-US".to_string(),
+            "zh-CN".to_string(),
+        );
+        stop2.store(true, AtomicOrdering::SeqCst);
+        server2.join().expect("counter server 2 should stop");
+        assert_eq!(attempts2.load(AtomicOrdering::SeqCst), 0);
+        let error2 = smoke2.error.expect("voice model with text checkbox must fail closed");
+        assert_eq!(error2.code, "model_protocol.transport_mismatch");
+    }
     #[test]
     fn dashscope_text_model_with_requested_websocket_uses_http_fallback() {
         let (base_url, server) = spawn_http_server(|stream| {
@@ -2129,9 +2390,10 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_transport_falls_back_to_supported_mode() {
+    fn disabled_streaming_transport_falls_back_to_http() {
         let mut provider = dashscope_provider("http://127.0.0.1:8080/api/v1".to_string());
         provider.transport = "streaming-http".to_string();
+        provider.stream_enabled = false;
 
         let (effective_transport, fallback_applied) = resolve_transport(&provider);
 

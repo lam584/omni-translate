@@ -658,8 +658,16 @@ function RealTimeSessionPage() {
     }
     const voiceModelReference = resolveSceneVoiceModelId(mode, configDraft);
     let realtimeProfile: ResolvedRealtimeProfile;
+    let outboundRealtimeProfile: ResolvedRealtimeProfile | undefined;
     try {
       realtimeProfile = await resolveRealtimeProfileRuntime(configDraft, voiceModelReference);
+      if (mode !== 'watch' && configDraft.devices.outboundVoiceModelId) {
+        try {
+          outboundRealtimeProfile = await resolveRealtimeProfileRuntime(configDraft, configDraft.devices.outboundVoiceModelId);
+        } catch {
+          // Outbound preflight failure will be captured during launch
+        }
+      }
     } catch (error) {
       const modelRole = mode === 'voice-room' ? 'outboundVoiceModelId' : 'inboundVoiceModelId';
       const chinese = i18n.language.toLowerCase().startsWith('zh');
@@ -689,7 +697,7 @@ function RealTimeSessionPage() {
     });
     await launchScene({
       launchAttemptId, mode, configDraft, audioSnapshot: audioRuntimeSnapshot, overlayVisible: Boolean(overlayWindow?.visible),
-      realtimeProfile, speechPatch, secondarySubtitleTranslationEnabled,
+      realtimeProfile, outboundRealtimeProfile, speechPatch, secondarySubtitleTranslationEnabled,
     });
   };
 

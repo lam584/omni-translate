@@ -13,6 +13,7 @@ import {
   parseLlmJudgeResponse,
   scoreDeterministic,
   scoreLatencyRamp,
+  scoreLatencyV2,
   scoreRun,
 } from './watch-mode-score.mjs';
 
@@ -139,18 +140,22 @@ test('aggregates every run and exposes the exact weighted total and every stabil
   assert.equal(result.status, 'official');
   assert.deepEqual(
     Object.fromEntries(Object.entries(result.dimensions).map(([name, dimension]) => [name, dimension.score])),
-    { semantic: 80, latency: 75, completeness: 100, stability: 90 },
+    { semantic: 80, latency: 77.5, completeness: 100, stability: 90 },
   );
-  assert.equal(result.total, 83.5);
+  assert.equal(result.total, 84.3);
   assert.equal(result.grade, 'B');
   assert.deepEqual(result.deductions, [
     { type: 'extra-response', runIndex: 1, responseOrdinal: 2, amount: 5 },
     { type: 'extra-response', runIndex: 1, responseOrdinal: 3, amount: 5 },
   ]);
-  assert.equal(result.dimensions.latency.evidence.signals[2].score, 50);
+  assert.equal(result.dimensions.latency.evidence.signals[2].score, 55);
+  assert.deepEqual(result.dimensions.latency.evidence.runs, [
+    { runIndex: 0, score: 100 },
+    { runIndex: 1, score: 55 },
+  ]);
   assert.equal(result.dimensions.semantic.evidence.referenceByRun.length, 2);
   assert.equal(result.dimensions.semantic.evidence.judge.runs.length, 2);
-  assert.equal(calculateWeightedTotal({ semantic: 80, latency: 75, completeness: 100, stability: 90 }), 83.5);
+  assert.equal(calculateWeightedTotal({ semantic: 80, latency: 77.5, completeness: 100, stability: 90 }), 84.3);
 });
 
 test('missing mandatory latency evidence is explicit and prevents a formal total', () => {
@@ -407,4 +412,43 @@ test('dry-run fixtures do not make an external judge request even when a key is 
     delete process.env[credentialEnv];
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('scoreLatencyV2 distinguishes severe delays, handles bad boundary, and decays monotonically in the tail', () => {
+  assert.equal(scoreLatencyV2(2_000, 2_000, 8_000), 100);
+  assert.equal(scoreLatencyV2(8_000, 2_000, 8_000), 10);
+  assert.equal(scoreLatencyV2(5_000, 5_000, 15_000), 100);
+  assert.equal(scoreLatencyV2(15_000, 5_000, 15_000), 10);
+
+  assert.equal(scoreLatencyV2(607.1, 2_000, 8_000), 100);
+
+  assert.equal(scoreLatencyV2(30_000, 5_000, 15_000), 2.5);
+
+  const score30k = scoreLatencyV2(30_000, 5_000, 15_000);
+  const score60k = scoreLatencyV2(60_000, 5_000, 15_000);
+  const score114k = scoreLatencyV2(114_075, 5_000, 15_000);
+  assert.ok(score30k > score60k);
+  assert.ok(score60k > score114k);
+
+  const sFirst = scoreLatencyV2(607.1, 2_000, 8_000);
+  const sFinal = scoreLatencyV2(114_075, 5_000, 15_000);
+  const runScore = Math.sqrt(sFirst * sFinal);
+  assert.equal(Number(runScore.toFixed(1)), 4.2);
+
+  assert.equal(scoreLatencyV2(null, 2_000, 8_000), null);
+  assert.equal(scoreLatencyV2(-10, 2_000, 8_000), null);
+  assert.equal(scoreLatencyV2(NaN, 2_000, 8_000), null);
+
+  const slowRun = completeRun(0, {
+    audioToRenderFirstMs: 607.1,
+    audioToRenderFinalMs: 114_075,
+  });
+  const deterministicSlow = scoreDeterministic({
+    report: passedReport,
+    sourceText: 'Hello world',
+    referenceText: '你好世界',
+    evidence: { runs: [slowRun] },
+  });
+  assert.equal(deterministicSlow.dimensions.latency.score, 4.2);
+  assert.deepEqual(deterministicSlow.dimensions.latency.evidence.runs, [{ runIndex: 0, score: 4.2 }]);
 });

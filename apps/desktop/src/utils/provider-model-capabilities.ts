@@ -309,6 +309,17 @@ const seedRegistryEntries: SeedRegistryEntry[] = [
   { id: 'seed-cosyvoice-v3.5-plus', modelId: 'cosyvoice-v3.5-plus', capabilities: ['text-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-minimax-speech-2.8-hd', modelId: 'MiniMax/speech-2.8-hd', capabilities: ['text-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'preset' },
   {
+    id: 'seed-qwen3.8-livetranslate-flash-realtime',
+    modelId: 'qwen3.8-livetranslate-flash-realtime',
+    capabilities: ['speech-to-text', 'speech-to-speech'],
+    realtimeProtocol: 'dashscope-livetranslate',
+    realtimeAudioMode: 'server_vad',
+    interactionCapabilities: ['auto_vad', 'streaming'],
+    apiModes: ['websocket'],
+    releasedAt: '2026-09-20',
+    source: 'official',
+  },
+  {
     id: 'seed-qwen3.5-livetranslate-flash-realtime',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
     capabilities: ['speech-to-text', 'speech-to-speech'],
@@ -637,6 +648,13 @@ export function resolveInteractionCapabilities(
   _displayName?: string,
 ): ProviderInteractionCapability[] {
   const match = resolveLocalRegistryEntry(modelId, registry);
+  if (modelId.toLowerCase().includes('livetranslate')) {
+    const raw = match?.interactionCapabilities ?? ['auto_vad', 'streaming'];
+    const filtered = raw.filter((c) => !['pipeline_asr_mt_tts', 'server_commit_tts', 'commit_tts', 'text_only_backend'].includes(c));
+    if (!filtered.includes('auto_vad')) filtered.push('auto_vad');
+    if (!filtered.includes('streaming')) filtered.push('streaming');
+    return normalizeProviderInteractionCapabilityList(filtered);
+  }
   if (match?.interactionCapabilities !== undefined) {
     return normalizeProviderInteractionCapabilityList(match.interactionCapabilities);
   }

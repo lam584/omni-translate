@@ -44,10 +44,10 @@ const {
   resolveBaseUrlForApiFormat,
   buildModelCatalogSignature,
   buildFallbackModels,
+  withFallbackModelCatalog,
   dedupeModels,
   createEmptyModelCatalogCache,
   createFallbackModelCatalog,
-  ensureSceneAssignments,
 } = providersPageHelpers;
 
 function ProvidersPage() {
@@ -73,7 +73,7 @@ function ProvidersPage() {
     audioModeHelpOpen, setAudioModeHelpOpen, verificationModalOpen, setVerificationModalOpen,
     selectedCatalogScenario, setSelectedCatalogScenario,
     modelCatalogTargetScenario, setModelCatalogTargetScenario,
-    draggingTemplateId, setDraggingTemplateId, draggingSceneModel, setDraggingSceneModel,
+    draggingTemplateId, setDraggingTemplateId,
     draggingTemplateIdRef, templateMouseDragMovedRef, templateMouseHoverTargetRef,
     manualModelIdDraft, setManualModelIdDraft, pendingModelRegistration, setPendingModelRegistration,
     modelCatalogQuery, setModelCatalogQuery, modelCatalog, setModelCatalog,
@@ -98,10 +98,6 @@ function ProvidersPage() {
     () => activeProvider.modelRegistryVersion === 2 ? effectiveProviderModelRegistry(activeProvider) : activeProvider.localModelCapabilityRegistry ?? [],
     [activeProvider],
   );
-  const sceneAssignments = useMemo(
-    () => ensureSceneAssignments(activeProvider.sceneModelAssignments),
-    [activeProvider.sceneModelAssignments],
-  );
   const modelLookup = useMemo(() => {
     const entries = dedupeModels([
       ...modelCatalog.models,
@@ -120,8 +116,11 @@ function ProvidersPage() {
 
   // Initialized via lazy useState initializers above
 
+  const displayedModelCatalog = useMemo(() => withFallbackModelCatalog(
+    modelCatalog, activeTemplate, activeProvider.model, localModelCapabilityRegistry, activeProvider.baseUrl,
+  ), [modelCatalog, activeTemplate, activeProvider.model, localModelCapabilityRegistry, activeProvider.baseUrl]);
   const { catalogSections, filteredTemplateEntries, uncategorizedCatalogModels } = useProviderCatalogProjection({
-    modelCatalog,
+    modelCatalog: displayedModelCatalog,
     modelCatalogQuery,
     selectedCatalogScenario,
     templateEntries: visibleTemplateEntries,
@@ -204,7 +203,6 @@ function ProvidersPage() {
     activeCustomTemplateDraft,
     customTemplates,
     providerDraftForCustomTemplate,
-    sceneAssignments,
     setCustomTemplates,
     onTemplateChanged: resetForTemplate,
   });
@@ -279,16 +277,6 @@ function ProvidersPage() {
       return;
     }
 
-    if (!customProviderDraft.model.trim()) {
-      setCustomProviderError(t('providers.messages.modelRequired', { defaultValue: '必须填写模型 ID。' }));
-      return;
-    }
-
-    if (!customProviderDraft.protocolProfileKey) {
-      setCustomProviderError(t('providers.messages.protocolProfileRequired', { defaultValue: '必须显式选择版本化 Protocol Profile。' }));
-      return;
-    }
-
     const nextTemplates = [...customTemplates, createCustomProviderTemplate(customProviderDraft)];
     const activeCustomTemplate = nextTemplates[nextTemplates.length - 1];
 
@@ -344,7 +332,6 @@ function ProvidersPage() {
     handlePendingRegistrationInteractionToggle,
     handlePendingRegistrationConfirm,
     handleCatalogModelToggle,
-    handleSceneModelRemove,
     handleProviderCustomHeaderChange,
     handleProviderCustomHeaderAdd,
     handleProviderCustomHeaderRemove,
@@ -354,19 +341,16 @@ function ProvidersPage() {
     handleCapabilityRegistryInteractionToggle,
     handleCapabilityRegistryEntryRemove,
     handleResponseModalityToggle,
-    handleSceneModelReorder,
   } = useProviderModelEditorController({
     t,
     activeProvider,
     activeTemplate,
-    sceneAssignments,
     localModelCapabilityRegistry,
     modelLookup,
     modelCatalogSignature,
     modelCatalogTargetScenario,
     manualModelIdDraft,
     pendingModelRegistration,
-    draggingSceneModel,
     routeMode: configDraft.devices.routeMode,
     providerRuntimeBlocked,
     providerRuntimeStatusMessage,
@@ -419,11 +403,9 @@ function ProvidersPage() {
         secretVisible={secretVisible}
         secretStatusMessage={secretStatusMessage}
         modelCatalogEndpoint={modelCatalog.endpoint}
-        sceneAssignments={sceneAssignments}
         modelLookup={modelLookup}
         localModelCapabilityRegistry={localModelCapabilityRegistry}
         setSecretDraft={setSecretDraft}
-        setDraggingSceneModel={setDraggingSceneModel}
         updateActiveProviderDraft={updateActiveProviderDraft}
         onDelete={handleDeleteActiveCustomProvider}
         onVerify={handleVerificationRun}
@@ -432,13 +414,11 @@ function ProvidersPage() {
         onOpenAdvancedSettings={() => setAdvancedSettingsOpen(true)}
         onSecretVisibilityToggle={handleSecretVisibilityToggle}
         onSecretSave={handleSecretSave}
-        onSceneModelReorder={handleSceneModelReorder}
-        onSceneModelRemove={handleSceneModelRemove}
       />
 
       {modelCatalogModalOpen ? (
         <ProviderModelCatalog
-          catalog={modelCatalog}
+          catalog={displayedModelCatalog}
           catalogSections={catalogSections}
           description={modelCatalogDescription}
           isModelAdded={isModelAddedToScenario}

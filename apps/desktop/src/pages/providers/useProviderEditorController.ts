@@ -1,8 +1,9 @@
 import { useCallback, useEffect, type Dispatch, type MouseEvent, type MutableRefObject, type SetStateAction } from 'react';
-import type { ProviderDraft, ProviderSceneModelAssignment } from '../../schema/config';
+import type { ProviderDraft } from '../../schema/config';
 import type { ProviderTemplate } from '../../schema/provider-template';
 import { useAppStore } from '../../stores/app-store';
-import { buildDefaultSceneModelAssignments, buildProviderDraftPatchFromTemplate } from '../../utils/provider-draft';
+import { buildProviderDraftPatchFromTemplate } from '../../utils/provider-draft';
+import { migrateProviderCandidateModelGroups } from '../../utils/candidate-model-groups';
 import { updateCustomProviderTemplate, writeCustomProviderTemplates, type CustomProviderTemplateDraft } from '../../utils/custom-provider-templates';
 import {
   persistProviderTemplateCatalogEntries,
@@ -24,7 +25,6 @@ type Params = {
   activeCustomTemplateDraft: CustomProviderTemplateDraft | null;
   customTemplates: ProviderTemplate[];
   providerDraftForCustomTemplate: CustomProviderTemplateDraft;
-  sceneAssignments: ProviderSceneModelAssignment[];
   setCustomTemplates: Dispatch<SetStateAction<ProviderTemplate[]>>;
   onTemplateChanged: (template: ProviderTemplate) => void;
 };
@@ -42,11 +42,9 @@ export function useProviderEditorController({
   activeCustomTemplateDraft,
   customTemplates,
   providerDraftForCustomTemplate,
-  sceneAssignments,
   setCustomTemplates,
   onTemplateChanged,
 }: Params) {
-  const updateActiveProviderDraft = useAppStore((state) => state.updateActiveProviderDraft);
   const updateActiveProviderTemplateId = useAppStore((state) => state.updateActiveProviderTemplateId);
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
   const updateProviders = useAppStore((state) => state.updateProviders);
@@ -63,43 +61,39 @@ export function useProviderEditorController({
   }, [pushRuntimeNotification]);
 
   useEffect(() => {
-    if (activeTemplate.source !== 'custom' || !activeCustomTemplateDraft
-      || JSON.stringify(activeCustomTemplateDraft) === JSON.stringify(providerDraftForCustomTemplate)) return;
+    if (activeTemplate.source !== 'custom' || !activeCustomTemplateDraft) return;
+    const draftChanged = JSON.stringify(activeCustomTemplateDraft) !== JSON.stringify(providerDraftForCustomTemplate);
+    const bindingOwnerMatches = activeProvider.templateId === activeTemplate.id;
+    const bindingsChanged = bindingOwnerMatches && JSON.stringify(activeTemplate.defaultDraft.modelProtocolBindings ?? [])
+      !== JSON.stringify(activeProvider.modelProtocolBindings ?? []);
+    if (!draftChanged && !bindingsChanged) return;
     const nextTemplate = updateCustomProviderTemplate(activeTemplate, providerDraftForCustomTemplate);
+    if (bindingOwnerMatches) nextTemplate.defaultDraft.modelProtocolBindings = activeProvider.modelProtocolBindings ?? [];
     const nextTemplates = customTemplates.map((template) => template.id === activeTemplate.id ? nextTemplate : template);
     const result = writeCustomProviderTemplates(nextTemplates);
     if (result.ok) queueMicrotask(() => setCustomTemplates(nextTemplates));
     else reportCustomTemplateWriteFailure(result.error);
-  }, [activeCustomTemplateDraft, activeTemplate, customTemplates, providerDraftForCustomTemplate, reportCustomTemplateWriteFailure, setCustomTemplates]);
+  }, [activeCustomTemplateDraft, activeTemplate, activeProvider.modelProtocolBindings, activeProvider.templateId, customTemplates, providerDraftForCustomTemplate, reportCustomTemplateWriteFailure, setCustomTemplates]);
 
   const applyTemplate = (template: ProviderTemplate) => {
     const currentTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
     if (currentTemplateId === template.id) return;
-    if (currentTemplateId) providersPageHelpers.globalTemplateSceneAssignments.set(currentTemplateId, sceneAssignments);
     const providers = [...useAppStore.getState().configDraft.providers];
     const oldIndex = providers.findIndex((provider) => provider.templateId === currentTemplateId);
-    if (oldIndex >= 0) providers[oldIndex] = { ...activeProvider, sceneModelAssignments: sceneAssignments };
+    if (oldIndex >= 0) providers[oldIndex] = migrateProviderCandidateModelGroups(activeProvider);
     const existingIndex = providers.findIndex((provider) => provider.templateId === template.id);
-    const savedAssignments = providersPageHelpers.globalTemplateSceneAssignments.get(template.id);
     if (existingIndex < 0) {
       providers.push({
         ...buildProviderDraftPatchFromTemplate(activeProvider, template),
-        sceneModelAssignments: savedAssignments ? providersPageHelpers.ensureSceneAssignments(savedAssignments)
-          : buildDefaultSceneModelAssignments(template),
         model: template.defaultDraft.model,
         status: 'draft',
       } as ProviderDraft);
+    } else {
+      // Switching providers must not restore discarded legacy scene selections.
+      providers[existingIndex] = migrateProviderCandidateModelGroups(providers[existingIndex]);
     }
     updateProviders(providers);
     updateActiveProviderTemplateId(template.id);
-    if (savedAssignments) {
-      updateActiveProviderDraft({ sceneModelAssignments: providersPageHelpers.ensureSceneAssignments(savedAssignments), status: 'draft' });
-    } else if (existingIndex >= 0) {
-      const existing = providers[existingIndex];
-      updateActiveProviderDraft(existing.sceneModelAssignments?.length
-        ? { sceneModelAssignments: providersPageHelpers.ensureSceneAssignments(existing.sceneModelAssignments), status: 'draft' }
-        : { sceneModelAssignments: buildDefaultSceneModelAssignments(template), model: template.defaultDraft.model, status: 'draft' });
-    }
     updateDiagnosticsDraft({ providerStatus: 'draft' });
     onTemplateChanged(template);
   };

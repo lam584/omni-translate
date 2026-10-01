@@ -1,8 +1,12 @@
-import i18n from '../../i18n/config';
-import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
-import type { DiagnosticLogEntryRuntime } from '../../schema/runtime-core';
-import type { SceneLaunchStage } from './sceneLaunchPlan';
-import { extractSessionErrorCode, formatModelErrorSummary, sessionErrorPresentation } from '../../utils/session-error-presentation';
+import i18n from "../../i18n/config";
+import type { AudioRuntimeSnapshot } from "../../schema/audio-runtime";
+import type { DiagnosticLogEntryRuntime } from "../../schema/runtime-core";
+import type { SceneLaunchStage } from "./sceneLaunchPlan";
+import {
+  extractSessionErrorCode,
+  formatModelErrorSummary,
+  sessionErrorPresentation,
+} from "../../utils/session-error-presentation";
 
 /**
  * Terminal outcomes of a watch launch attempt. The names describe *why*
@@ -11,14 +15,14 @@ import { extractSessionErrorCode, formatModelErrorSummary, sessionErrorPresentat
  */
 export type SceneLaunchOutcome =
   // Provider/model failures are not audio endpoint failures.
-  | 'session-error'
+  | "session-error"
   // The native start_audio_route command was never acknowledged.
-  | 'command-rejected'
+  | "command-rejected"
   // The command was acknowledged, but capture never reached a usable state
   // before the launch deadline (no native error was reported).
-  | 'capture-not-ready'
+  | "capture-not-ready"
   // The command was acknowledged and native capture reported an error.
-  | 'capture-error';
+  | "capture-error";
 
 export type SceneLaunchAttributionInput = {
   stage: SceneLaunchStage | null;
@@ -38,9 +42,9 @@ export type SceneLaunchAttribution = {
 
 // Native diagnostics summaries emitted by the route orchestrator. The renderer
 // only owns keyword recovery; the authoritative markers live in the Rust log.
-const ROUTE_ACK_MARKERS = ['route_start_acknowledged'] as const;
-const ROUTE_READY_MARKERS = ['route_ready'] as const;
-const ROUTE_ERROR_MARKERS = ['route_error', 'route_command_timeout'] as const;
+const ROUTE_ACK_MARKERS = ["route_start_acknowledged"] as const;
+const ROUTE_READY_MARKERS = ["route_ready"] as const;
+const ROUTE_ERROR_MARKERS = ["route_error", "route_command_timeout"] as const;
 const ALL_ROUTE_MARKERS = [
   ...ROUTE_ERROR_MARKERS,
   ...ROUTE_READY_MARKERS,
@@ -51,25 +55,21 @@ const ALL_ROUTE_MARKERS = [
 // locale bundles are attached asynchronously after startup, so labels frozen
 // at module load would ignore the language active when the failure occurs.
 const STAGE_LABEL_KEYS: Record<SceneLaunchStage, string> = {
-  'bridge-ready': 'session.attribution.stageBridgeReady',
-  'omni-preconnect': 'session.attribution.stageOmniPreconnect',
-  'inbound-route': 'session.attribution.stageInboundRoute',
-  'outbound-route': 'session.attribution.stageOutboundRoute',
-  'translate-worker': 'session.attribution.stageTranslateWorker',
-  'speech-dispatch': 'session.attribution.stageSpeechDispatch',
-  'subtitle-overlay': 'session.attribution.stageSubtitleOverlay',
+  "bridge-ready": "session.attribution.stageBridgeReady",
+  "omni-preconnect": "session.attribution.stageOmniPreconnect",
+  "inbound-route": "session.attribution.stageInboundRoute",
+  "outbound-route": "session.attribution.stageOutboundRoute",
+  "translate-worker": "session.attribution.stageTranslateWorker",
+  "speech-dispatch": "session.attribution.stageSpeechDispatch",
+  "subtitle-overlay": "session.attribution.stageSubtitleOverlay",
 };
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message.trim();
-  if (error == null) return '';
-  if (typeof error === 'object') {
+  if (error == null) return "";
+  if (typeof error === "object") {
     const candidate = error as { message?: unknown };
-    if (typeof candidate.message === 'string') return candidate.message.trim();
-  }
-  if (typeof error === 'object') {
-    const candidate = error as { message?: unknown };
-    if (typeof candidate.message === 'string') return candidate.message.trim();
+    if (typeof candidate.message === "string") return candidate.message.trim();
   }
   return String(error).trim();
 }
@@ -106,27 +106,33 @@ function sessionFailure(input: SceneLaunchAttributionInput) {
 }
 
 function classify(input: SceneLaunchAttributionInput): SceneLaunchOutcome {
-  if (sessionFailure(input)) return 'session-error';
+  if (sessionFailure(input)) return "session-error";
   const lastError = input.snapshot?.inbound.lastError?.trim();
   const errorMarker = hasMarker(input.recentLogs, ROUTE_ERROR_MARKERS);
-  if (lastError || errorMarker) return 'capture-error';
+  if (lastError || errorMarker) return "capture-error";
   const acknowledged =
     input.commandAccepted
     || hasMarker(input.recentLogs, ROUTE_ACK_MARKERS)
     || hasMarker(input.recentLogs, ROUTE_READY_MARKERS);
-  if (!acknowledged) return 'command-rejected';
-  return 'capture-not-ready';
+  if (!acknowledged) return "command-rejected";
+  return "capture-not-ready";
 }
 
 function captureStateFragment(snapshot: AudioRuntimeSnapshot | null): string {
-  if (!snapshot) return i18n.t('session.attribution.captureStateUnknown');
+  if (!snapshot) return i18n.t("session.attribution.captureStateUnknown");
   const { captureState, preBufferState, streamBound } = snapshot.inbound;
-  return i18n.t('session.attribution.captureStateFormat', { captureState, preBufferState, bound: streamBound ? i18n.t('session.attribution.boundYes') : i18n.t('session.attribution.boundNo') });
+  return i18n.t("session.attribution.captureStateFormat", {
+    captureState,
+    preBufferState,
+    bound: streamBound ? i18n.t("session.attribution.boundYes") : i18n.t("session.attribution.boundNo"),
+  });
 }
 
 function nativeMarkerFragment(recentLogs: DiagnosticLogEntryRuntime[]): string {
   const marker = latestRouteMarker(recentLogs);
-  return i18n.t('session.attribution.nativeMarker', { marker: marker ?? i18n.t('session.attribution.noMarker') });
+  return i18n.t("session.attribution.nativeMarker", {
+    marker: marker ?? i18n.t("session.attribution.noMarker"),
+  });
 }
 
 /**
@@ -136,14 +142,14 @@ function nativeMarkerFragment(recentLogs: DiagnosticLogEntryRuntime[]): string {
  */
 export function describeSceneLaunchAttribution(input: SceneLaunchAttributionInput): SceneLaunchAttribution {
   const outcome = classify(input);
-  const stageLabel = input.stage ? i18n.t(STAGE_LABEL_KEYS[input.stage]) : i18n.t('session.attribution.stageLaunch');
-  const context = `${captureStateFragment(input.snapshot)}；${nativeMarkerFragment(input.recentLogs)}`;
+  const stageLabel = input.stage ? i18n.t(STAGE_LABEL_KEYS[input.stage]) : i18n.t("session.attribution.stageLaunch");
+  const context = captureStateFragment(input.snapshot) + "；" + nativeMarkerFragment(input.recentLogs);
   const detail = errorText(input.error);
 
-  if (outcome === 'command-rejected') {
-    const reason = i18n.t('session.attribution.commandRejectedReason', { stage: stageLabel, context, detail: detail ? `；${detail}` : '' });
-    const hint = i18n.t('session.attribution.commandRejectedHint');
-    return { outcome, message: `${reason}。${hint}` };
+  if (outcome === "command-rejected") {
+    const reason = i18n.t("session.attribution.commandRejectedReason", { stage: stageLabel, context, detail: detail ? "；" + detail : "" });
+    const hint = i18n.t("session.attribution.commandRejectedHint");
+    return { outcome, message: reason + "。" + hint };
   }
 
   if (outcome === "session-error") {
@@ -171,14 +177,14 @@ export function describeSceneLaunchAttribution(input: SceneLaunchAttributionInpu
     return { outcome, message: [reason, hint].join("; ") };
   }
 
-  if (outcome === 'capture-error') {
+  if (outcome === "capture-error") {
     const nativeError = input.snapshot?.inbound.lastError?.trim() || detail;
-    const reason = i18n.t('session.attribution.captureErrorReason', { stage: stageLabel, nativeError: nativeError || i18n.t('session.attribution.captureErrorDefault'), context });
-    const hint = i18n.t('session.attribution.captureErrorHint');
-    return { outcome, message: `${reason}。${hint}` };
+    const reason = i18n.t("session.attribution.captureErrorReason", { stage: stageLabel, nativeError: nativeError || i18n.t("session.attribution.captureErrorDefault"), context });
+    const hint = i18n.t("session.attribution.captureErrorHint");
+    return { outcome, message: reason + "。" + hint };
   }
 
-  const reason = i18n.t('session.attribution.captureNotReadyReason', { stage: stageLabel, context });
-  const hint = i18n.t('session.attribution.captureNotReadyHint');
-  return { outcome, message: `${reason}。${hint}` };
+  const reason = i18n.t("session.attribution.captureNotReadyReason", { stage: stageLabel, context });
+  const hint = i18n.t("session.attribution.captureNotReadyHint");
+  return { outcome, message: reason + "。" + hint };
 }

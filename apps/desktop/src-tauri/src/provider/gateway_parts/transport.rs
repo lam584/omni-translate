@@ -556,6 +556,7 @@ pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool)
                         Some(
                             crate::audio::events::RealtimeProtocol::DashscopeOmni
                                 | crate::audio::events::RealtimeProtocol::DashscopeLivetranslate
+                                | crate::audio::events::RealtimeProtocol::DashscopeQwenAudio
                                 | crate::audio::events::RealtimeProtocol::DashscopeAsr
                         )
                     )
@@ -566,6 +567,7 @@ pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool)
                 }
             }
             "http" => ("http".to_string(), false),
+            "streaming-http" if provider.stream_enabled => ("streaming-http".to_string(), false),
             "streaming-http" => ("http".to_string(), true),
             _ => ("http".to_string(), true),
         },

@@ -201,7 +201,7 @@
       "dialectId": "bailian-qwen-audio-asr-task-ws-v1",
       "client": {
         "catalogKind": "event-page-h2",
-        "sourceUrl": "https://help.aliyun.com/zh/model-studio/fun-asr-client-events",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events",
         "eventTypes": [
           "run-task",
           "continue-task",
@@ -210,7 +210,7 @@
       },
       "server": {
         "catalogKind": "event-page-h2",
-        "sourceUrl": "https://help.aliyun.com/zh/model-studio/fun-asr-server-events",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events",
         "eventTypes": [
           "task-started",
           "result-generated",
@@ -495,6 +495,58 @@
           "response.done",
           "session.finished",
           "error"
+        ]
+      },
+      "framingPseudoEventTypes": {
+        "client": [],
+        "server": []
+      }
+    },
+    {
+      "dialectId": "bailian-omni-realtime-ws-v2",
+      "client": {
+        "catalogKind": "event-page-h2",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/client-events",
+        "eventTypes": [
+          "session.update",
+          "response.create",
+          "response.cancel",
+          "input_audio_buffer.append",
+          "input_audio_buffer.commit",
+          "input_audio_buffer.clear",
+          "input_image_buffer.append",
+          "conversation.item.create"
+        ]
+      },
+      "server": {
+        "catalogKind": "event-page-h2",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/server-events",
+        "eventTypes": [
+          "error",
+          "session.created",
+          "session.updated",
+          "input_audio_buffer.speech_started",
+          "input_audio_buffer.speech_stopped",
+          "input_audio_buffer.committed",
+          "input_audio_buffer.cleared",
+          "conversation.item.created",
+          "conversation.item.input_audio_transcription.delta",
+          "conversation.item.input_audio_transcription.completed",
+          "conversation.item.input_audio_transcription.failed",
+          "response.created",
+          "response.done",
+          "response.text.delta",
+          "response.text.done",
+          "response.audio.delta",
+          "response.audio.done",
+          "response.audio_transcript.delta",
+          "response.audio_transcript.done",
+          "response.function_call_arguments.delta",
+          "response.function_call_arguments.done",
+          "response.output_item.added",
+          "response.output_item.done",
+          "response.content_part.added",
+          "response.content_part.done"
         ]
       },
       "framingPseudoEventTypes": {

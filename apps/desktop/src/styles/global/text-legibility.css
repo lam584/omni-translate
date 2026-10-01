@@ -1,0 +1,53 @@
+/* Compact labels must not rely on bold glyphs at 10–12 px. The bundled
+   variable faces provide real medium/semibold weights for every UI script. */
+strong, b, h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+}
+
+/* Directory and model titles may contain dense CJK even in a Latin UI. */
+.provider-directory-item-copy strong { font-weight: 600; }
+.provider-directory-item-compact .provider-directory-item-copy strong {
+  font-size: max(.96rem, 15px);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* Short words in these components are actual UI content, not decorative marks. */
+.scenario-card-tag,
+.chain-flow-direction,
+.routing-workspace-v9 .routing-panel-kicker,
+.diagnostics-kicker,
+.diagnostics-export-scope,
+.diagnostics-primary-issue span,
+.provider-directory-item-state,
+.audio-mode-help-tag,
+.audio-level-meter-vad {
+  font-size: max(.78rem, 12.5px);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.chain-flow-segment-label,
+.routing-overview-node span,
+.benchmark-score-details summary,
+.realtime-session-page .audio-route-status-group h4,
+.glossary-table th,
+.glossary-dialog-error {
+  font-size: max(.82rem, 13px);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* Shared badges and compact headings appear throughout settings and reports. */
+.status-badge,
+.audio-level-meter-label,
+.scenario-card-titles h4,
+.scenario-card-model strong,
+.routing-feedback-head h4,
+.benchmark-section h4,
+.benchmark-history-head h3,
+.overlay-switch-row {
+  font-size: max(.84rem, 13.5px);
+  font-weight: 500;
+  line-height: 1.4;
+}

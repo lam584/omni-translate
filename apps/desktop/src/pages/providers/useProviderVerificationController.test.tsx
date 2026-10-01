@@ -9,10 +9,10 @@ import { providersPageHelpers, type ModelCatalogState } from './providersPageHel
 import { useProviderVerificationController } from './useProviderVerificationController';
 
 const runtime = vi.hoisted(() => ({
-  fetchModels: vi.fn(), getSecretStatus: vi.fn(), readSecret: vi.fn(), probe: vi.fn(), smoke: vi.fn(), saveSecret: vi.fn(),
+  fetchModels: vi.fn(), fetchMetadata: vi.fn(), getSecretStatus: vi.fn(), readSecret: vi.fn(), probe: vi.fn(), smoke: vi.fn(), saveSecret: vi.fn(),
 }));
 vi.mock('../../runtime/provider-runtime', () => ({
-  fetchProviderModels: runtime.fetchModels, getProviderSecretStatus: runtime.getSecretStatus,
+  fetchProviderModels: runtime.fetchModels, fetchProviderModelMetadata: runtime.fetchMetadata, getProviderSecretStatus: runtime.getSecretStatus,
   readProviderSecret: runtime.readSecret, runProviderProbe: runtime.probe,
   runProviderSmoke: runtime.smoke, saveProviderSecret: runtime.saveSecret,
 }));
@@ -33,6 +33,7 @@ describe('useProviderVerificationController', () => {
       const activeProvider = configDraft.providers[0]!;
       runtime.getSecretStatus.mockResolvedValue({ hasSecret: false });
       runtime.fetchModels.mockResolvedValue({ models: [], error: null, endpoint: null, fetchedAt: 'now' });
+      runtime.fetchMetadata.mockResolvedValue({ providerId: activeProvider.providerId, endpoint: 'https://example.invalid', fetchedAt: new Date().toISOString(), models: [], error: null });
       params = {
         t: ((key: string) => key) as never,
         activeProvider, activeTemplate, providerRuntimeBlocked: false, providerRuntimeStatusMessage: null,
@@ -131,6 +132,19 @@ describe('useProviderVerificationController', () => {
     expect(params.setVerificationModalOpen).toHaveBeenCalledWith(true);
   });
 
+  it('refreshes directory and metadata independently without replacing either successful cache on failure', async () => {
+    await render();
+    const original = { source: 'bailian-api' as const, endpoint: 'https://dashscope.aliyuncs.com/api/v1/models', fetchedAt: new Date().toISOString(), models: [] };
+    act(() => useAppStore.getState().updateActiveProviderDraft({ modelMetadataCache: original }));
+    runtime.fetchMetadata.mockRejectedValueOnce(new Error('metadata denied'));
+    runtime.fetchModels.mockResolvedValueOnce({ models: [{ id: 'catalog-model', displayName: 'Catalog model', ownedBy: null, createdAt: null, capabilities: [] }], error: null, endpoint: 'https://example.invalid/models', fetchedAt: 'now' });
+    await act(async () => controller.refreshModelCatalog());
+    expect(runtime.fetchMetadata).toHaveBeenCalledWith(params.activeProvider);
+    const provider = useAppStore.getState().configDraft.providers.find((item) => item.providerId === params.activeProvider.providerId)!;
+    expect(provider.modelMetadataCache).toEqual(original);
+    expect(provider.modelCatalogCache.models.map((item) => item.id)).toContain('catalog-model');
+    expect(params.setModelCatalog).toHaveBeenCalledWith(expect.objectContaining({ status: 'error', error: expect.stringContaining('metadata denied') }));
+  });
   it('keeps an already-loading matching catalog while a valid cache is present', async () => {
     const current = providersPageHelpers.createEmptyModelCatalog(params.modelCatalogSignature, 'loading');
     let nextState: ModelCatalogState = current;

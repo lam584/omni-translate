@@ -23,7 +23,7 @@ describe('profile-scoped Workspace endpoint requirement', () => {
   });
   it('leaves absent metadata and all 3.5 app host semantics unchanged', () => {
     expect(MODEL_PROTOCOL_REGISTRY.profiles.filter((profile) => profile.endpointRequirements).map((profile) => profile.profileId))
-      .toEqual(['bailian.livetranslate.3_8.realtime.ws']);
+      .toEqual(['bailian.livetranslate.3_8.realtime.ws', 'bailian.omni.3_8.realtime.ws']);
     for (const endpointHost of ['dashscope.aliyuncs.com', 'workspace-test.cn-beijing.maas.aliyuncs.com']) {
       expect(authorizeModelProtocolInvocation({ ...request, exactModelId: 'qwen3.5-livetranslate-flash-realtime', endpointHost }).ok).toBe(true);
     }

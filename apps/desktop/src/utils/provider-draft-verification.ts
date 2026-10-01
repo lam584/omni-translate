@@ -12,7 +12,7 @@ function canonicalConfiguration(value: unknown): unknown {
 
 export function providerVerificationIdentity(provider: ProviderDraft): string {
   // Exclude results/cache/UI status, so accepting a result does not invalidate itself.
-  const configuration = Object.fromEntries(Object.entries(provider).filter(([key]) => !['probe', 'status', 'modelCatalogCache'].includes(key)));
+  const configuration = Object.fromEntries(Object.entries(provider).filter(([key]) => !['probe', 'status', 'modelCatalogCache', 'modelMetadataCache'].includes(key)));
   return JSON.stringify(canonicalConfiguration(configuration));
 }
 

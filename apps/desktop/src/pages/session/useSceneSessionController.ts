@@ -63,7 +63,8 @@ type SceneLaunchOptions = {
   configDraft: AppConfigDraft;
   audioSnapshot: AudioRuntimeSnapshot;
   overlayVisible: boolean;
-  realtimeProfile: Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'>;
+  realtimeProfile: Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'> & Partial<Pick<ResolvedRealtimeProfile, 'translationExecution' | 'invocationOperation'>>;
+  outboundRealtimeProfile?: Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'> & Partial<Pick<ResolvedRealtimeProfile, 'translationExecution' | 'invocationOperation'>>;
   speechPatch: Partial<AppConfigDraft['speech']> & { enabled: boolean };
   secondarySubtitleTranslationEnabled: boolean;
 };

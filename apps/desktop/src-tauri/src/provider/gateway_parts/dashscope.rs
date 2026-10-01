@@ -1,3 +1,4 @@
+use std::io::{BufRead, BufReader};
 use std::collections::HashSet;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
@@ -96,6 +97,7 @@ pub(super) fn execute(
     let client = ProviderHttpClient::new(provider.timeout_ms)?;
     let payload = json!({
       "model": provider.model,
+      "stream": transport_effective == "streaming-http",
       "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, context.glossary_prompt),
       "temperature": provider.temperature,
       "max_tokens": provider.max_output_tokens
@@ -106,25 +108,88 @@ pub(super) fn execute(
         return Err(parse_dashscope_error(response));
     }
 
-    let value: Value = response.json().map_err(normalize_transport_error)?;
-    let text = extract_dashscope_text(&value)?;
     let mut result = new_streaming_smoke_result(
         context,
         transport_effective,
         format!("{} 已建立请求会话。", provider.display_name),
     );
-    result.first_event_latency_ms = Some(0);
-    result.transcript = text;
-    push_translation_completed(&mut result, "DashScope HTTP 返回完整文本。");
+    let started = Instant::now();
+    if transport_effective == "streaming-http" {
+        // The final JSON may be syntactically complete before the model has
+        // finished. Only the upstream terminal SSE marker commits the score.
+        let mut completed = false;
+        for raw_line in BufReader::new(response).lines() {
+            let raw_line = raw_line.map_err(|error| {
+                let code = if error.kind() == std::io::ErrorKind::TimedOut {
+                    "timeout"
+                } else {
+                    "transport.unavailable"
+                };
+                ProviderRuntimeError::new(code, format!("DashScope SSE read failed: {error}"))
+                    .retriable(true)
+            })?;
+            let line = raw_line.trim();
+            let Some(payload) = line.strip_prefix("data:") else { continue };
+            let payload = payload.trim();
+            if payload == "[DONE]" {
+                completed = true;
+                break;
+            }
+            let value: Value = serde_json::from_str(payload).map_err(|error| {
+                ProviderRuntimeError::new(
+                    "response.unparseable",
+                    format!("无法解析 DashScope SSE 事件: {error}"),
+                )
+            })?;
+            if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+                return Err(ProviderRuntimeError::new("upstream.error", message.to_string()));
+            }
+            if let Some(delta) = value.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                record_translation_delta(
+                    &mut result,
+                    &started,
+                    delta,
+                    format!("收到增量文本: {}", delta),
+                    on_delta,
+                )?;
+            }
+            if let Some(reason) = value.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
+                if reason != "stop" {
+                    return Err(ProviderRuntimeError::new(
+                        "response.incomplete",
+                        format!("DashScope SSE ended with finish_reason={reason}"),
+                    ));
+                }
+                completed = true;
+            }
+            if let (Some(input), Some(output)) = (
+                value.pointer("/usage/prompt_tokens").and_then(Value::as_u64),
+                value.pointer("/usage/completion_tokens").and_then(Value::as_u64),
+            ) {
+                record_usage_update(&mut result, input, output);
+            }
+        }
+        // EOF without a terminal marker is acceptable only for a fully
+        // validated judge object. Never stop reading merely because an
+        // intermediate chunk happens to form a valid JSON document.
+        if !completed && provider.system_prompt_template == "benchmark-semantic-judge-v1" {
+            completed = semantic_judge_json_complete(&result.transcript);
+        }
+        if !completed || result.transcript.trim().is_empty() {
+            return Err(ProviderRuntimeError::new(
+                "response.incomplete",
+                "DashScope SSE ended without a completed, non-empty response",
+            ));
+        }
+        push_translation_completed(&mut result, "DashScope 流式响应已完成。");
+    } else {
+        let value: Value = response.json().map_err(normalize_transport_error)?;
+        result.transcript = extract_dashscope_text(&value)?;
+        result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
+        push_translation_completed(&mut result, "DashScope HTTP 返回完整文本。");
+    }
     push_response_completed(&mut result);
-    result.input_tokens = value
-        .pointer("/usage/input_tokens")
-        .or_else(|| value.pointer("/usage/prompt_tokens"))
-        .and_then(Value::as_u64);
-    result.output_tokens = value
-        .pointer("/usage/output_tokens")
-        .or_else(|| value.pointer("/usage/completion_tokens"))
-        .and_then(Value::as_u64);
+
     Ok(result)
 }
 
@@ -139,6 +204,7 @@ fn execute_websocket(
         Some(
             crate::audio::events::RealtimeProtocol::DashscopeOmni
                 | crate::audio::events::RealtimeProtocol::DashscopeLivetranslate
+                                | crate::audio::events::RealtimeProtocol::DashscopeQwenAudio
                 | crate::audio::events::RealtimeProtocol::DashscopeAsr
         )
     ) {
@@ -216,8 +282,40 @@ fn execute_realtime_websocket(
     }
     Err(ProviderRuntimeError::new(
         "request.invalid",
-        "model_protocol.operation_not_supported: LiveTranslate accepts audio/image input and requires session.finish -> session.finished; the text translation gateway cannot create a conforming session",
+        "model_protocol.operation_not_supported: the selected realtime audio model cannot be invoked as a text translation worker; select an independently authorized text-translation model",
     ))
+}
+
+// At normal EOF without a terminal marker, the judge can accept one valid,
+// auditable rubric object. Parsing the entire transcript (rather than an
+// inner object) prevents a complete nested score in a truncated outer payload
+// from being mistaken for completion. The renderer remains the final scorer.
+fn semantic_judge_json_complete(transcript: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(transcript.trim()) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else { return false };
+    let Some(subscores) = object.get("subscores").and_then(Value::as_object) else {
+        return false;
+    };
+    if !["adequacy", "factsTerminology", "omissionsAdditions", "fluency"]
+        .iter()
+        .all(|key| subscores.get(*key).and_then(Value::as_f64).is_some_and(|score| score.is_finite() && (0.0..=100.0).contains(&score)))
+    {
+        return false;
+    }
+    if !object.get("rationale").and_then(Value::as_str)
+        .is_some_and(|reason| !reason.trim().is_empty())
+    {
+        return false;
+    }
+    object.get("criticalErrors").and_then(Value::as_array).is_some_and(|errors| {
+        errors.iter().all(|error| {
+            error.get("description").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+                && error.get("sourceEvidence").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+                && error.get("translationEvidence").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+        })
+    })
 }
 
 fn extract_dashscope_text(value: &Value) -> Result<String, ProviderRuntimeError> {

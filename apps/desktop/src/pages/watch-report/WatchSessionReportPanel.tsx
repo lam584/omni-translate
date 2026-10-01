@@ -203,7 +203,7 @@ export default function WatchSessionReportPanel({
   lastExportReceipt = null,
 }: Props) {
   const { t } = useTranslation();
-  const [filter, setFilter] = useState<CueFilter>('issues');
+  const [filter, setFilter] = useState<CueFilter>('all');
   const [sort, setSort] = useState<CueSort>('issues');
   const [categoryFilter, setCategoryFilter] = useState<IssueCategoryFilter>('all');
   const [actionError, setActionError] = useState<string | null>(null);
@@ -403,7 +403,23 @@ export default function WatchSessionReportPanel({
 
       {cues.length
         ? <div className="watch-report-cues">{cues.map((cue) => <CueComparison cue={cue} key={`${cue.cueId}-${cue.revision}`} />)}</div>
-        : <div className="watch-report-empty">{t('watchReport.controls.noCues')}</div>}
+        : (
+        <div className="watch-report-empty">
+          <p>{t('watchReport.controls.noCues')}</p>
+          {report.cues.length > 0 && (filter !== 'all' || categoryFilter !== 'all') ? (
+            <button
+              className="watch-report-reset-filter"
+              onClick={() => {
+                setFilter('all');
+                setCategoryFilter('all');
+              }}
+              type="button"
+            >
+              {t('watchReport.controls.all')}
+            </button>
+          ) : null}
+        </div>
+      )}
     </section>
   );
 }

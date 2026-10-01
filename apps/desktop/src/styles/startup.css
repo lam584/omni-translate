@@ -1,4 +1,6 @@
+@import '../assets/fonts/fonts.css';
 @import './global/tokens.css';
+@import './global/language-fonts.css';
 @import './global/base.css';
 @import './global/backgrounds.css';
 @import './global/buttons.css';

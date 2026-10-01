@@ -263,8 +263,15 @@ pub(crate) enum ProviderCommandV2 {
         #[ts(type = "unknown")]
         config: Value,
         model_reference: String,
+        #[serde(default)]
+        #[ts(optional)]
+        operation: Option<String>,
     },
     FetchModels {
+        #[ts(type = "unknown")]
+        provider: ProviderDraftInput,
+    },
+    FetchModelMetadata {
         #[ts(type = "unknown")]
         provider: ProviderDraftInput,
     },
@@ -305,6 +312,60 @@ pub(crate) enum ProviderCommandV2 {
     },
 }
 
+/// Preserve the resolver's fail-closed authorization at the renderer preflight
+/// boundary. UI capabilities and secondary subtitle choices cannot grant it.
+#[cfg(test)]
+fn resolve_realtime_profile_command(config: &Value, model_reference: &str) -> Result<Value, ServiceErrorV2> {
+    resolve_realtime_profile_command_for_operation(config, model_reference, None)
+}
+
+fn resolve_realtime_profile_command_for_operation(
+    config: &Value,
+    model_reference: &str,
+    operation: Option<&str>,
+) -> Result<Value, ServiceErrorV2> {
+    let provider = audio_events::resolve_model_provider_from_config_value(config, model_reference)
+        .ok_or_else(|| ServiceErrorV2::from(format!("realtime model reference cannot be resolved: {model_reference}")))?;
+    let profile = audio_events::resolve_realtime_profile_for_operation(&provider, &provider.model, operation);
+    if let Some(raw_error) = profile.model_protocol_error.as_ref() {
+        let mut error = ServiceErrorV2::from(raw_error.clone());
+        if let Some(code) = raw_error.split(':').next().filter(|code| {
+            code.starts_with("model_protocol.") || code.starts_with("provider_manifest.")
+        }) {
+            error.code = code.to_string();
+        }
+        error.details = Some(json!({
+            "rawError": raw_error,
+            "modelRole": "primary-audio",
+            "modelId": profile.model_id,
+            "providerId": profile.provider_id,
+            "modelReference": model_reference,
+        }));
+        return Err(error);
+    }
+    Ok(json!({
+        "providerId": profile.provider_id,
+        "modelId": profile.model_id,
+        "routeKind": profile.route_kind.as_str(),
+        "protocolDialect": profile.protocol_dialect.map(|protocol| protocol.as_str()),
+        "realtimeAudioMode": profile.realtime_audio_mode,
+        "inputFormat": profile.input_format,
+        "outputFormat": profile.output_format,
+        "sampleRate": profile.sample_rate,
+        "serverSegmentation": profile.server_segmentation,
+        "nativeTranslation": profile.native_translation,
+        "invocationOperation": profile.invocation_operation,
+        "translationExecution": profile.translation_execution,
+        "nativeAudioOutput": profile.native_audio_output,
+        "secondaryTranslationPolicy": profile.secondary_translation_policy,
+        "speechDispatchPolicy": profile.speech_dispatch_policy,
+        "preconnectPolicy": profile.preconnect_policy,
+        "timeoutBudgetMs": profile.timeout_budget_ms,
+        "source": profile.source.as_str(),
+        "diagnostics": profile.diagnostics,
+    }))
+}
+
 // Runs off the main thread (async) so provider network I/O cannot starve the
 // Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
@@ -317,32 +378,14 @@ pub(crate) async fn provider_v2(
     log_v2_entry(&app, "provider_v2", &request_id);
     let outcome = async {
         match command {
-            ProviderCommandV2::ResolveRealtimeProfile { config, model_reference } => {
-                let provider = audio_events::resolve_model_provider_from_config_value(&config, &model_reference)
-                    .ok_or_else(|| ServiceErrorV2::from(format!("realtime model reference cannot be resolved: {model_reference}")))?;
-                let profile = audio_events::resolve_realtime_profile(&provider, &provider.model);
-                Ok(json!({
-                    "providerId": profile.provider_id,
-                    "modelId": profile.model_id,
-                    "routeKind": profile.route_kind.as_str(),
-                    "protocolDialect": profile.protocol_dialect.map(|protocol| protocol.as_str()),
-                    "realtimeAudioMode": profile.realtime_audio_mode,
-                    "inputFormat": profile.input_format,
-                    "outputFormat": profile.output_format,
-                    "sampleRate": profile.sample_rate,
-                    "serverSegmentation": profile.server_segmentation,
-                    "nativeTranslation": profile.native_translation,
-                    "nativeAudioOutput": profile.native_audio_output,
-                    "secondaryTranslationPolicy": profile.secondary_translation_policy,
-                    "speechDispatchPolicy": profile.speech_dispatch_policy,
-                    "preconnectPolicy": profile.preconnect_policy,
-                    "timeoutBudgetMs": profile.timeout_budget_ms,
-                    "source": profile.source.as_str(),
-                    "diagnostics": profile.diagnostics,
-                }))
+            ProviderCommandV2::ResolveRealtimeProfile { config, model_reference, operation } => {
+                return resolve_realtime_profile_command_for_operation(&config, &model_reference, operation.as_deref());
             }
             ProviderCommandV2::FetchModels { provider } => {
                 to_value(provider_events::fetch_provider_models(app.clone(), provider).await)
+            }
+            ProviderCommandV2::FetchModelMetadata { provider } => {
+                to_value(provider_events::fetch_provider_model_metadata(provider).await)
             }
             ProviderCommandV2::Probe { provider } => {
                 to_value(provider_events::probe_provider(app.clone(), provider).await)
@@ -815,6 +858,133 @@ mod tests {
         RuntimeEventV2, ServiceErrorV2, ServiceResult, SessionCommandV2,
         should_refresh_live_omni_speech_config,
     };
+
+    fn realtime_preflight_config(model: &str) -> serde_json::Value {
+        serde_json::json!({
+            "providers": [{
+                "templateId": "template-dashscope-workspace",
+                "providerId": "provider-preflight-fixture",
+                "kind": "dashscope",
+                "displayName": "Preflight fixture",
+                // The composite invocation, not this saved default, owns the model.
+                "model": "qwen3.8-livetranslate-flash-realtime",
+                "baseUrl": "wss://llm-preflight.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+                "transport": "websocket",
+                "authRef": {"kind": "header", "reference": "redacted-fixture-only", "headerName": "Authorization", "scheme": "Bearer"},
+                "region": "cn-beijing",
+                "streamEnabled": true,
+                "timeoutMs": 1000,
+                "systemPromptTemplate": "",
+                "modelRegistryVersion": 2,
+                "modelCapabilityOverrides": [{
+                    "modelId": model,
+                    "capabilities": ["speech-to-text", "speech-to-speech"],
+                    "source": "user"
+                }]
+            }],
+            "devices": {"subtitleTranslationMode": "native", "subtitleTranslationModelId": ""}
+        })
+    }
+
+    #[test]
+    fn precise_bailian_primary_operations_are_executable_without_secondary_translation() {
+        for (model, operation, dialect, execution) in [
+            ("qwen3.8-omni-flash-realtime", "dialogue", "dashscope-omni", "prompted-realtime"),
+            ("qwen-audio-3.1-realtime-plus", "dialogue", "dashscope-qwen-audio", "prompted-realtime"),
+            ("qwen-audio-3.0-realtime-plus", "dialogue", "dashscope-qwen-audio", "prompted-realtime"),
+            ("qwen-audio-3.0-realtime-flash", "dialogue", "dashscope-qwen-audio", "prompted-realtime"),
+            ("qwen-audio-3.0-asr-flash-streaming", "asr", "dashscope-asr", "text-worker"),
+            ("qwen-audio-3.1-asr-flash-streaming", "asr", "dashscope-asr", "text-worker"),
+            ("qwen3.5-livetranslate-flash-realtime", "native_translate", "dashscope-livetranslate", "dedicated-realtime"),
+            ("qwen3.8-livetranslate-flash-realtime", "native_translate", "dashscope-livetranslate", "dedicated-realtime"),
+        ] {
+            let config = realtime_preflight_config(model);
+            let reference = format!("template-dashscope-workspace::{model}");
+            let result = super::resolve_realtime_profile_command_for_operation(&config, &reference, Some(operation)).unwrap();
+            assert_eq!(result["modelId"], model);
+            assert_eq!(result["invocationOperation"], operation);
+            assert_eq!(result["protocolDialect"], dialect);
+            assert_eq!(result["translationExecution"], execution);
+            assert_eq!(result["inputFormat"], "pcm");
+            if operation == "dialogue" {
+                let error = super::resolve_realtime_profile_command_for_operation(&config, &reference, Some("native_translate")).unwrap_err();
+                assert_eq!(error.code, "model_protocol.operation_not_supported");
+            }
+        }
+    }
+
+    #[test]
+    fn realtime_profile_preflight_rejects_unregistered_primary_audio() {
+        let model = "qwen3.8-omni-flash-realtime-unknown";
+        let config = realtime_preflight_config(model);
+        let reference = format!("template-dashscope-workspace::{model}");
+        let provider = crate::audio::events::resolve_model_provider_from_config_value(&config, &reference).unwrap();
+        let raw_error = crate::audio::events::resolve_realtime_profile(&provider, model)
+            .model_protocol_error.expect("resolver must reject unknown exact identity");
+        let error = super::resolve_realtime_profile_command(&config, &reference)
+            .expect_err("preflight must not turn a rejected profile into local-vad success");
+        assert_eq!(error.code, "model_protocol.model_not_registered");
+        assert_eq!(error.message, raw_error);
+        assert!(!error.retriable);
+        let error = super::attach_request_id(error, "preflight-request");
+        let details = error.details.unwrap();
+        assert_eq!(details["rawError"], raw_error);
+        assert_eq!(details["modelRole"], "primary-audio");
+        assert_eq!(details["modelId"], model);
+        assert_eq!(details["modelReference"], reference);
+        assert_eq!(details["providerId"], "provider-preflight-fixture");
+        assert_eq!(details["requestId"], "preflight-request");
+        assert!(details.get("alternate").is_none());
+    }
+
+    #[test]
+    fn realtime_profile_preflight_rejects_manifest_only_primary_audio() {
+        for model in ["qwen3.5-omni-plus-realtime", "qwen3-omni-flash-realtime"] {
+            let config = realtime_preflight_config(model);
+            let reference = format!("template-dashscope-workspace::{model}");
+            let provider = crate::audio::events::resolve_model_provider_from_config_value(&config, &reference).unwrap();
+            let raw_error = crate::audio::events::resolve_realtime_profile(&provider, model)
+                .model_protocol_error.expect("manifest-only adapter cannot authorize a route");
+            let error = super::resolve_realtime_profile_command(&config, &reference).unwrap_err();
+            assert_eq!(error.code, "model_protocol.adapter_unavailable");
+            assert_eq!(error.message, raw_error);
+            let details = error.details.unwrap();
+            assert_eq!(details["rawError"], raw_error);
+            assert_eq!(details["modelRole"], "primary-audio");
+            assert_eq!(details["modelId"], model);
+        }
+    }
+
+    #[test]
+    fn realtime_profile_preflight_preserves_livetranslate_success_without_secondary() {
+        for model in ["qwen3.5-livetranslate-flash-realtime", "qwen3.8-livetranslate-flash-realtime"] {
+            let value = super::resolve_realtime_profile_command(
+                &realtime_preflight_config(model),
+                &format!("template-dashscope-workspace::{model}"),
+            ).expect("known native translation must not require a secondary model");
+            assert_eq!(value, serde_json::json!({
+                "providerId": "provider-preflight-fixture",
+                "modelId": model,
+                "routeKind": "omni",
+                "protocolDialect": "dashscope-livetranslate",
+                "realtimeAudioMode": "server_vad",
+                "inputFormat": "pcm",
+                "outputFormat": "pcm",
+                "sampleRate": 16000,
+                "serverSegmentation": true,
+                "nativeTranslation": true,
+                "invocationOperation": "native_translate",
+                "translationExecution": "dedicated-realtime",
+                "nativeAudioOutput": true,
+                "secondaryTranslationPolicy": "native",
+                "speechDispatchPolicy": "native-audio",
+                "preconnectPolicy": "allowed",
+                "timeoutBudgetMs": 95000,
+                "source": "manifest",
+                "diagnostics": []
+            }));
+        }
+    }
 
     #[test]
     fn persisted_config_save_preserves_a_diagnostic_runtime_speech_config() {

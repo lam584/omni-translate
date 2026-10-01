@@ -9,6 +9,8 @@ export type {
   CredentialRefStatus,
   CredentialSecretPayload,
   ProviderModelCatalogRuntime,
+  ProviderModelMetadataRuntime,
+  BailianModelMetadataRuntime,
   ProviderModelRuntime,
   ProviderProbeCheckRuntime,
   ProviderProbeProfileRuntime,

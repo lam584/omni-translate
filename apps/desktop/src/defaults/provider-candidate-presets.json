@@ -1,0 +1,13 @@
+{
+  "template-dashscope-workspace": {
+    "text-processing": ["qwen3.8-flash"],
+    "audio-understanding": ["qwen3.8-livetranslate-flash-realtime"],
+    "realtime-multimodal": [
+      "qwen3.8-livetranslate-flash-realtime",
+      "qwen3.8-omni-flash-realtime"
+    ]
+  },
+  "template-deepseek": {
+    "text-processing": ["deepseek-v4.1-flash"]
+  }
+}

@@ -351,6 +351,7 @@
     "feedbackProcessExclusionFailed": "प्रक्रिया-बहिष्करण क्षमता जांच विफल: {{detail}}",
     "feedbackProcessExclusionProbing": "प्रक्रिया-बहिष्करण समर्थन की अभी तक पुष्टि नहीं की गई है। चयन के बाद, वॉच शुरू होने पर ब्रिज जांच पूरी करता है; जांच तैयार होने तक कब्जा शुरू नहीं होगा।",
     "feedbackNoneSelected": "लीगेसी नो-फीडबैक-कंट्रोल सेटिंग अभी भी चयनित है। जब तक आप स्पष्ट रूप से प्रक्रिया बहिष्करण, वर्चुअल ड्राइवर, या इको रद्दीकरण नहीं चुनते, तब तक वॉच अनुवादित भाषण के साथ शुरू नहीं हो सकती।",
+    "modelNeedsReselection": "Choose a model again",
     "pageTitle": "ऑडियो रूटिंग",
     "pageSubtitle": "सफ़ेद सतह · एम्बेडेड फ़्लो · एकल मॉडल प्रविष्टि · लाइव सेव · मोबाइल-अनुकूल",
     "overviewAria": "ऑडियो रूट अवलोकन",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "वाक् पहचान · अनुवाद · वाक्",
     "micTestUnsupported": "Current desktop runtime does not support microphone testing",
     "directionListen": "Listen",
-    "directionSpeak": "Speak"
+    "directionSpeak": "Speak",
+    "scenarioPrimaryTextTitle": "प्राथमिक टेक्स्ट मॉडल",
+    "scenarioPrimaryTextCaption": "भाषण पहचान पाइपलाइन के लिए आधार पाठ अनुवाद",
+    "primaryTextModelRequired": "वर्तमान वॉयस मॉडल के लिए बेस टेक्स्ट ट्रांसलेशन मॉडल चुनना आवश्यक है"
   },
   "overlay": {
     "bootstrapFailed": "उपशीर्षक ओवरले शुरू नहीं हो सका",
@@ -876,6 +880,7 @@
       "scenarioBadge": "Scenario दृश्य: {{scenario}}",
       "editCapabilitiesTitle": "क्षमता रजिस्ट्री संपादित करें",
       "refreshTitle": "मॉडल कैटलॉग रीफ़्रेश करें",
+      "loading": "Loading models and capability data…",
       "closeTitle": "मॉडल सूची बंद करें",
       "allScenarios": "सभी",
       "searchPlaceholder": "मॉडल खोजें...",
@@ -981,6 +986,28 @@
       "secretPlaceholder": "सीक्रेट",
       "hideSecret": "सीक्रेट छिपाएँ",
       "showSecret": "सीक्रेट दिखाएँ"
+    },
+    "metadata": {
+      "title": "Bailian model directory metadata",
+      "refresh": "Refresh metadata",
+      "refreshing": "Refreshing metadata...",
+      "lastUpdated": "Updated {{date}} · {{count}} models",
+      "notFetched": "No live metadata fetched yet",
+      "refreshFailed": "Refresh failed: {{error}}"
+    },
+    "candidateModels": {
+      "title": "Candidate models by capability",
+      "groups": {
+        "text-processing": "Text processing and translation",
+        "audio-understanding": "Speech recognition and understanding",
+        "audio-generation": "Speech generation",
+        "realtime-multimodal": "Realtime speech and multimodal"
+      },
+      "inputModalities": "Input: {{modalities}}",
+      "outputModalities": "Output: {{modalities}}",
+      "modelId": "Model ID for {{group}}",
+      "placeholder": "Choose a catalog model or enter its ID",
+      "remove": "Remove {{model}} from {{group}}"
     },
     "sceneModels": {
       "title": "दृश्य मॉडल",

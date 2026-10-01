@@ -58,6 +58,8 @@ pub(crate) fn start_translate(
     store: &AudioStateStore,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    // Fail before announcing/starting a worker or making any provider call.
+    resolve_primary_text_provider(&config)?;
     stop_translate(app.clone(), store)?;
 
     let snapshot = store.snapshot();
@@ -205,7 +207,7 @@ fn run_translate_worker(
         result_tx,
         result_rx,
     };
-    let config = load_translate_config(&storage, &initial_config);
+    let config = load_translate_config(&storage, &initial_config)?;
     let mut state = TranslateWorkerState::new(config, store.reconnect_generation());
     run_translate_loop(&app, store, &storage, &initial_config, channels, &mut state)
 }
@@ -223,7 +225,7 @@ fn run_translate_loop(
             break;
         }
 
-        prepare_translate_iteration(app, store, storage, initial_config, state);
+        prepare_translate_iteration(app, store, storage, initial_config, state)?;
         handle_translate_updates(app, store, &channels.result_rx, state)?;
         enqueue_pending_cues(app, store, state)?;
         state
@@ -245,7 +247,7 @@ fn run_translate_loop(
     Ok(())
 }
 
-fn load_translate_config(storage: &StorageStateStore, initial_config: &Value) -> TranslateConfig {
+fn load_translate_config(storage: &StorageStateStore, initial_config: &Value) -> Result<TranslateConfig, String> {
     TranslateConfig::from_value(
         &storage
             .load_config()
@@ -259,7 +261,7 @@ fn prepare_translate_iteration(
     storage: &StorageStateStore,
     initial_config: &Value,
     state: &mut TranslateWorkerState,
-) {
+) -> Result<(), String> {
     state.loop_count += 1;
 
     // A reconnect bumped the generation: the stale `processed` entries
@@ -287,7 +289,7 @@ fn prepare_translate_iteration(
     }
 
     if state.config_refreshed_at.elapsed() >= Duration::from_millis(TRANSLATE_POLL_INTERVAL_MS) {
-        state.config = load_translate_config(storage, initial_config);
+        state.config = load_translate_config(storage, initial_config)?;
         state
             .scheduler
             .set_max_concurrent(state.config.max_concurrent_requests);
@@ -319,6 +321,7 @@ fn prepare_translate_iteration(
             None,
         );
     }
+    Ok(())
 }
 
 fn handle_translate_updates(
@@ -730,6 +733,95 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
         .expect("failed to spawn translate task");
 }
 
+fn primary_text_model_error(reference: &str, model: Option<&str>, provider: Option<&str>, detail: &str) -> String {
+    let context = serde_json::json!({
+        "modelRole": "primary-text", "modelReference": reference,
+        "modelId": model, "providerId": provider,
+    });
+    super::omni::session_errors::with_error_markers(
+        &format!("{detail} | modelContext: {context}"),
+        super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
+    )
+}
+
+// This is only an endpoint projection for a runtime copy whose exact text
+// model has already been admitted. It cannot grant a voice/text operation or
+// repair custom/insecure URLs. Keep the shared persisted audio endpoint intact.
+fn dashscope_shared_websocket_text_base_url(base_url: &str) -> Option<String> {
+    let mut endpoint = url::Url::parse(base_url).ok()?;
+    if !matches!(endpoint.scheme(), "https" | "wss") || !endpoint.username().is_empty()
+        || endpoint.password().is_some() || endpoint.port().is_some()
+        || endpoint.query().is_some() || endpoint.fragment().is_some() {
+        return None;
+    }
+    let host = endpoint.host_str()?;
+    let official_host = matches!(host, "dashscope.aliyuncs.com" | "dashscope-intl.aliyuncs.com")
+        || [".cn-beijing.maas.aliyuncs.com", ".ap-southeast-1.maas.aliyuncs.com"].iter().any(|suffix| {
+            host.strip_suffix(suffix).is_some_and(|label| {
+                !label.is_empty() && label.len() <= 63
+                    && label.as_bytes()[0].is_ascii_alphanumeric()
+                    && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                    && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+        });
+    if !official_host || ![
+        "", "/api/v1", "/compatible-mode/v1", "/api-ws/v1/realtime", "/api-ws/v1/inference",
+    ].contains(&endpoint.path().trim_end_matches('/')) {
+        return None;
+    }
+    endpoint.set_scheme("https").ok()?;
+    endpoint.set_path("/compatible-mode/v1");
+    Some(endpoint.to_string())
+}
+
+/// Resolve only the independent primary reference. Admission checks happen
+/// before both startup and every hot reload; the gateway rechecks the actual
+/// operation at its provider-access boundary. Audio/native-translate authority
+/// is never a substitute for a text-translation binding.
+pub(crate) fn resolve_primary_text_provider(config: &Value) -> Result<ProviderDraftInput, String> {
+    let reference = config.pointer("/devices/primaryTextTranslationModelId")
+        .and_then(Value::as_str).unwrap_or("");
+    let (value, model_id) = crate::storage::repository::resolve_exact_model_value(config, reference)
+        .ok_or_else(|| primary_text_model_error(reference, None, None,
+            "primary text translation requires one enabled, exact model reference"))?;
+    let mut provider: ProviderDraftInput = serde_json::from_value(value.clone())
+        .map_err(|error| primary_text_model_error(reference, Some(&model_id), None, &error.to_string()))?;
+    provider.model = model_id;
+    let error = |detail: &str| primary_text_model_error(reference, Some(&provider.model), Some(&provider.provider_id), detail);
+    match crate::provider::provider_manifest::authorize_provider_operation_for_model(
+        &provider, &provider.model, "text-translation",
+    ).map_err(|detail| error(&detail))? {
+        Some(authority) => {
+            if authority.adapter_id != "openai-compatible-http" {
+                return Err(error("text-translation requires an executable HTTP text adapter"));
+            }
+            Ok(authority.provider_for_connection(&provider))
+        }
+        // Legacy DashScope HTTP is admitted by the same exact text-generation
+        // declaration used by its gateway adapter, not the voice authorizer.
+        None if provider.kind == "dashscope" => {
+            let voice_profiles = crate::provider::model_protocol_profile::lookup_model_protocol_profiles_for_inspection(&provider.model)
+                .map_err(|detail| error(&detail.to_string()))?;
+            let text = provider.local_model_capability_registry.iter().any(|entry| {
+                entry.model_id == provider.model && entry.capabilities.iter().any(|cap| cap == "text-generation")
+            });
+            if !text || !voice_profiles.is_empty() || !matches!(provider.transport.as_str(), "http" | "streaming-http" | "websocket") {
+                return Err(error("model is not admitted for DashScope HTTP text-translation"));
+            }
+            // A text-only worker executes HTTP even if its shared provider uses
+            // WebSocket for a separate audio model. Never invoke a voice route.
+            if provider.transport == "websocket" {
+                if let Some(base_url) = dashscope_shared_websocket_text_base_url(&provider.base_url) {
+                    provider.base_url = base_url;
+                }
+            }
+            provider.transport = if provider.stream_enabled { "streaming-http" } else { "http" }.to_string();
+            Ok(provider)
+        }
+        None => Err(error("model has no executable text-translation binding")),
+    }
+}
+
 struct TranslateConfig {
     provider: ProviderDraftInput,
     glossary_catalog: GlossaryCatalog,
@@ -761,10 +853,8 @@ impl TranslateConfig {
     }
 }
 
-/// Builds an empty [`ProviderDraftInput`] placeholder with the given request
-/// timeout. Used as the last-resort fallback when no provider resolves from the
-/// config, and by tests that need a minimal provider. The static JSON literal
-/// is guaranteed to match the struct shape, so parse failure is unreachable.
+/// Minimal scheduler test fixture. Production never substitutes an empty provider.
+#[cfg(test)]
 fn placeholder_provider_draft(timeout_ms: u64) -> ProviderDraftInput {
     serde_json::from_value(serde_json::json!({
         "templateId": "",
@@ -783,23 +873,8 @@ fn placeholder_provider_draft(timeout_ms: u64) -> ProviderDraftInput {
 }
 
 impl TranslateConfig {
-    fn from_value(config: &Value) -> Self {
-        // Try to resolve the subtitle translation model first; fall back to first provider.
-        let mut provider = config
-            .pointer("/devices/subtitleTranslationModelId")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .and_then(|model_id| {
-                super::events::resolve_model_provider_from_config_value(config, model_id)
-            })
-            .or_else(|| {
-                config
-                    .get("providers")
-                    .and_then(Value::as_array)
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| serde_json::from_value::<ProviderDraftInput>(v.clone()).ok())
-            })
-            .unwrap_or_else(|| placeholder_provider_draft(30_000));
+    fn from_value(config: &Value) -> Result<Self, String> {
+        let mut provider = resolve_primary_text_provider(config)?;
         let source_language = config
             .pointer("/subtitles/sourceLanguage")
             .and_then(Value::as_str)
@@ -847,7 +922,7 @@ impl TranslateConfig {
         // provider HTTP timeout so a hung request frees its scheduler slot on
         // schedule instead of holding it for the provider's own budget.
         provider.timeout_ms = request_timeout_ms;
-        Self {
+        Ok(Self {
             provider,
             glossary_catalog: GlossaryCatalog::from_config(config),
             source_language,
@@ -856,7 +931,7 @@ impl TranslateConfig {
             outbound_target_language,
             max_concurrent_requests,
             request_timeout_ms,
-        }
+        })
     }
 }
 
@@ -864,6 +939,162 @@ impl TranslateConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn translate_test_config(mut config: Value) -> Value {
+        config["devices"] = json!({ "primaryTextTranslationModelId": "template-custom-text::text-model" });
+        config["providers"] = json!([{
+            "templateId": "template-custom-text", "providerId": "custom-text", "kind": "openai-compatible",
+            "displayName": "Text", "model": "text-model", "baseUrl": "https://example.com/v1",
+            "transport": "streaming-http", "streamEnabled": true, "timeoutMs": 30000,
+            "authRef": { "kind": "secret", "reference": "key", "headerName": "Authorization", "scheme": "bearer" },
+            "systemPromptTemplate": "", "modelRegistryVersion": 2,
+            "modelProtocolBindings": [{
+                "modelId": "text-model", "operation": "text-translation", "profileOwnerProviderId": "openai",
+                "manifestVersion": 3, "profileId": "openai.chat-completions.sse.ga", "profileVersion": 1,
+                "authProfileId": "openai.auth.bearer-header"
+            }]
+        }]);
+        config
+    }
+
+    #[test]
+    fn primary_text_configuration_rejects_invalid_references_without_first_or_secondary_fallback() {
+        for reference in [None, Some(""), Some("missing::model"), Some("template-custom-text::missing"), Some(" text-model ")] {
+            let mut config = translate_test_config(json!({}));
+            config["devices"]["subtitleTranslationModelId"] = json!("template-custom-text::text-model");
+            match reference {
+                Some(reference) => config["devices"]["primaryTextTranslationModelId"] = json!(reference),
+                None => { config["devices"].as_object_mut().unwrap().remove("primaryTextTranslationModelId"); }
+            }
+            let error = TranslateConfig::from_value(&config).err().expect("invalid primary must fail before provider access");
+            assert!(error.contains("\"modelRole\":\"primary-text\""), "{error}");
+            assert!(error.contains("session.model-reference-invalid"));
+        }
+    }
+
+    #[test]
+    fn primary_text_selects_actual_bound_model_not_first_provider_or_secondary_model() {
+        let mut config = translate_test_config(json!({}));
+        config["devices"]["subtitleTranslationModelId"] = json!("first::audio-only");
+        let mut first = config["providers"][0].clone();
+        first["templateId"] = json!("first");
+        first["providerId"] = json!("first-provider");
+        first["model"] = json!("audio-only");
+        config["providers"].as_array_mut().unwrap().insert(0, first);
+        config["providers"][1]["model"] = json!("provider-default-is-not-selected");
+        let resolved = TranslateConfig::from_value(&config).expect("exact bound candidate is executable");
+        assert_eq!(resolved.provider.provider_id, "custom-text");
+        assert_eq!(resolved.provider.model, "text-model");
+    }
+
+    #[test]
+    fn primary_text_rejects_disabled_and_wrong_operation_or_profile_bindings() {
+        for case in 0..4 {
+            let mut config = translate_test_config(json!({}));
+            match case {
+                0 => config["providers"][0]["enabled"] = json!(false),
+                1 => config["providers"][0]["modelProtocolBindings"][0]["operation"] = json!("realtime-conversation"),
+                2 => config["providers"][0]["modelProtocolBindings"][0]["profileVersion"] = json!(999),
+                _ => config["providers"][0]["modelProtocolBindings"][0]["profileId"] = json!("openai.realtime.conversation.websocket.ga"),
+            }
+            assert!(TranslateConfig::from_value(&config).is_err(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn primary_text_dashscope_legacy_text_admission_never_uses_voice_authority() {
+        let mut config = translate_test_config(json!({}));
+        let provider = &mut config["providers"][0];
+        provider["templateId"] = json!("legacy-dashscope");
+        provider["kind"] = json!("dashscope");
+        provider["modelProtocolBindings"] = json!([]);
+        provider["localModelCapabilityRegistry"] = json!([{ "id": "text", "modelId": "qwen-plus", "capabilities": ["text-generation"] }]);
+        config["devices"]["primaryTextTranslationModelId"] = json!("legacy-dashscope::qwen-plus");
+        let resolved = TranslateConfig::from_value(&config).expect("HTTP text needs no voice operation");
+        assert_eq!(resolved.provider.model, "qwen-plus");
+        assert_eq!(resolved.provider.transport, "streaming-http");
+        config["devices"]["primaryTextTranslationModelId"] = json!("legacy-dashscope::qwen3.5-omni-flash-realtime");
+        assert!(TranslateConfig::from_value(&config).is_err());
+    }
+
+    fn legacy_dashscope_text_config(base_url: &str, stream_enabled: bool) -> Value {
+        let mut config = translate_test_config(json!({}));
+        let provider = &mut config["providers"][0];
+        provider["templateId"] = json!("legacy-dashscope");
+        provider["kind"] = json!("dashscope");
+        provider["model"] = json!("qwen-audio-3.1-asr-flash-streaming");
+        provider["baseUrl"] = json!(base_url);
+        provider["transport"] = json!("websocket");
+        provider["streamEnabled"] = json!(stream_enabled);
+        provider["region"] = json!(if base_url.contains("dashscope-intl.aliyuncs.com") || base_url.contains(".ap-southeast-1.maas.aliyuncs.com") { "ap-southeast-1" } else { "cn-beijing" });
+        provider["modelProtocolBindings"] = json!([]);
+        provider["localModelCapabilityRegistry"] = json!([{
+            "id": "legacy-text", "modelId": "qwen-plus", "capabilities": ["text-generation"]
+        }]);
+        config["devices"]["primaryTextTranslationModelId"] = json!("legacy-dashscope::qwen-plus");
+        config["devices"]["subtitleTranslationModelId"] = json!("other::secondary-text");
+        config
+    }
+
+    #[test]
+    fn primary_text_shared_dashscope_websocket_endpoints_use_https_compatible_runtime_copy() {
+        for host in [
+            "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com",
+            "workspace.cn-beijing.maas.aliyuncs.com", "workspace.ap-southeast-1.maas.aliyuncs.com",
+        ] {
+            for scheme in ["wss", "https"] {
+                for path in ["/api-ws/v1/realtime", "/api-ws/v1/inference", "/api-ws/v1/realtime/", "/api-ws/v1/inference/"] {
+                    for stream_enabled in [true, false] {
+                        let base_url = format!("{scheme}://{host}{path}");
+                        let config = legacy_dashscope_text_config(&base_url, stream_enabled);
+                        let before = config.clone();
+                        let resolved = resolve_primary_text_provider(&config).expect("valid exact legacy text model");
+                        assert_eq!(resolved.base_url, format!("https://{host}/compatible-mode/v1"));
+                        assert_eq!(resolved.transport, if stream_enabled { "streaming-http" } else { "http" });
+                        assert_eq!(resolved.model, "qwen-plus");
+                        assert_eq!(resolved.region.as_deref(), config["providers"][0]["region"].as_str());
+                        assert_eq!(resolved.auth_ref.reference, "key");
+                        assert_eq!(config, before, "normalization must not change the saved shared provider/config");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn primary_text_websocket_normalization_does_not_repair_untrusted_urls_or_override_http_bindings() {
+        for base_url in [
+            "wss://dashscope.aliyuncs.com.evil.test/api-ws/v1/realtime",
+            "wss://workspace.cn-beijing.maas.aliyuncs.com.evil.test/api-ws/v1/inference",
+            "wss://nested.workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+            "wss://cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+            "wss://user:password@dashscope.aliyuncs.com/api-ws/v1/realtime",
+            "wss://dashscope.aliyuncs.com:8443/api-ws/v1/inference",
+            "ws://dashscope.aliyuncs.com/api-ws/v1/realtime",
+            "http://dashscope.aliyuncs.com/api-ws/v1/inference",
+            "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?token=secret",
+            "wss://dashscope.aliyuncs.com/api-ws/v1/inference#fragment",
+            "wss://dashscope.aliyuncs.com/unapproved/path",
+        ] {
+            let config = legacy_dashscope_text_config(base_url, true);
+            let resolved = resolve_primary_text_provider(&config).unwrap();
+            assert_eq!(resolved.base_url, base_url, "must not confer an official HTTPS endpoint on {base_url}");
+        }
+        let config = translate_test_config(json!({}));
+        let resolved = resolve_primary_text_provider(&config).unwrap();
+        assert_eq!(resolved.base_url, "https://example.com/v1", "an explicit HTTP text binding keeps its authorized endpoint");
+    }
+
+    #[test]
+    fn primary_text_shared_websocket_endpoint_does_not_grant_missing_text_capability() {
+        for path in ["/api-ws/v1/realtime", "/api-ws/v1/inference"] {
+            let mut config = legacy_dashscope_text_config(&format!("wss://dashscope.aliyuncs.com{path}"), true);
+            config["providers"][0]["localModelCapabilityRegistry"] = json!([]);
+            let error = resolve_primary_text_provider(&config).unwrap_err();
+            assert!(error.contains("primary-text"));
+            assert!(error.contains("session.model-reference-invalid"));
+        }
+    }
 
     #[test]
     fn translate_config_selects_language_pair_by_cue_direction() {
@@ -876,7 +1107,7 @@ mod tests {
                 "outboundTargetLanguage": ""
             }
         });
-        let translate_config = TranslateConfig::from_value(&config);
+        let translate_config = TranslateConfig::from_value(&translate_test_config(config)).expect("valid primary text config");
         // Inbound: subtitle source -> user target.
         let (inbound_src, inbound_tgt) = translate_config.languages_for_direction("inbound");
         assert_eq!(inbound_src, "en");
@@ -898,7 +1129,7 @@ mod tests {
                 "outboundTargetLanguage": ""
             }
         });
-        let translate_config = TranslateConfig::from_value(&config);
+        let translate_config = TranslateConfig::from_value(&translate_test_config(config)).expect("valid primary text config");
         let (_, outbound_tgt) = translate_config.languages_for_direction("outbound");
         assert_eq!(outbound_tgt, "en");
     }
@@ -961,7 +1192,7 @@ mod tests {
                 "translateWorkerRequestTimeoutMs": 12000
             }
         });
-        let translate_config = TranslateConfig::from_value(&config);
+        let translate_config = TranslateConfig::from_value(&translate_test_config(config)).expect("valid primary text config");
         assert_eq!(translate_config.max_concurrent_requests, 5);
         assert_eq!(translate_config.request_timeout_ms, 12_000);
         // The worker timeout is authoritative: it caps the provider HTTP
@@ -980,7 +1211,7 @@ mod tests {
                 "translateWorkerRequestTimeoutMs": 200
             }
         });
-        let translate_config = TranslateConfig::from_value(&config);
+        let translate_config = TranslateConfig::from_value(&translate_test_config(config)).expect("valid primary text config");
         assert_eq!(
             translate_config.max_concurrent_requests,
             DEFAULT_MAX_CONCURRENT_TRANSLATIONS as usize
@@ -996,7 +1227,7 @@ mod tests {
             "providers": [],
             "subtitles": { "translateWorkerMaxConcurrentRequests": 64 }
         });
-        let translate_config = TranslateConfig::from_value(&config);
+        let translate_config = TranslateConfig::from_value(&translate_test_config(config)).expect("valid primary text config");
         assert_eq!(
             translate_config.max_concurrent_requests,
             MAX_CONCURRENT_TRANSLATIONS_CEILING as usize

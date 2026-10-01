@@ -164,6 +164,8 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<provider::ProviderSmokeResult>(),
                     decl::<provider::ProviderModelRuntime>(),
                     decl::<provider::ProviderModelCatalogRuntime>(),
+                    decl::<provider::BailianModelMetadataRuntime>(),
+                    decl::<provider::ProviderModelMetadataRuntime>(),
                     decl::<storage::CredentialRefStatus>(),
                     decl::<storage::CredentialSecretPayload>(),
                     decl::<crate::CredentialDirectResultEvent>(),

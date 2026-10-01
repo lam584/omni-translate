@@ -1198,3 +1198,9 @@
   margin-bottom:4px;
 }
 
+
+.provider-catalog-progress { display: grid; gap: 0.35rem; margin: 0.5rem 0; font-size: 0.875rem; }
+.provider-catalog-progress-track { overflow: hidden; height: 4px; border-radius: 4px; background: var(--border-color, #6666); }
+.provider-catalog-progress-track span { display: block; width: 35%; height: 100%; background: currentColor; animation: provider-catalog-loading 1.2s ease-in-out infinite alternate; }
+@keyframes provider-catalog-loading { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) { .provider-catalog-progress-track span { animation: none; width: 100%; } }

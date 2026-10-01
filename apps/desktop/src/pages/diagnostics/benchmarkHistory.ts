@@ -67,12 +67,32 @@ function isBenchmarkReport(value: unknown): value is BenchmarkReport {
 }
 
 /** Decodes the native JSON payload at the renderer boundary. */
+function normalizeBenchmarkReport(report: BenchmarkReport): BenchmarkReport {
+  return {
+    ...report,
+    runs: report.runs.map((run) => {
+      const audioStartedAtMs = run.audioStartedAtMs ?? 0;
+      const audioStartOrigin = run.audioStartOrigin ?? (run.audioDurationSecs > 0 ? 'provider-offset' : null);
+      const audioToRenderFirstMs = run.audioToRenderFirstMs ?? run.firstOutputMs ?? run.timeToFirstTokenMs ?? null;
+      const audioToRenderFinalMs = run.audioToRenderFinalMs ?? run.firstCommittedMs ?? run.timeToFirstCommittedMs ?? run.responseDoneMs ?? null;
+      return {
+        ...run,
+        audioStartedAtMs,
+        audioStartOrigin,
+        audioToRenderFirstMs,
+        audioToRenderFinalMs,
+      };
+    }),
+  };
+}
+
+/** Decodes the native JSON payload at the renderer boundary. */
 export function benchmarkHistoryRecordFromNative(record: NativeBenchmarkHistoryRecord): BenchmarkHistoryRecord {
   return {
     ...record,
     runStatus: record.runStatus as BenchmarkRunStatus,
     scoreStatus: record.scoreStatus as BenchmarkScoreStatus,
-    report: isBenchmarkReport(record.report) ? record.report : null,
+    report: isBenchmarkReport(record.report) ? normalizeBenchmarkReport(record.report) : null,
   };
 }
 

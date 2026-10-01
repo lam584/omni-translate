@@ -758,19 +758,23 @@ pub(crate) fn admit_model_protocol_event(
         profile.model_audio.as_ref().map(|audio| &audio.output),
         &dialect.audio_output,
     );
+    let realtime_codec = if matches!(authorization.adapter_id.as_str(), "desktop-omni-session-v2" | "desktop-qwen-audio-session-v1") { "pcm" } else { "pcm16" };
     let expected_adapter_audio = match authorization.adapter_id.as_str() {
-        "desktop-livetranslate-session-v1" | "desktop-livetranslate-session-v2" => Some((
-            AuthorizedModelProtocolAudioSpec {
-                codec: "pcm16".to_string(),
+        "desktop-livetranslate-session-v1" | "desktop-livetranslate-session-v2"
+            | "desktop-omni-session-v2" | "desktop-qwen-audio-session-v1" => Some((
+            Some(AuthorizedModelProtocolAudioSpec {
+                codec: realtime_codec.to_string(),
                 sample_rate_hz: 16_000,
                 channels: 1,
-            },
-            AuthorizedModelProtocolAudioSpec {
-                codec: "pcm16".to_string(),
+            }),
+            Some(AuthorizedModelProtocolAudioSpec {
+                codec: realtime_codec.to_string(),
                 sample_rate_hz: 24_000,
                 channels: 1,
-            },
+            }),
         )),
+        "desktop-qwen-audio-task-asr-v1" => Some((Some(AuthorizedModelProtocolAudioSpec { codec: "pcm".to_string(), sample_rate_hz:16_000, channels:1 }), None)),
+        "desktop-qwen-audio-task-tts-v1" => Some((None, Some(AuthorizedModelProtocolAudioSpec { codec: "pcm".to_string(), sample_rate_hz:24_000, channels:1 }))),
         _ => None,
     };
     if registry.registry_version != authorization.registry_version
@@ -817,8 +821,8 @@ pub(crate) fn admit_model_protocol_event(
         || expected_audio_input_constraint != authorization.audio_input_constraint
         || expected_audio_output_constraint != authorization.audio_output_constraint
         || expected_adapter_audio.as_ref().is_none_or(|(input, output)| {
-            authorization.requested_audio_input.as_ref() != Some(input)
-                || authorization.requested_audio_output.as_ref() != Some(output)
+            authorization.requested_audio_input.as_ref() != input.as_ref()
+                || authorization.requested_audio_output.as_ref() != output.as_ref()
         })
         || profile.adapter.status != "enabled"
         || profile.adapter.adapter_id.as_deref() != Some(authorization.adapter_id.as_str())

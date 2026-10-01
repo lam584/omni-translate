@@ -34,9 +34,9 @@ use realtime_session::should_wait_for_omni_session_readiness;
 pub(crate) use route_config::resolve_model_provider_from_config_value;
 pub(crate) use route_config::resolve_composite_template_provider;
 pub(crate) use route_config::subtitle_source_language_or_english;
-pub(crate) use route_config::{resolve_realtime_profile, RealtimeProtocol};
+pub(crate) use route_config::{resolve_realtime_profile, resolve_realtime_profile_for_operation, RealtimeProtocol};
 pub(crate) use route_config::{
-    authorize_bailian_model_operation, authorize_bailian_native_translate,
+    authorize_bailian_model_operation, authorize_bailian_native_translate, authorize_bailian_realtime,
 };
 pub(crate) use route_config::is_livetranslate_route_model;
 #[cfg(test)]
@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_audio_incompatible_operation_fails_before_watch_turn_policy() {
+    fn qwen_audio_missing_region_fails_before_watch_turn_policy() {
         let mut value = provider_value(
             "template-dashscope-realtime",
             "dashscope",
@@ -631,7 +631,7 @@ mod tests {
         assert!(watch_plan
             .configuration_error
             .as_deref()
-            .is_some_and(|error| error.contains("model_protocol.operation_not_supported")));
+            .is_some_and(|error| error.contains("model_protocol.region_not_supported")));
 
         let game_plan = ResolvedRoutePlan::from_resolved_provider(
             "inbound",
@@ -1194,18 +1194,19 @@ mod tests {
             "template-dashscope-realtime",
             "dashscope",
             "dashscope",
-            "qwen-audio-3.0-realtime-plus",
+            "qwen3.5-omni-plus-realtime",
             "https://dashscope.aliyuncs.com/api/v1",
             "websocket",
             "dashscope",
         );
+        value["region"] = json!("cn-beijing");
         let config = json!({
             "devices": { "routeMode": "watch" },
             "subtitles": { "targetLanguage": "zh-CN" }
         });
 
-        // A model name is not wire authority. Qwen Audio is present in the
-        // manifest, but its Desktop adapter is not enabled for native translate.
+        // A catalog-only exact model remains non-executable; local capability
+        // hints must not grant an adapter after other families become enabled.
         let plain: ProviderDraftInput =
             serde_json::from_value(value.clone()).expect("provider should parse");
         let plan = ResolvedRoutePlan::from_resolved_provider(
@@ -1220,13 +1221,13 @@ mod tests {
         assert!(plan
             .configuration_error
             .as_deref()
-            .is_some_and(|error| error.contains("model_protocol.operation_not_supported")));
+            .is_some_and(|error| error.contains("model_protocol.adapter_unavailable")));
 
         // A local protocol string without the immutable profile declaration is
         // likewise incapable of authorizing the route.
         value["localModelCapabilityRegistry"] = json!([{
             "id": "registry-audio-realtime",
-            "modelId": "qwen-audio-3.0-realtime-plus",
+            "modelId": "qwen3.5-omni-plus-realtime",
             "capabilities": ["speech-to-speech"],
             "realtimeProtocol": "dashscope-omni",
             "realtimeAudioMode": "server_vad",
@@ -1251,7 +1252,7 @@ mod tests {
         // STT-only registry entries must not be promoted.
         value["localModelCapabilityRegistry"] = json!([{
             "id": "registry-audio-realtime",
-            "modelId": "qwen-audio-3.0-realtime-plus",
+            "modelId": "qwen3.5-omni-plus-realtime",
             "capabilities": ["speech-to-text"],
             "realtimeProtocol": "dashscope-asr",
             "realtimeAudioMode": "server_vad",
@@ -1510,6 +1511,44 @@ mod tests {
         assert!(!plan.session_reuse_key.subtitle_translate_active);
     }
 
+    #[test]
+    fn optional_secondary_subtitles_fall_back_without_losing_saved_reference() {
+        let voice_value = bailian_livetranslate_provider_value(Some("server_vad"));
+        let text_value = provider_value(
+            "template-deepseek", "deepseek", "openai-compatible", "deepseek-chat",
+            "https://api.deepseek.com/v1", "streaming-http", "deepseek",
+        );
+        let voice_provider: ProviderDraftInput =
+            serde_json::from_value(voice_value.clone()).expect("voice provider");
+        let selected = "template-deepseek::deepseek-chat";
+        for (case, mode, model, providers, speech_enabled, expected_active) in [
+            ("empty model", "secondary", "", vec![voice_value.clone(), text_value.clone()], false, false),
+            ("removed provider", "secondary", selected, vec![voice_value.clone()], false, false),
+            ("disabled provider", "secondary", selected, vec![voice_value.clone()], false, false),
+            ("valid model", "secondary", selected, vec![voice_value.clone(), text_value.clone()], false, true),
+            ("switch off", "native", selected, vec![voice_value.clone(), text_value.clone()], false, false),
+            ("speech only", "secondary", "", vec![voice_value.clone(), text_value.clone()], true, false),
+        ] {
+            let config = json!({
+                "providers": providers,
+                "devices": {
+                    "routeMode": "watch",
+                    "subtitleTranslationMode": mode,
+                    "subtitleTranslationModelId": model,
+                    "outputSpeechEnabled": speech_enabled
+                }
+            });
+            let plan = ResolvedRoutePlan::from_resolved_provider(
+                "inbound", &config, voice_provider.model.clone(), voice_provider.clone(),
+            );
+            assert!(plan.configuration_error.is_none(), "{case}: {:?}", plan.configuration_error);
+            assert_eq!(plan.secondary_subtitle_provider.is_some(), expected_active, "{case}");
+            assert_eq!(plan.session_reuse_key.subtitle_translate_active, expected_active, "{case}");
+            assert_eq!(plan.subtitle_fallback_policy,
+                if expected_active { SubtitleFallbackPolicy::Secondary } else { SubtitleFallbackPolicy::Native }, "{case}");
+            assert_eq!(plan.subtitle_translation_model_id, model, "{case}");
+        }
+    }
     #[test]
     fn fast_watch_start_body_normalizes_err_and_panic() {
         // A plain `Err` from the worker stays attributable verbatim.

@@ -1,5 +1,7 @@
 pub(crate) mod contracts;
 pub(crate) mod bailian_protocol;
+pub(crate) mod bailian_dialogue;
+pub(crate) mod bailian_tasks;
 pub(crate) mod diagnostics;
 mod aec_diagnostic_tap;
 mod echo_cancel;

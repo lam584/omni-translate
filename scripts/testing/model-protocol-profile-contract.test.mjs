@@ -111,6 +111,8 @@ test('shared authorization vectors reject unknown and incompatible combinations 
         },
         vector.id,
       );
+      if (vector.expect.wireDialectVersion !== undefined) assert.equal(result.authorization.wireDialectVersion, vector.expect.wireDialectVersion, vector.id);
+      if (vector.expect.adapterId !== undefined) assert.equal(result.authorization.adapterId, vector.expect.adapterId, vector.id);
     } else {
       assert.equal(result.errorCode, vector.expect.errorCode, vector.id);
     }

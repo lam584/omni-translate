@@ -19,6 +19,7 @@ export type ProviderTemplateCatalogEntry = {
 
 const DEFAULT_ENABLED_TEMPLATE_IDS = new Set([
   'template-dashscope-realtime',
+  'template-dashscope-workspace',
   'template-deepseek',
 ]);
 

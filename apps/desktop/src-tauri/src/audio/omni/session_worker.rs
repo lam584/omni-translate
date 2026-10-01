@@ -2,6 +2,9 @@ use super::*;
 use crate::audio::glossary::GlossaryContext;
 
 use self::livetranslate_shutdown::LivetranslateShutdown;
+#[path = "session_worker/dialogue_shutdown.rs"]
+mod dialogue_shutdown;
+use dialogue_shutdown::{DialogueShutdown, DrainAction};
 use self::shutdown_failure::{
     terminalize_livetranslate_shutdown_failure, LivetranslateShutdownFailure,
 };
@@ -357,6 +360,11 @@ fn run_omni_worker<R: tauri::Runtime>(
             ));
         }
     }
+    let dialogue_authority = crate::audio::events::resolve_realtime_profile(&provider, &provider.model)
+        .model_protocol_authority.filter(crate::audio::bailian_dialogue::is_supported_authority);
+    if let Some(authority) = dialogue_authority.as_ref() {
+        event_diagnostics.dialogue_server_state.record_client_session_update(authority, &session_update)?;
+    }
     let mut livetranslate_shutdown = match LivetranslateShutdown::for_provider(&provider, stop_requested) {
         Ok(shutdown) => shutdown,
         Err(error) => {
@@ -383,6 +391,10 @@ fn run_omni_worker<R: tauri::Runtime>(
     #[cfg(test)]
     let mut consumed_capture_bytes = 0;
     let mut audio_input_disconnected = false;
+    let mut dialogue_shutdown = DialogueShutdown::new(matches!(
+        crate::audio::events::resolve_realtime_profile(&provider, &provider.model).protocol_dialect,
+        Some(crate::audio::events::RealtimeProtocol::DashscopeOmni | crate::audio::events::RealtimeProtocol::DashscopeQwenAudio)
+    ));
     let mut socket = livetranslate_shutdown.wrap_socket(socket);
     let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
     macro_rules! terminalize_livetranslate_shutdown {
@@ -460,7 +472,7 @@ fn run_omni_worker<R: tauri::Runtime>(
     let worker_result = (|| -> Result<OmniWorkerShutdown, String> {
     loop {
         if stop_rx.try_recv().is_ok() {
-            if livetranslate_shutdown.request(Instant::now()) {
+            if livetranslate_shutdown.request(Instant::now()) || dialogue_shutdown.request(Instant::now()) {
                 let _ = diag_log(
                     &app,
                     "omni",
@@ -594,13 +606,13 @@ fn run_omni_worker<R: tauri::Runtime>(
             should_defer_manual_audio_for_response(
                 audio_mode.uses_manual_commit(),
                 manual_response_pending,
-                livetranslate_shutdown.is_requested(),
+                livetranslate_shutdown.is_requested() || dialogue_shutdown.is_requested(),
             ),
-            livetranslate_shutdown.is_requested(),
+            livetranslate_shutdown.is_requested() || dialogue_shutdown.is_requested(),
         );
         let pump_state = match pump_state {
             Ok(state) => state,
-            Err(error) if livetranslate_shutdown.is_requested() => {
+            Err(error) if livetranslate_shutdown.is_requested() || dialogue_shutdown.is_requested() => {
                 let _ = diag_log(
                     &app,
                     "omni",
@@ -786,6 +798,10 @@ fn run_omni_worker<R: tauri::Runtime>(
                         .livetranslate_server_state
                         .record_client_session_update(authority, sent_session_update)?;
                 }
+                event_diagnostics.dialogue_server_state.reset_for_reconnect();
+                if let Some(authority) = dialogue_authority.as_ref() {
+                    event_diagnostics.dialogue_server_state.record_client_session_update(authority, sent_session_update)?;
+                }
                 if let Some(cue_id) = pending_audio_stream_cue_id.as_deref() {
                     playback_tx.abort_stream(
                         cue_id,
@@ -863,7 +879,7 @@ fn run_omni_worker<R: tauri::Runtime>(
             &mut trace_call,
             audio_mode,
             chunk_count,
-            silence_grace_chunks_sent >= OMNI_ASR_SILENCE_GRACE_CHUNKS,
+            silence_grace_chunks_sent >= OMNI_ASR_SILENCE_GRACE_CHUNKS || (dialogue_shutdown.is_requested() && audio_input_disconnected),
             &session_started_at,
             &event_diagnostics,
         );
@@ -1006,12 +1022,13 @@ fn run_omni_worker<R: tauri::Runtime>(
                 pre_session_audio_queue_len: pre_session_audio_queue.len(),
                 pre_session_audio_dropped,
                 echo_guard_enabled,
+                dialogue_draining: dialogue_shutdown.is_requested(),
             },
             &connector,
         );
         let poll = match poll {
             Ok(poll) => poll,
-            Err(error) if livetranslate_shutdown.is_requested() => {
+            Err(error) if livetranslate_shutdown.is_requested() || dialogue_shutdown.is_requested() => {
                 let error = provider_input_budget.finalize_failure(
                     "livetranslate-shutdown-poll-failed",
                     format!(
@@ -1106,6 +1123,35 @@ fn run_omni_worker<R: tauri::Runtime>(
                 fail_connected!("reconnect-session-update-invalid", error);
             }
         }
+        if dialogue_shutdown.is_requested() {
+            let input_fenced = audio_input_disconnected && pre_session_audio_queue.is_empty() && chunks_sent_this_tick == 0;
+            let turn_active = manual_response_pending || event_diagnostics.input_speech_active()
+                || event_diagnostics.dialogue_server_state.has_pending_input_turn()
+                || (audio_mode.uses_manual_commit() && sent_audio_since_commit && audio_samples_since_commit >= 1600);
+            match dialogue_shutdown.observe(Instant::now(), input_fenced, turn_active, event_diagnostics.native_response_active()) {
+                Ok(DrainAction::Pending) => {},
+                Ok(DrainAction::CancelResponse) => {
+                    for response_id in event_diagnostics.dialogue_server_state.cancelable_response_ids() {
+                        let cancel = serde_json::json!({"type":"response.cancel", "response_id":response_id});
+                        trace_call.record_ws_send("response.cancel", cancel.clone());
+                        if let Err(error) = socket.send_message(Message::Text(cancel.to_string().into())) {
+                            fail_connected!("dialogue-cancel-send-failed", error.to_string());
+                        }
+                    }
+                    event_diagnostics.mark_native_response_cancel_sent(Instant::now());
+                },
+                Ok(DrainAction::Complete) => {
+                    store.set_stt_connected(false, buffer_size);
+                    complete_before_teardown!(OmniWorkerShutdown::Immediate, {
+                        let socket = socket.close().map_err(|error| format!("socketTeardown={error}"));
+                        let playback = playback_worker.shutdown_gracefully();
+                        let snapshot = emit_audio_snapshot(&app, store);
+                        combine_all_teardown_results(socket, playback, snapshot)?;
+                    });
+                },
+                Err(error) => { fail_connected!("dialogue-terminal-missing", error); }
+            }
+        }
         if livetranslate_shutdown.session_finished_received()
             && !event_diagnostics.native_response_active()
         {
@@ -1146,6 +1192,9 @@ fn run_omni_worker<R: tauri::Runtime>(
             });
         }
         if poll.stop_worker {
+            if dialogue_shutdown.is_requested() {
+                fail_connected!("dialogue-terminal-missing", "model_protocol.terminal_missing: dialogue socket ended before the input and response drain fence".to_string());
+            }
             if livetranslate_shutdown.is_requested() {
                 let error = provider_input_budget.finalize_failure(
                     "livetranslate-session-ended-before-finished",

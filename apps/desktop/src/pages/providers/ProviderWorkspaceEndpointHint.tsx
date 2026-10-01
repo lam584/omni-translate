@@ -6,7 +6,8 @@ import { PROVIDER_MANIFEST_REGISTRY } from '../../provider-manifest/bundle';
 /** Display only: never rewrite the user's endpoint or infer a WorkspaceId. */
 export default function ProviderWorkspaceEndpointHint({ provider, modelId = provider.model }: { provider: ProviderDraft; modelId?: string }) {
   const { t } = useTranslation();
-  const manifest = PROVIDER_MANIFEST_REGISTRY.findByTemplateId(provider.templateId);
+  const targetTemplateId = provider.templateId === 'template-dashscope-workspace' ? 'template-dashscope-realtime' : provider.templateId;
+  const manifest = PROVIDER_MANIFEST_REGISTRY.findByTemplateId(targetTemplateId);
   if (manifest?.provider.id !== 'bailian') return null;
   const known = manifest.models.find((model) => model.id === modelId);
   const profileIds = known

@@ -1,0 +1,77 @@
+[
+  {
+    "status_code": 200,
+    "output": {
+      "total": 3,
+      "page_no": 1,
+      "page_size": 2,
+      "models": [
+        {
+          "model": "qwen3.5-flash",
+          "capabilities": [
+            {
+              "category": "TG"
+            }
+          ],
+          "inference_metadata": {
+            "request_modality": [
+              "Text",
+              "Image"
+            ],
+            "response_modality": [
+              "Text"
+            ]
+          }
+        },
+        {
+          "model": "qwen3.8-livetranslate-flash-realtime",
+          "capabilities": [
+            {
+              "code": "Realtime-Audio-Translate"
+            },
+            {
+              "category": "ASR"
+            }
+          ],
+          "inference_metadata": {
+            "request_modality": [
+              "Audio",
+              "Text"
+            ],
+            "response_modality": [
+              "Audio",
+              "Text"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "status_code": 200,
+    "output": {
+      "total": 3,
+      "page_no": 2,
+      "page_size": 2,
+      "models": [
+        {
+          "model": "qwen-vl-max",
+          "capabilities": [
+            "TG",
+            "Realtime-Omni"
+          ],
+          "inference_metadata": {
+            "request_modality": [
+              "image",
+              "video",
+              "text"
+            ],
+            "response_modality": [
+              "text"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 
-import type { ProviderScenario } from '../../schema/config';
+import type { CandidateModelGroupId, ProviderScenario } from '../../schema/config';
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
 import { capabilityForScenario, providerCapabilityOrder } from '../../utils/provider-model-capabilities';
+import type { ProviderCapability } from '../../schema/provider-contract';
 import type { ModelCatalogScenarioFilter, ModelCatalogState } from './providersPageHelpers';
 
 type Params = {
@@ -11,6 +12,16 @@ type Params = {
   selectedCatalogScenario: ModelCatalogScenarioFilter;
   templateEntries: ProviderTemplateCatalogEntry[];
   templateQuery: string;
+};
+
+const capabilityForFilter = (group: Exclude<ModelCatalogScenarioFilter, 'all'>): ProviderCapability => {
+  switch (group) {
+    case 'text-processing': return 'text-generation';
+    case 'audio-understanding': return 'speech-to-text';
+    case 'audio-generation': return 'text-to-speech';
+    case 'realtime-multimodal': return 'speech-to-speech';
+    default: return capabilityForScenario(group as ProviderScenario);
+  }
 };
 
 export function useProviderCatalogProjection({
@@ -33,7 +44,7 @@ export function useProviderCatalogProjection({
   }, [templateEntries, templateQuery]);
 
   const filteredCatalogModels = useMemo(() => {
-    const capability = selectedCatalogScenario === 'all' ? null : capabilityForScenario(selectedCatalogScenario);
+    const capability = selectedCatalogScenario === 'all' ? null : capabilityForFilter(selectedCatalogScenario);
     const matches = capability ? modelCatalog.models.filter((model) => model.capabilities.includes(capability)) : modelCatalog.models;
     const candidates = capability && matches.length === 0 && modelCatalog.models.length > 0 ? modelCatalog.models : matches;
     const query = modelCatalogQuery.trim().toLowerCase();
@@ -43,13 +54,13 @@ export function useProviderCatalogProjection({
   }, [modelCatalog.models, modelCatalogQuery, selectedCatalogScenario]);
 
   const scenarioFilterHasMatches = useMemo(() => selectedCatalogScenario === 'all'
-    || modelCatalog.models.some((model) => model.capabilities.includes(capabilityForScenario(selectedCatalogScenario))),
+    || modelCatalog.models.some((model) => model.capabilities.includes(capabilityForFilter(selectedCatalogScenario))),
   [modelCatalog.models, selectedCatalogScenario]);
 
   const catalogSections = useMemo(() => {
     const capabilities = selectedCatalogScenario === 'all' || !scenarioFilterHasMatches
       ? providerCapabilityOrder
-      : [capabilityForScenario(selectedCatalogScenario as ProviderScenario)];
+      : [capabilityForFilter(selectedCatalogScenario as CandidateModelGroupId)];
     return capabilities.map((capability) => ({
       capability,
       models: filteredCatalogModels.filter((model) => model.capabilities.includes(capability)),

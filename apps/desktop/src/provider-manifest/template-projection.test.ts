@@ -39,7 +39,7 @@ describe('provider manifest template projection', () => {
     const openai = template('template-openai-compatible-realtime');
     const patch = buildProviderDraftPatchFromTemplate(appConfigDraftMock.providers[0], openai);
     expect(patch.modelProtocolBindings?.length).toBeGreaterThan(0);
-    expect(patch.sceneModelAssignments?.flatMap((assignment) => assignment.modelIds))
+    expect(patch.candidateModelGroups?.flatMap((assignment) => assignment.modelIds))
       .not.toContain('gpt-realtime-translate');
   });
 });

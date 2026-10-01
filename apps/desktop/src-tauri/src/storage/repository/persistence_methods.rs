@@ -302,8 +302,8 @@ impl ConfigRepository {
                   virtual_mic_state, support_profile_id, subtitle_translation_mode,
                   subtitle_translation_model_id, inbound_voice_model_id, outbound_voice_model_id,
                   text_to_speech_model_id,
-                  feedback_loop_prevention, status, updated_at
-                ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                  feedback_loop_prevention, status, updated_at, primary_text_translation_model_id
+                ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     string_at(devices, "/routeMode"),
                     string_at(devices, "/inputDeviceId"),
@@ -320,6 +320,7 @@ impl ConfigRepository {
                     string_at(devices, "/feedbackLoopPrevention"),
                     string_at(devices, "/status"),
                     timestamp,
+                    string_at(devices, "/primaryTextTranslationModelId"),
                 ],
             )
             .map_err_str()?;

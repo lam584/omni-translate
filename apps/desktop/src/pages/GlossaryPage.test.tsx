@@ -173,7 +173,8 @@ describe('GlossaryPage compact labels', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     configDraft.glossary.libraries = [{ id: 'external', name: 'External', enabled: true, priority: 0, entries: [] }];
     const provider = configDraft.providers[0]!;
-    provider.sceneModelAssignments = [{ scenario: 'subtitle-translate', modelIds: ['uncached-model'] }];
+    provider.candidateModelGroups = [{ group: 'text-processing', modelIds: ['uncached-model'] }];
+    provider.modelCapabilityOverrides = [{ modelId: 'uncached-model', capabilities: ['text-generation'], source: 'user' }];
     provider.modelCatalogCache = undefined as never;
     await act(async () => {
       writeProviderTemplateCatalogPreferences([{ templateId: provider.templateId, enabled: false, order: 0 }]);
@@ -456,10 +457,11 @@ describe('GlossaryPage compact labels', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     configDraft.providers[0] = {
       ...configDraft.providers[0],
-      sceneModelAssignments: [
-        ...(configDraft.providers[0]?.sceneModelAssignments ?? []).filter((assignment) => assignment.scenario !== 'subtitle-translate'),
-        { scenario: 'subtitle-translate', modelIds: ['subtitle-main', 'subtitle-main', 'subtitle-backup'] },
+      candidateModelGroups: [
+        ...(configDraft.providers[0]?.candidateModelGroups ?? []).filter((assignment) => assignment.group !== 'text-processing'),
+        { group: 'text-processing', modelIds: ['subtitle-main', 'subtitle-main', 'subtitle-backup'] },
       ],
+      modelCapabilityOverrides: ['subtitle-main', 'subtitle-backup'].map((modelId) => ({ modelId, capabilities: ['text-generation'], source: 'user' as const })),
       modelCatalogCache: {
         signature: 'models',
         source: 'runtime',

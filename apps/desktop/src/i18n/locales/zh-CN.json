@@ -338,6 +338,7 @@
     }
   },
   "audioRouting": {
+    "modelNeedsReselection": "需重新选择模型",
     "pageTitle": "音频路由",
     "pageSubtitle": "白底 · 流向图嵌入控件 · 唯一模型入口 · 实时保存 · 移动端友好",
     "overviewAria": "音频路由概览",
@@ -508,7 +509,10 @@
     "modelSubtitleSttTranslationSpeech": "语音识别 · 翻译 · 语音",
     "micTestUnsupported": "当前桌面运行时不支持麦克风测试",
     "directionListen": "听",
-    "directionSpeak": "说"
+    "directionSpeak": "说",
+    "scenarioPrimaryTextTitle": "基础文本翻译模型",
+    "scenarioPrimaryTextCaption": "语音识别链路的基础文本翻译",
+    "primaryTextModelRequired": "当前语音模型需要选择基础文本翻译模型"
   },
   "overlay": {
     "bootstrapFailed": "字幕浮窗初始化失败",
@@ -930,6 +934,7 @@
       "scenarioBadge": "场景：{{scenario}}",
       "editCapabilitiesTitle": "编辑能力注册表",
       "refreshTitle": "刷新模型目录",
+      "loading": "正在拉取模型列表和能力数据…",
       "closeTitle": "关闭模型列表",
       "allScenarios": "全部",
       "searchPlaceholder": "搜索模型...",
@@ -1035,6 +1040,28 @@
       "secretPlaceholder": "密钥",
       "hideSecret": "隐藏密钥",
       "showSecret": "显示密钥"
+    },
+    "metadata": {
+      "title": "百炼模型目录元数据",
+      "refresh": "刷新元数据",
+      "refreshing": "正在刷新元数据…",
+      "lastUpdated": "更新时间 {{date}} · {{count}} 个模型",
+      "notFetched": "尚未获取在线元数据",
+      "refreshFailed": "刷新失败：{{error}}"
+    },
+    "candidateModels": {
+      "title": "按能力分类的候选模型",
+      "groups": {
+        "text-processing": "文本处理与翻译",
+        "audio-understanding": "语音识别与理解",
+        "audio-generation": "语音生成",
+        "realtime-multimodal": "实时语音与多模态"
+      },
+      "inputModalities": "输入：{{modalities}}",
+      "outputModalities": "输出：{{modalities}}",
+      "modelId": "{{group}}模型 ID",
+      "placeholder": "选择列表中的模型或输入模型 ID",
+      "remove": "从{{group}}移除 {{model}}"
     },
     "sceneModels": {
       "title": "场景模型",

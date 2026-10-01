@@ -568,7 +568,7 @@ impl<'a> SpeechTaskProcessor<'a> {
                 store.update_speech(|speech| {
                     push_event(
                         speech,
-                        "speech.realtime-audio-requested",
+                        if config.synthesis_protocol() == SpeechSynthesisProtocol::TaskTts { "speech.task-tts-requested" } else { "speech.realtime-audio-requested" },
                         format!(
                             "请求 TTS 合成，provider={} model={}。",
                             config.provider.provider_id, config.provider.model
@@ -578,14 +578,7 @@ impl<'a> SpeechTaskProcessor<'a> {
                     );
                 });
                 let _ = emit_audio_snapshot(app, store);
-                let synthesis = gateway
-                    .synthesize_realtime_audio(
-                        config.provider.clone(),
-                        task.translated_text.clone(),
-                        config.target_language.clone(),
-                        config.voice.clone(),
-                    )
-                    .map_err(|error| error.message)?;
+                let synthesis = synthesize_speech_text(gateway, config, &task.translated_text)?;
                 store.cache_tts_audio(CachedTtsAudio {
                     cache_key: cache_key.clone(),
                     request_id: synthesis.request_id.clone(),
@@ -640,11 +633,15 @@ impl<'a> SpeechTaskProcessor<'a> {
                 speech,
                 if synthesis.cache_hit {
                     "speech.cache-hit"
+                } else if self.config.synthesis_protocol() == SpeechSynthesisProtocol::TaskTts {
+                    "speech.task-tts-requested"
                 } else {
                     "speech.realtime-audio-requested"
                 },
                 if synthesis.cache_hit {
                     "命中 Realtime 音频缓存，直接进入混音和输出。".to_string()
+                } else if self.config.synthesis_protocol() == SpeechSynthesisProtocol::TaskTts {
+                    "已完成 Task TTS 请求，进入混音和输出。".to_string()
                 } else {
                     "已完成 Realtime audio 请求，进入混音和输出。".to_string()
                 },
@@ -664,6 +661,21 @@ impl<'a> SpeechTaskProcessor<'a> {
     }
 }
 
+/// The real dispatch and loopback tests share this boundary; Task TTS never
+/// enters the Omni realtime synthesizer or falls back after a provider failure.
+fn synthesize_speech_text(
+    gateway: &ProviderGateway, config: &SpeechConfig, text: &str,
+) -> Result<crate::provider::contracts::TtsSynthesisResult, String> {
+    let result = match config.synthesis_protocol() {
+        SpeechSynthesisProtocol::TaskTts => gateway.synthesize_tts(
+            config.provider.clone(), text.to_string(), config.target_language.clone(), config.voice.clone(),
+        ),
+        SpeechSynthesisProtocol::RealtimeAudio => gateway.synthesize_realtime_audio(
+            config.provider.clone(), text.to_string(), config.target_language.clone(), config.voice.clone(),
+        ),
+    };
+    result.map_err(|error| speech_model_context(&config.provider, &format!("{}: {}", error.code, error.message)))
+}
 /// Result sent from a synthesis thread back to the playback loop.
 struct PipelineSynthesisResult {
     task: SpeechDispatchTask,
@@ -715,4 +727,9 @@ fn record_speech_skip(
         None,
     );
     emit_audio_snapshot(app, store)
+}
+
+#[cfg(test)]
+mod task_tts_dispatch_tests {
+    include!("task_tts_dispatch_tests.rs");
 }

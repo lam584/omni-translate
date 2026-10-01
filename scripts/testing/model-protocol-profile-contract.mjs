@@ -16,18 +16,21 @@ const EXPECTED_SCHEMA_VERSION = 'model-protocol-profiles/v1';
 const EXPECTED_REGISTRY_VERSION = 'bailian-model-protocol-registry/v1';
 const EXPECTED_CHECKED_AT = '2026-08-30';
 const OFFICIAL_SOURCE_PREFIX = 'https://help.aliyun.com/zh/model-studio/';
-const sourceDateFor = (item) => ((item.dialectId === 'bailian-livetranslate-session-ws-v2' || item.profileId === 'bailian.qwen-audio.3_1.realtime.ws') ? '2026-09-20' : EXPECTED_CHECKED_AT);
-const APPROVED_ENABLED_ADAPTERS = new Map([
-  ['desktop-livetranslate-session-v2', { profileId: 'bailian.livetranslate.3_8.realtime.ws', dialectId: 'bailian-livetranslate-session-ws-v2', terminalLifecycle: 'session.finish->session.finished' }],
-  [
-    'desktop-livetranslate-session-v1',
-    {
-      profileId: 'bailian.livetranslate.realtime.ws',
-      dialectId: 'bailian-livetranslate-session-ws-v1',
-      terminalLifecycle: 'session.finish->session.finished',
-    },
-  ],
+const CURRENT_SOURCE_DIALECTS = new Set([
+  'bailian-omni-realtime-ws-v2', 'bailian-qwen-audio-chat-realtime-ws-v1',
+  'bailian-qwen-audio-asr-task-ws-v1',
 ]);
+const CURRENT_SOURCE_PROFILES = new Set([
+  'bailian.omni.3_8.realtime.ws', 'bailian.qwen-audio-chat.realtime.ws',
+  'bailian.qwen-audio.3_1.realtime.ws', 'bailian.task-asr.qwen-audio-3.0.ws',
+  'bailian.task-asr.qwen-audio-3.1.ws', 'bailian.task-tts.qwen-audio-3.0.ws',
+]);
+const sourceDateFor = (item) => CURRENT_SOURCE_PROFILES.has(item.profileId)
+  || (!item.profileId && CURRENT_SOURCE_DIALECTS.has(item.dialectId)) ? '2026-09-30'
+  : item.dialectId === 'bailian-livetranslate-session-ws-v2' ? '2026-09-20' : EXPECTED_CHECKED_AT;
+const APPROVED_ENABLED_BINDINGS = JSON.parse(fs.readFileSync(
+  new URL('../../contracts/model-protocol-families.v1.json', import.meta.url), 'utf8',
+)).enabledBindings;
 
 const AUTHORIZATION_ERRORS = Object.freeze({
   registryVersionMismatch: 'model_protocol.registry_version_mismatch',
@@ -150,6 +153,49 @@ function expectedFrameKind(dialect, direction, eventType) {
   return 'json';
 }
 
+/** Documentation payload checks for the enabled typed families; no network calls. */
+export function validateFamilyPayloadFixture(dialect, fixture, failures = []) {
+  const sessionFamily = ['bailian-omni-realtime-ws-v2', 'bailian-qwen-audio-chat-realtime-ws-v1'].includes(dialect.dialectId);
+  if (!sessionFamily && !['bailian-qwen-audio-asr-task-ws-v1', 'bailian-speech-synthesizer-duplex-task-ws-v1'].includes(dialect.dialectId)) return failures;
+  for (const event of fixture.sequence ?? []) {
+    const prefix = dialect.dialectId + ': ';
+    const allowlist = event.direction === 'client' ? dialect.clientEventTypes : dialect.serverEventTypes;
+    if (!allowlist.includes(event.eventType)) failures.push(prefix + 'fixture event is outside the ' + event.direction + ' allowlist: ' + event.eventType);
+    if (sessionFamily) {
+      if (event.wire?.type !== event.eventType) failures.push(prefix + 'real wire type must match eventType');
+      if (event.eventType === 'session.update') {
+        const session = event.wire?.session;
+        if (!session || !Object.hasOwn(session, 'turn_detection')) {
+          failures.push(prefix + 'session.turn_detection required; LT nested input turn detection is not Omni');
+          continue;
+        }
+        if (session.turn_detection !== null && session.turn_detection?.type !== 'server_vad') failures.push(prefix + 'typed session fixture supports only server_vad/manual');
+        if (dialect.dialectId === 'bailian-omni-realtime-ws-v2') {
+          const input = session.audio?.input?.format;
+          const output = session.audio?.output?.format;
+          if (input?.type !== 'pcm' || input.sample_rate !== 16000 || output?.type !== 'pcm' || output.sample_rate !== 24000) failures.push(prefix + 'Omni nested input/output pcm16k/pcm24k required');
+          if (Object.hasOwn(session.audio?.input ?? {}, 'turn_detection')) failures.push(prefix + 'session.turn_detection must not be in audio.input');
+          if (session.input_audio_transcription && session.input_audio_transcription.model !== 'qwen3-asr-flash-realtime') failures.push(prefix + 'Omni input transcription model mismatch');
+        } else if (session.input_audio_format !== 'pcm' || session.output_audio_format !== 'pcm' || session.audio !== undefined) {
+          failures.push(prefix + 'Qwen-Audio uses pcm flat formats, not Omni nested audio');
+        }
+      }
+      if (event.eventType === 'input_audio_buffer.append' && typeof event.wire?.audio !== 'string') failures.push(prefix + 'input audio base64 field required');
+      if (event.eventType === 'response.audio.delta' && typeof event.wire?.delta !== 'string') failures.push(prefix + 'output audio delta field required');
+    } else if (event.eventType === 'run-task') {
+      const payload = event.wire?.payload;
+      if (event.wire?.header?.action !== 'run-task' || event.wire?.header?.streaming !== 'duplex' || !event.wire?.header?.task_id) failures.push(prefix + 'duplex task header/identity required');
+      if (payload?.task_group !== 'audio' || !payload.parameters || !payload.input) failures.push(prefix + 'task payload requires group/parameters/input');
+      if (dialect.dialectId === 'bailian-qwen-audio-asr-task-ws-v1') {
+        if (payload?.task !== 'asr' || payload.function !== 'recognition' || !dialect.audioInput.codecs.includes(payload.parameters?.format) || !(payload.parameters?.sample_rate > 0)) failures.push(prefix + 'ASR recognition audio payload mismatch');
+      } else if (payload?.task !== 'tts' || payload.function !== 'SpeechSynthesizer' || payload.parameters?.text_type !== 'PlainText' || typeof payload.parameters?.voice !== 'string') {
+        failures.push(prefix + 'SpeechSynthesizer PlainText/voice payload mismatch');
+      }
+    }
+  }
+  return failures;
+}
+
 function validateTerminalFixture(dialect, sequence, failures) {
   const order = (clientEvent, serverEvent) => {
     const clientIndex = indexOfEvent(sequence, 'client', clientEvent);
@@ -215,6 +261,14 @@ function validateSequentialTaskReuseFixture(dialect, fixture, failures) {
   if (runIndexes.length < 2) {
     failures.push(`${dialect.dialectId}: reusable task fixture must contain two sequential tasks`);
     return;
+  }
+  let activeTaskId = null;
+  for (const event of sequence) {
+    if (event.direction === 'client' && event.eventType === 'run-task') activeTaskId = fixtureTaskId(event);
+    else if (event.frameKind === 'binary' && fixtureTaskId(event) !== activeTaskId) {
+      failures.push(dialect.dialectId + ': binary media must match the active task identity');
+    }
+    if (event.eventType === 'task-finished' || event.eventType === 'task-failed') activeTaskId = null;
   }
   const firstTaskId = fixtureTaskId(runIndexes[0].event);
   const secondTaskId = fixtureTaskId(runIndexes[1].event);
@@ -597,11 +651,14 @@ export function validateModelProtocolRegistry({
       }
     }
     if (profile.adapter?.status === 'enabled') {
-      const approved = APPROVED_ENABLED_ADAPTERS.get(profile.adapter.adapterId);
+      const approved = APPROVED_ENABLED_BINDINGS.find((binding) => binding.owner === 'bailian' && binding.profileId === profile.profileId && binding.adapterId === profile.adapter.adapterId);
       const dialect = registry.dialects.find((candidate) => candidate.dialectId === profile.dialectId);
       if (
         !approved
-        || approved.profileId !== profile.profileId
+        || approved.profileVersion !== profile.profileVersion
+        || approved.dialectVersion !== dialect?.dialectVersion
+        || JSON.stringify(approved.exactModelIds) !== JSON.stringify(profile.exactModelIds)
+        || JSON.stringify(approved.operations) !== JSON.stringify(profile.operations)
         || approved.dialectId !== profile.dialectId
         || approved.terminalLifecycle !== dialect?.terminalLifecycle
       ) {
@@ -1012,6 +1069,7 @@ export function validateModelProtocolRegistry({
         }
       }
     }
+    validateFamilyPayloadFixture(dialect, fixture, failures);
     validateTerminalFixture(dialect, fixture.sequence, failures);
     if (dialect.reusePolicy === 'sequential-tasks-after-terminal') {
       validateSequentialTaskReuseFixture(dialect, fixture, failures);

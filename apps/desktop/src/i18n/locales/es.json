@@ -1154,7 +1154,7 @@
     "restartSessionButton": "Reiniciar sesión",
     "restartSessionHint": " Reinicie la sesión y vuelva a intentarlo.",
     "errorCode": {
-      "modelReferenceInvalid": "Falta el modelo de traducción secundaria o ya no está vinculado a un proveedor habilitado. Elige otro en la configuración.",
+      "modelReferenceInvalid": "La comprobación de la invocación del modelo falló. Consulte el motivo específico y los detalles técnicos.",
       "audioCaptureFailed": "El proceso de captura de audio se detuvo. Revisa el dispositivo de audio e inténtalo de nuevo.",
       "credentialInvalid": "La clave API no es válida o ha caducado. Actualice sus credenciales del proveedor.",
       "quotaExceeded": "Se alcanzó la cuota o el límite de velocidad del proveedor. Compruebe su uso e inténtelo de nuevo.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Modelo de audio primario",
+      "primary-text": "Modelo de texto primario",
+      "secondary-subtitle": "Modelo de subtítulos secundarios",
+      "speech-output": "Modelo de salida de voz"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Protocolo no registrado o ausente",
+      "adapter-unavailable": "Adaptador no disponible o no compatible",
+      "endpoint-invalid": "Punto de conexión o región no válidos",
+      "provider-disabled": "Proveedor deshabilitado o no disponible"
     }
   },
   "glossary": {

@@ -1154,7 +1154,7 @@
     "restartSessionButton": "సెషన్‌ను పునఃప్రారంభించండి",
     "restartSessionHint": " సెషన్‌ను పునఃప్రారంభించి మళ్లీ ప్రయత్నించండి.",
     "errorCode": {
-      "modelReferenceInvalid": "ద్వితీయ అనువాద మోడల్ లేదు లేదా సక్రియ ప్రొవైడర్‌కు అనుసంధానించబడలేదు. సెట్టింగుల్లో మరొకదాన్ని ఎంచుకోండి.",
+      "modelReferenceInvalid": "మోడల్ కాల్ తనిఖీ విఫలమైంది. నిర్దిష్ట కారణం మరియు సాంకేతిక వివరాలను చూడండి.",
       "audioCaptureFailed": "ఆడియో క్యాప్చర్ ప్రక్రియ ఆగింది. ఆడియో పరికరాన్ని తనిఖీ చేసి మళ్లీ ప్రయత్నించండి.",
       "credentialInvalid": "API కీ చెల్లదు లేదా గడువు ముగిసింది. ప్రొవైడర్ ఆధారాలను నవీకరించండి.",
       "quotaExceeded": "ప్రొవైడర్ కోటా లేదా రేట్ పరిమితి చేరుకుంది. మీ వినియోగాన్ని తనిఖీ చేసి మళ్లీ ప్రయత్నించండి.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "ప్రాథమిక ఆడియో మోడల్",
+      "primary-text": "ప్రాథమిక వచన మోడల్",
+      "secondary-subtitle": "ద్వితీయ ఉపశీర్షిక మోడల్",
+      "speech-output": "స్పీచ్ అవుట్‌పుట్ మోడల్"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "ప్రోటోకాల్ లేదు లేదా నమోదు చేయబడలేదు",
+      "adapter-unavailable": "అడాప్టర్ అందుబాటులో లేదు లేదా మద్దతు లేదు",
+      "endpoint-invalid": "ముగింపు స్థానం లేదా ప్రాంతం చెల్లదు",
+      "provider-disabled": "ప్రొవైడర్ నిలిపివేయబడింది లేదా అందుబాటులో లేదు"
     }
   },
   "glossary": {

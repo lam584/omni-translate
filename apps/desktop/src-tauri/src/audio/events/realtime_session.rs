@@ -15,6 +15,36 @@ use crate::diagnostics::events::append_diagnostics_log;
 use crate::audio::glossary::GlossaryContext;
 use crate::provider::contracts::ProviderDraftInput;
 
+/// Shared by idle preconnect and accepted Watch route startup, under the pipeline lock.
+/// Stop and join an incompatible provider before rotating the global report.
+pub(super) fn prepare_watch_report_for_plan(
+    state: &AudioStateStore,
+    plan: &ResolvedRoutePlan,
+) -> Result<(), String> {
+    if let Some(error) = plan.configuration_error.clone() { return Err(error); }
+    let key = &plan.session_reuse_key;
+    let report_active = state.watch_session_report.snapshot().is_some_and(|report| report.status == "active");
+    let reusable = report_active && state.has_omni_sender("inbound")
+        && state.matching_ready_omni_session_with_languages("inbound", &key.model,
+            &key.source_language, &key.target_language, &key.realtime_audio_mode,
+            key.subtitle_translate_active, key.output_mode, key.contract_signature).is_some();
+    let previous_owner = state.omni_session_metadata("inbound").is_some()
+        || state.has_omni_sender("inbound")
+        || state.has_omni_handle("inbound");
+    let snapshot = state.snapshot();
+    let other_owner_active = snapshot.outbound.stream_bound
+        || snapshot.outbound.capture_state != "idle"
+        || state.has_provider_session_owner("outbound");
+    state.watch_session_report.begin_authorized_session(
+        &plan.provider.provider_id, &plan.provider.model,
+        plan.model_protocol_authority.as_ref(), previous_owner && !reusable,
+        other_owner_active, || {
+            retire_omni_session(state, "inbound", "watch_model_handoff").map(|_| ())
+        },
+    )?;
+    Ok(())
+}
+
 /// A preconnect is only safe while the inbound route is fully idle.
 ///
 /// The route-owned realtime sender is removed from the preconnect slot once
@@ -170,8 +200,9 @@ pub(super) fn start_or_reuse_omni_session(
         return Ok((sender, generation));
     }
 
-    if state.omni_session_metadata(direction).is_some() || state.has_omni_sender(direction) {
-        stop_preconnected_omni_session(app, state, direction, "preconnect_not_reusable");
+    if state.omni_session_metadata(direction).is_some() || state.has_omni_sender(direction)
+        || state.has_omni_handle(direction) {
+        stop_preconnected_omni_session(app, state, direction, "preconnect_not_reusable")?;
     }
 
     let session_generation = state.begin_omni_session_with_languages(
@@ -207,12 +238,12 @@ pub(super) fn start_or_reuse_omni_session(
         }
     };
     if !state.is_current_omni_session(direction, session_generation) {
-        let _ = handle.stop_tx.send(());
-        return Err("Omni session was cancelled before handle registration".to_string());
+        return Err(with_retirement_error(
+            "Omni session was cancelled before handle registration".to_string(),
+            handle.stop_and_join(direction),
+        ));
     }
-    if let Some(previous) = state.store_omni_handle(direction, handle) {
-        let _ = previous.stop_tx.send(());
-    }
+    store_omni_handle_with_retirement(state, direction, handle)?;
     if !should_wait_for_omni_session_readiness(phase) {
         let _ = append_diagnostics_log(
             app,
@@ -254,8 +285,8 @@ pub(super) fn start_or_reuse_omni_session(
                     "expectedGeneration={session_generation} actualGeneration={ready_generation}"
                 ),
             );
-            stop_preconnected_omni_session(app, state, direction, "readiness_generation_mismatch");
-            return Err(message);
+            return Err(with_retirement_error(message,
+                stop_preconnected_omni_session(app, state, direction, "readiness_generation_mismatch")));
         }
         Ok(Err(error)) => {
             let reason = if error.to_ascii_lowercase().contains("connect") {
@@ -267,8 +298,8 @@ pub(super) fn start_or_reuse_omni_session(
                 reason,
                 format!("generation={session_generation} error=\"{error}\""),
             );
-            stop_preconnected_omni_session(app, state, direction, "readiness_failed");
-            return Err(error);
+            return Err(with_retirement_error(error,
+                stop_preconnected_omni_session(app, state, direction, "readiness_failed")));
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             let _ = state.mark_omni_session_stopping(
@@ -280,21 +311,22 @@ pub(super) fn start_or_reuse_omni_session(
                 "session_event_timeout",
                 format!("generation={session_generation}"),
             );
-            stop_preconnected_omni_session(app, state, direction, "readiness_timeout");
-            return Err(format!(
+            let message = format!(
                 "Omni session readiness timed out after {}ms",
                 readiness_timeout.as_millis()
-            ));
+            );
+            return Err(with_retirement_error(message,
+                stop_preconnected_omni_session(app, state, direction, "readiness_timeout")));
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             log_readiness_failure(
                 "readiness_channel_disconnected",
                 format!("generation={session_generation}"),
             );
-            stop_preconnected_omni_session(app, state, direction, "readiness_channel_disconnected");
-            return Err(
+            return Err(with_retirement_error(
                 "Omni session readiness channel disconnected before ready event".to_string(),
-            );
+                stop_preconnected_omni_session(app, state, direction, "readiness_channel_disconnected"),
+            ));
         }
     }
     Ok((omni_sender, session_generation))
@@ -339,35 +371,79 @@ pub(super) fn apply_native_subtitle_translate_fallback(config: &mut Value) {
     }
 }
 
+fn with_retirement_error(original: String, retirement: Result<(), String>) -> String {
+    match retirement {
+        Ok(()) => original,
+        Err(error) => format!("{original} | retirementError: {error}"),
+    }
+}
+
+/// The caller serializes inbound lifecycle changes with the pipeline lock.
+/// Keep ownership of the extracted handle until its last report writes and
+/// completion result have crossed the join boundary.
+fn retire_omni_session(
+    state: &AudioStateStore,
+    direction: &str,
+    reason: &str,
+) -> Result<bool, String> {
+    if let Some(metadata) = state.omni_session_metadata(direction) {
+        let _ = state.mark_omni_session_stopping(direction, metadata.session_generation,
+            reason.to_string());
+    }
+    let sender = state.take_omni_sender(direction);
+    if let Some(handle) = state.take_omni_handle(direction) {
+        drop(sender);
+        handle.stop_and_join(direction)?;
+        Ok(true)
+    } else if let Some(sender) = sender {
+        // Missing join authority is not evidence that the publisher stopped.
+        // Retain the orphan owner so later attempts continue to fail closed.
+        state.store_omni_sender(direction, sender);
+        Err(format!("model_protocol.authorization_identity_mismatch: Watch report previous provider owner could not be retired | retirementContext: direction={direction} reason={reason}; parked sender has no joinable owner"))
+    } else {
+        Ok(false)
+    }
+}
+
+fn store_omni_handle_with_retirement(
+    state: &AudioStateStore,
+    direction: &str,
+    handle: omni::OmniHandle,
+) -> Result<(), String> {
+    if let Some(previous) = state.store_omni_handle(direction, handle) {
+        if let Err(error) = previous.stop_and_join(direction) {
+            // The newly installed worker must not survive a failed registration.
+            let cleanup = retire_omni_session(state, direction, "previous_owner_retirement_failed")
+                .map(|_| ());
+            return Err(with_retirement_error(error, cleanup));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn stop_preconnected_omni_session(
     app: &AppHandle,
     state: &AudioStateStore,
     direction: &str,
     reason: &str,
-) {
-    let generation = state
-        .omni_session_metadata(direction)
-        .map(|session| session.session_generation);
-    if let Some(generation) = generation {
-        let _ = state.mark_omni_session_stopping(direction, generation, reason.to_string());
-    }
-    let mut discarded = false;
-    if let Some(handle) = state.take_omni_handle(direction) {
-        let _ = handle.stop_tx.send(());
-        discarded = true;
-    } else if state.take_omni_sender(direction).is_some() {
-        discarded = true;
-    }
-    if discarded {
-        let _ = append_diagnostics_log(
-            app,
-            "audio",
-            "warning",
-            "watch_mode.omni_preconnect_discarded",
-            Some(format!("direction={direction} reason={reason}")),
-            None,
-            None,
-        );
+) -> Result<(), String> {
+    match retire_omni_session(state, direction, reason) {
+        Ok(discarded) => {
+            if discarded {
+                let _ = append_diagnostics_log(app, "audio", "warning",
+                    "watch_mode.omni_preconnect_discarded",
+                    Some(format!("direction={direction} reason={reason} joined=true")),
+                    None, None);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = append_diagnostics_log(app, "audio", "error",
+                "watch_mode.omni_preconnect_retirement_failed",
+                Some(format!("direction={direction} reason={reason} error={error}")),
+                None, None);
+            Err(error)
+        }
     }
 }
 
@@ -390,6 +466,7 @@ pub(super) fn start_or_reuse_openai_realtime_session(
         Some(realtime_audio_mode),
         &voice_provider.model,
     )?;
+    stop_preconnected_omni_session(app, state, direction, "openai_realtime_replacement")?;
     let (sender, handle) = openai_realtime::start_openai_realtime(
         app.clone(),
         state,
@@ -401,9 +478,7 @@ pub(super) fn start_or_reuse_openai_realtime_session(
         subtitle_translate_active,
         glossary,
     )?;
-    if let Some(previous) = state.store_omni_handle(direction, handle) {
-        let _ = previous.stop_tx.send(());
-    }
+    store_omni_handle_with_retirement(state, direction, handle)?;
     Ok(sender)
 }
 
@@ -422,6 +497,7 @@ pub(super) fn start_or_reuse_gemini_live_session(
     }
 
     let mode = gemini_live::GeminiActivityMode::from_config_value(mode_value)?;
+    stop_preconnected_omni_session(app, state, direction, "gemini_live_replacement")?;
     let (sender, handle) = gemini_live::start_gemini_live(
         app.clone(),
         state,
@@ -432,9 +508,7 @@ pub(super) fn start_or_reuse_gemini_live_session(
         target_lang.to_string(),
         glossary,
     )?;
-    if let Some(previous) = state.store_omni_handle(direction, handle) {
-        let _ = previous.stop_tx.send(());
-    }
+    store_omni_handle_with_retirement(state, direction, handle)?;
     Ok(sender)
 }
 
@@ -451,6 +525,7 @@ pub(super) fn start_or_reuse_tencent_speech_translate_session(
         return Ok(sender);
     }
 
+    stop_preconnected_omni_session(app, state, direction, "tencent_speech_translate_replacement")?;
     let (sender, handle) = tencent_speech_translate::start_tencent_speech_translate(
         app.clone(),
         state,
@@ -460,9 +535,7 @@ pub(super) fn start_or_reuse_tencent_speech_translate_session(
         target_lang.to_string(),
         glossary,
     )?;
-    if let Some(previous) = state.store_omni_handle(direction, handle) {
-        let _ = previous.stop_tx.send(());
-    }
+    store_omni_handle_with_retirement(state, direction, handle)?;
     Ok(sender)
 }
 
@@ -494,8 +567,17 @@ pub(crate) async fn preconnect_omni_realtime(
                 None,
                 None,
             );
-            let state = app.state::<AudioStateStore>();
-            stop_preconnected_omni_session(&app, &state, "inbound", "preconnect_command_timeout");
+            // Joining may exceed the command's readiness deadline. Never drop
+            // a worker merely to return the timeout sooner, or block the async runtime.
+            let cleanup_app = app.clone();
+            let cleanup = tauri::async_runtime::spawn_blocking(move || {
+                let state = cleanup_app.state::<AudioStateStore>();
+                let _guard = state.lock_inbound_pipeline();
+                // A route accepted while preconnect was timing out now owns the worker.
+                if state.snapshot().inbound.stream_bound { return Ok(()); }
+                stop_preconnected_omni_session(&cleanup_app, &state, "inbound", "preconnect_command_timeout")
+            }).await.map_err(|error| error.to_string()).and_then(|result| result);
+            let message = with_retirement_error(message, cleanup);
             match task.await {
                 Ok(Ok(_)) => Err(message),
                 Ok(Err(error)) => Err(format!("{message} cleanup={error}")),
@@ -506,9 +588,13 @@ pub(crate) async fn preconnect_omni_realtime(
 }
 
 pub(crate) async fn cancel_omni_preconnect(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
-    let state = app.state::<AudioStateStore>();
-    stop_preconnected_omni_session(&app, &state, "inbound", "preconnect_cancelled");
-    Ok(state.snapshot())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AudioStateStore>();
+        let _guard = state.lock_inbound_pipeline();
+        if state.snapshot().inbound.stream_bound { return Ok(state.snapshot()); }
+        stop_preconnected_omni_session(&app, &state, "inbound", "preconnect_cancelled")?;
+        Ok(state.snapshot())
+    }).await.map_err(|error| error.to_string())?
 }
 
 pub(crate) fn preconnect_omni_realtime_inner(
@@ -597,15 +683,7 @@ pub(crate) fn preconnect_omni_realtime_inner(
         return Ok(state.snapshot());
     }
     if super::configured_route_mode(&config) == "watch" {
-        state.watch_session_report.begin_or_reuse(
-            &plan.provider.provider_id,
-            &plan.provider.model,
-        );
-        if let Some(authority) = plan.model_protocol_authority.as_ref() {
-            state
-                .watch_session_report
-                .bind_authorized_model_protocol_profile(authority)?;
-        }
+        prepare_watch_report_for_plan(&state, &plan)?;
     }
     let st_active = plan.session_reuse_key.subtitle_translate_active;
     if state
@@ -624,8 +702,9 @@ pub(crate) fn preconnect_omni_realtime_inner(
     {
         return Ok(state.snapshot());
     }
-    if state.omni_session_metadata("inbound").is_some() || state.has_omni_sender("inbound") {
-        stop_preconnected_omni_session(&app, &state, "inbound", "preconnect_config_changed");
+    if state.omni_session_metadata("inbound").is_some() || state.has_omni_sender("inbound")
+        || state.has_omni_handle("inbound") {
+        stop_preconnected_omni_session(&app, &state, "inbound", "preconnect_config_changed")?;
     }
     let (sender, generation) = start_or_reuse_omni_session(
         &app,
@@ -759,3 +838,9 @@ mod active_route_preconnect_tests {
         assert!(!release_evidence_blocks_background_preconnect(Some("ordinary-startup")));
     }
 }
+
+#[cfg(test)]
+mod watch_report_handoff_tests;
+
+#[cfg(test)]
+mod retirement_tests;

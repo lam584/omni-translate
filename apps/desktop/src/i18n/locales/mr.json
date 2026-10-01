@@ -1154,7 +1154,7 @@
     "restartSessionButton": "सत्र पुन्हा सुरू करा",
     "restartSessionHint": " सत्र पुन्हा सुरू करून पुन्हा प्रयत्न करा.",
     "errorCode": {
-      "modelReferenceInvalid": "दुय्यम भाषांतर मॉडेल सापडले नाही किंवा सक्षम प्रदात्याशी जोडलेले नाही. प्रदाता सेटिंगमध्ये दुसरे मॉडेल निवडा.",
+      "modelReferenceInvalid": "मॉडेल कॉलची तपासणी अयशस्वी झाली. कृपया नेमके कारण आणि तांत्रिक तपशील पहा.",
       "audioCaptureFailed": "ऑडिओ कॅप्चर प्रक्रिया थांबली. ऑडिओ उपकरण तपासून पुन्हा प्रयत्न करा.",
       "credentialInvalid": "API की अवैध आहे किंवा कालबाह्य झाली आहे. प्रदात्याची क्रेडेन्शियल्स अपडेट करा.",
       "quotaExceeded": "प्रदात्याचा कोटा किंवा दर मर्यादा गाठली आहे. तुमचा वापर तपासा आणि पुन्हा प्रयत्न करा.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "प्राथमिक ऑडिओ मॉडेल",
+      "primary-text": "प्राथमिक मजकूर मॉडेल",
+      "secondary-subtitle": "दुय्यम उपशीर्षक मॉडेल",
+      "speech-output": "भाषण आउटपुट मॉडेल"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "प्रोटोकॉल गहाळ आहे किंवा नोंदणीकृत नाही",
+      "adapter-unavailable": "अडॉप्टर अनुपलब्ध किंवा असमर्थित आहे",
+      "endpoint-invalid": "एंडपॉइंट किंवा प्रदेश अवैध आहे",
+      "provider-disabled": "प्रदाता अक्षम किंवा अनुपलब्ध आहे"
     }
   },
   "glossary": {

@@ -71,6 +71,10 @@ impl SessionRegistry {
         self.stt_handles.lock().expect("stt handles poisoned").insert(direction.to_string(), handle)
     }
 
+    pub(super) fn has_stt(&self, direction: &str) -> bool {
+        self.stt_handles.lock().expect("stt handles poisoned").contains_key(direction)
+    }
+
     pub(super) fn take_stt(&self, direction: &str) -> Option<SttHandle> {
         self.stt_handles.lock().expect("stt handles poisoned").remove(direction)
     }

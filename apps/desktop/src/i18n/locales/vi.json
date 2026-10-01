@@ -1154,7 +1154,7 @@
     "restartSessionButton": "Khởi động lại phiên",
     "restartSessionHint": " Hãy khởi động lại phiên và thử lại.",
     "errorCode": {
-      "modelReferenceInvalid": "Mô hình dịch phụ bị thiếu hoặc không còn liên kết với nhà cung cấp đang bật. Chọn mô hình khác trong cài đặt.",
+      "modelReferenceInvalid": "Kiểm tra lời gọi mô hình không thành công. Vui lòng xem nguyên nhân cụ thể và chi tiết kỹ thuật.",
       "audioCaptureFailed": "Tiến trình thu âm thanh đã dừng. Kiểm tra thiết bị âm thanh rồi thử lại.",
       "credentialInvalid": "Khóa API không hợp lệ hoặc đã hết hạn. Hãy cập nhật thông tin xác thực của nhà cung cấp.",
       "quotaExceeded": "Đã đạt hạn mức hoặc giới hạn tốc độ của nhà cung cấp. Kiểm tra mức sử dụng rồi thử lại.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Mô hình âm thanh chính",
+      "primary-text": "Mô hình văn bản chính",
+      "secondary-subtitle": "Mô hình phụ đề phụ",
+      "speech-output": "Mô hình đầu ra giọng nói"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Giao thức bị thiếu hoặc chưa được đăng ký",
+      "adapter-unavailable": "Bộ điều hợp không khả dụng hoặc không được hỗ trợ",
+      "endpoint-invalid": "Điểm cuối hoặc khu vực không hợp lệ",
+      "provider-disabled": "Nhà cung cấp bị tắt hoặc không khả dụng"
     }
   },
   "glossary": {

@@ -28,6 +28,17 @@ describe('ProviderManifestRegistry', () => {
     expect(registry.findByProviderId('fixture-provider-realtime')).toBeNull();
   });
 
+  it('resolves the Workspace connection variant only to the Bailian manifest', () => {
+    const bailian = minimalManifest('bailian', 'template-dashscope-realtime');
+    const registry = new ProviderManifestRegistry([bailian]);
+    expect(registry.findByTemplateId('template-dashscope-workspace')).toBe(bailian);
+    expect(registry.findByTemplateId('template-dashscope-workspace-other')).toBeNull();
+    const unrelated = new ProviderManifestRegistry([
+      minimalManifest('untrusted', 'template-dashscope-realtime'),
+    ]);
+    expect(unrelated.findByTemplateId('template-dashscope-workspace')).toBeNull();
+  });
+
   it('rejects duplicate provider identities', () => {
     expectCode(() => new ProviderManifestRegistry([
       minimalManifest('fixture-provider', 'template-a'),

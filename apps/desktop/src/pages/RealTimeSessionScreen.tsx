@@ -18,7 +18,12 @@ import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
 import i18n from '../i18n/config';
 import { parseRuntimeTimestampMs, useSessionElapsed } from './session/useSessionElapsed';
-import { extractSessionErrorCode, sessionErrorPresentation } from '../utils/session-error-presentation';
+import {
+  extractSessionErrorCode,
+  formatModelErrorSummary,
+  sessionErrorPresentation,
+  sessionLaunchErrorCode,
+} from '../utils/session-error-presentation';
 import { describeRuntimeError } from '../utils/runtime-error-text';
 import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
@@ -34,6 +39,39 @@ import {
 import WatchSessionReportPanel from './watch-report/WatchSessionReportPanel';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | 'export-diagnostics' | null;
+
+function formatDisplayError(
+  rawError: string,
+  errorCode: string | null,
+  t: (key: string) => string,
+): { summary: string; technicalDetail: string | null } {
+  const isModelFailure =
+    errorCode === "session.model-reference-invalid" ||
+    rawError.includes("modelContext:") ||
+    rawError.includes("model_protocol.") ||
+    rawError.includes("provider_manifest.");
+
+  if (isModelFailure) {
+    const summary = formatModelErrorSummary(null, rawError, t);
+    const codeTag = errorCode ? ` [${errorCode}]` : "";
+    return {
+      summary: summary + codeTag,
+      technicalDetail: rawError.includes("modelContext:") || rawError.includes("model_protocol.") || rawError.includes("provider_manifest.") ? rawError : null,
+    };
+  }
+
+  const presentation = sessionErrorPresentation(errorCode);
+  if (presentation) {
+    const text = presentation.useRawMessage ? rawError : t(presentation.messageKey);
+    return {
+      summary: `${text} [${errorCode}]`,
+      technicalDetail: null,
+    };
+  }
+
+  return { summary: rawError, technicalDetail: null };
+}
+
 
 type WatchFallbackResolver = (subtitlesOnly: boolean) => void;
 
@@ -423,6 +461,7 @@ function RealTimeSessionPage() {
   const outboundErrorPresentation = sessionErrorPresentation(outboundErrorCode);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [sessionLaunchProblem, setSessionLaunchProblem] = useState<string | null>(null);
+  const launchErrorPresentation = sessionErrorPresentation(extractSessionErrorCode(sessionLaunchProblem ?? ''));
   const [sessionActionProblem, setSessionActionProblem] = useState<string | null>(null);
   const [watchFallbackResolver, setWatchFallbackResolver] = useState<WatchFallbackResolver | null>(null);
   const [watchReport, setWatchReport] = useState<WatchSessionReportRuntime | null>(null);
@@ -618,7 +657,30 @@ function RealTimeSessionPage() {
       return;
     }
     const voiceModelReference = resolveSceneVoiceModelId(mode, configDraft);
-    const realtimeProfile = await resolveRealtimeProfileRuntime(configDraft, voiceModelReference);
+    let realtimeProfile: ResolvedRealtimeProfile;
+    try {
+      realtimeProfile = await resolveRealtimeProfileRuntime(configDraft, voiceModelReference);
+    } catch (error) {
+      const modelRole = mode === 'voice-room' ? 'outboundVoiceModelId' : 'inboundVoiceModelId';
+      const chinese = i18n.language.toLowerCase().startsWith('zh');
+      const roleLabel = mode === 'voice-room'
+        ? (chinese ? '对话输出模型' : 'Conversation output model')
+        : (chinese ? '主音频模型' : 'Primary audio model');
+      const serviceCode = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: unknown }).code : null;
+      const rawDetail = describeRuntimeError(error);
+      const detail = [resolveSceneLabel(mode), roleLabel, modelRole + '=' + voiceModelReference,
+        typeof serviceCode === 'string' && !rawDetail.includes(serviceCode) ? serviceCode + ': ' + rawDetail : rawDetail].join('; ');
+      const failureCode = sessionLaunchErrorCode(error, detail);
+      const message = extractSessionErrorCode(detail) ? detail : detail + ' | code: ' + failureCode;
+      setSessionLaunchProblem(message);
+      pushRuntimeNotification({
+        id: 'scene-profile-' + launchAttemptId, level: 'error', source: 'session',
+        message,
+        emittedAt: new Date().toISOString(),
+      });
+      return;
+    }
     const speechPatch = resolveSceneSpeechPatch(mode, configDraft, realtimeProfile);
     const secondarySubtitleTranslationEnabled =
       configDraft.devices.subtitleTranslationMode === 'secondary' && Boolean(configDraft.devices.subtitleTranslationModelId);
@@ -876,47 +938,79 @@ function RealTimeSessionPage() {
               )}
             </div>
           )}
-          {audioRuntimeSnapshot.inbound.lastError && (
-            <p className="cue-queue-error" role="alert">
-              {inboundErrorPresentation
-                ? `${t(inboundErrorPresentation.messageKey)} [${inboundErrorCode}]`
-                : t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}
-              {!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
-              {(inboundErrorPresentation?.action === 'restart-session'
-                || (!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-session')) && t('session.restartSessionHint')}
-              {inboundErrorPresentation?.action === 'open-providers' && inboundErrorPresentation.actionKey && (
-                <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(inboundErrorPresentation.actionKey)}</Link>
-              )}
-              {exportDiagnosticsButton}
-            </p>
-          )}
-          {audioRuntimeSnapshot.outbound.lastError && (
-            <p className="cue-queue-error" role="alert">
-              {outboundErrorPresentation
-                ? `${t(outboundErrorPresentation.messageKey)} [${outboundErrorCode}]`
-                : t('diagnostics.issues.outboundError', { error: audioRuntimeSnapshot.outbound.lastError })}
-              {outboundErrorPresentation?.action === 'open-providers' && outboundErrorPresentation.actionKey ? (
-                <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(outboundErrorPresentation.actionKey)}</Link>
-              ) : (
+          {audioRuntimeSnapshot.inbound.lastError && (() => {
+            const formatted = formatDisplayError(audioRuntimeSnapshot.inbound.lastError, inboundErrorCode, t);
+            return (
+              <p className="cue-queue-error" role="alert">
+                <span>{inboundErrorPresentation ? formatted.summary : t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}</span>
+                {formatted.technicalDetail && (
+                  <details className="cue-queue-error-detail">
+                    <summary>{t('session.errorDetails', { defaultValue: '错误详情' })}</summary>
+                    <pre>{formatted.technicalDetail}</pre>
+                  </details>
+                )}
+                {!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
+                {(inboundErrorPresentation?.action === 'restart-session'
+                  || (!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-session')) && t('session.restartSessionHint')}
+                {inboundErrorPresentation?.action === 'open-providers' && inboundErrorPresentation.actionKey && (
+                  <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(inboundErrorPresentation.actionKey)}</Link>
+                )}
+                {exportDiagnosticsButton}
+              </p>
+            );
+          })()}
+          {audioRuntimeSnapshot.outbound.lastError && (() => {
+            const formatted = formatDisplayError(audioRuntimeSnapshot.outbound.lastError, outboundErrorCode, t);
+            return (
+              <p className="cue-queue-error" role="alert">
+                <span>{outboundErrorPresentation ? formatted.summary : t('diagnostics.issues.outboundError', { error: audioRuntimeSnapshot.outbound.lastError })}</span>
+                {formatted.technicalDetail && (
+                  <details className="cue-queue-error-detail">
+                    <summary>{t('session.errorDetails', { defaultValue: '错误详情' })}</summary>
+                    <pre>{formatted.technicalDetail}</pre>
+                  </details>
+                )}
+                {outboundErrorPresentation?.action === 'open-providers' && outboundErrorPresentation.actionKey ? (
+                  <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(outboundErrorPresentation.actionKey)}</Link>
+                ) : (
+                  <Link className="cue-queue-error-action" to="/audio-routing"><AppIcon name="route" size={13} />{t('nav.audioRouting')}</Link>
+                )}
+                {exportDiagnosticsButton}
+              </p>
+            );
+          })()}
+          {audioRuntimeSnapshot.speech.lastError && (() => {
+            const speechCode = extractSessionErrorCode(audioRuntimeSnapshot.speech.lastError);
+            const formatted = formatDisplayError(audioRuntimeSnapshot.speech.lastError, speechCode, t);
+            return (
+              <p className="cue-queue-error" role="alert">
+                <span>{audioRuntimeSnapshot.speech.lastError.includes('modelContext:') || audioRuntimeSnapshot.speech.lastError.includes('model_protocol.') ? formatted.summary : t('diagnostics.issues.speechError', { error: audioRuntimeSnapshot.speech.lastError })}</span>
+                <span>{t('session.speechFailureRecovery')}</span>
                 <Link className="cue-queue-error-action" to="/audio-routing"><AppIcon name="route" size={13} />{t('nav.audioRouting')}</Link>
-              )}
-              {exportDiagnosticsButton}
-            </p>
-          )}
-          {audioRuntimeSnapshot.speech.lastError && (
-            <p className="cue-queue-error" role="alert">
-              {t('diagnostics.issues.speechError', { error: audioRuntimeSnapshot.speech.lastError })}
-              <span>{t('session.speechFailureRecovery')}</span>
-              <Link className="cue-queue-error-action" to="/audio-routing"><AppIcon name="route" size={13} />{t('nav.audioRouting')}</Link>
-              {exportDiagnosticsButton}
-            </p>
-          )}
-          {sessionLaunchProblem && !isSessionRunning && (
-            <div className="session-launch-feedback session-launch-feedback-error" role="alert">
-              <AppIcon name="alert" size={15} />
-              <span>{sessionLaunchProblem}</span>
-            </div>
-          )}
+                {exportDiagnosticsButton}
+              </p>
+            );
+          })()}
+          {sessionLaunchProblem && !isSessionRunning && (() => {
+            const launchCode = extractSessionErrorCode(sessionLaunchProblem);
+            const formatted = formatDisplayError(sessionLaunchProblem, launchCode, t);
+            return (
+              <div className="session-launch-feedback session-launch-feedback-error" role="alert">
+                <AppIcon name="alert" size={15} />
+                <span>{formatted.summary}</span>
+                {formatted.technicalDetail && (
+                  <details className="cue-queue-error-detail">
+                    <summary>{t('session.errorDetails', { defaultValue: '错误详情' })}</summary>
+                    <pre>{formatted.technicalDetail}</pre>
+                  </details>
+                )}
+                {launchErrorPresentation?.action === 'open-providers' && launchErrorPresentation.actionKey && (
+                  <Link className="cue-queue-error-action" to="/settings/providers"><AppIcon name="server" size={13} />{t(launchErrorPresentation.actionKey)}</Link>
+                )}
+                {exportDiagnosticsButton}
+              </div>
+            );
+          })()}
           <div className="control-toolbar">
             <button
               className="icon-button icon-button-danger"

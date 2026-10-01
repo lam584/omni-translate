@@ -1154,7 +1154,7 @@
     "restartSessionButton": "Mulai ulang sesi",
     "restartSessionHint": " Mulai ulang sesi lalu coba lagi.",
     "errorCode": {
-      "modelReferenceInvalid": "Model terjemahan sekunder hilang atau tidak lagi terhubung ke penyedia aktif. Pilih model lain di pengaturan penyedia.",
+      "modelReferenceInvalid": "Pemeriksaan pemanggilan model gagal. Silakan lihat alasan spesifik dan detail teknis.",
       "audioCaptureFailed": "Proses perekaman audio berhenti. Periksa perangkat audio lalu coba lagi.",
       "credentialInvalid": "Kunci API tidak valid atau kedaluwarsa. Perbarui kredensial penyedia.",
       "quotaExceeded": "Kuota atau batas laju penyedia tercapai. Periksa penggunaan Anda lalu coba lagi.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Model audio primer",
+      "primary-text": "Model teks primer",
+      "secondary-subtitle": "Model subtitle sekunder",
+      "speech-output": "Model keluaran suara"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Protokol hilang atau tidak terdaftar",
+      "adapter-unavailable": "Adaptor tidak tersedia atau tidak didukung",
+      "endpoint-invalid": "Titik akhir atau wilayah tidak valid",
+      "provider-disabled": "Penyedia dinonaktifkan atau tidak tersedia"
     }
   },
   "glossary": {

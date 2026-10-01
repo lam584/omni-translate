@@ -84,22 +84,28 @@ impl OmniHandle {
             completion_rx,
         } = self;
         let _ = stop_tx.send(());
-        if let Some(relay) = provider_input_relay {
-            relay.join().map_err(|_| {
+        // A relay failure must not detach the worker: its final report writes
+        // and terminal result still belong to the session being retired.
+        let relay_result = match provider_input_relay {
+            Some(relay) => relay.join().map_err(|_| {
                 format!("Omni {direction} provider input relay panicked during route stop")
-            })?;
-        }
-        join_handle
-            .join()
-            .map_err(|_| format!("Omni {direction} worker panicked during route stop"))?;
-        match completion_rx {
-            Some(receiver) => receiver.recv().map_err(|error| {
-                format!(
-                    "Omni {direction} worker completion authority disconnected after join: {error}"
-                )
-            })?,
+            }),
             None => Ok(()),
-        }
+        };
+        let worker_result = match join_handle.join() {
+            Ok(()) => match completion_rx {
+                Some(receiver) => receiver.recv().map_err(|error| {
+                    format!(
+                        "Omni {direction} worker completion authority disconnected after join: {error}"
+                    )
+                }).and_then(|result| result),
+                None => Ok(()),
+            },
+            Err(_) => Err(format!("Omni {direction} worker panicked during route stop")),
+        };
+        // Preserve the first failure, but only after both join boundaries and
+        // (for a non-panicking worker) its completion authority are observed.
+        relay_result.and(worker_result)
     }
 }
 
@@ -288,6 +294,12 @@ fn finish_worker<R: tauri::Runtime>(
         audio_state.set_stt_connected(false, 0);
         let normalized_error = if split_error_markers(&error).1.is_some() {
             error.clone()
+        } else if error.contains("model_protocol.") {
+            let context = serde_json::json!({"modelRole":"primary-audio", "modelId":model, "direction":direction});
+            super::session_errors::with_error_markers(
+                &format!("{error} | modelContext: {context}"),
+                super::session_errors::SessionErrorCode::ModelReferenceInvalid,
+            )
         } else {
             super::session_errors::with_error_markers(
                 &error,
@@ -371,6 +383,55 @@ mod tests {
             .stop_and_join("inbound")
             .expect("joined stop");
         assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_and_join_relay_panic_waits_for_worker_tail_and_terminal_result() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (worker_stopping_tx, worker_stopping_rx) = mpsc::channel();
+        let (release_worker_tx, release_worker_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let finalized = Arc::new(AtomicBool::new(false));
+        let worker_finalized = finalized.clone();
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let join_handle = thread::spawn(move || {
+            stop_rx.recv().expect("stop signal");
+            worker_stopping_tx.send(()).expect("worker stop observer");
+            release_worker_rx.recv().expect("worker finalization gate");
+            // Model the last report write before the worker publishes its
+            // terminal result. The receiver must survive the relay failure.
+            worker_finalized.store(true, Ordering::SeqCst);
+            completion_tx
+                .send(Err("worker terminal failure after tail write".to_string()))
+                .expect("completion receiver must remain owned until worker join");
+        });
+        let (wake_tx, _wake_rx) = mpsc::channel();
+        let relay = thread::spawn(|| panic!("injected provider input relay panic"));
+        let handle = OmniHandle::with_completion_signal(
+            stop_tx,
+            join_handle,
+            stop_requested,
+            completion_rx,
+        ).with_provider_input_relay(wake_tx, relay);
+        let stopper = thread::spawn(move || {
+            let result = handle.stop_and_join("inbound");
+            returned_tx.send(result).expect("join result observer");
+        });
+        worker_stopping_rx.recv().expect("worker reached stop gate");
+        let early_return = returned_rx.recv_timeout(Duration::from_millis(100));
+        // Always release and join before asserting, including on regression,
+        // so a failed test cannot leave the synthetic worker blocked.
+        release_worker_tx.send(()).expect("release worker tail write");
+        stopper.join().expect("stopper joined");
+        assert!(
+            matches!(early_return, Err(mpsc::RecvTimeoutError::Timeout)),
+            "relay panic must not return before worker finalization: {early_return:?}",
+        );
+        let error = returned_rx.recv().expect("stop result")
+            .expect_err("relay panic remains a failure");
+        assert!(error.contains("provider input relay panicked"), "{error}");
+        assert!(finalized.load(Ordering::SeqCst), "worker tail write completed");
     }
 
     #[test]

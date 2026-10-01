@@ -164,3 +164,58 @@ describe('describeSceneLaunchAttribution', () => {
     expect(result.message).toContain('原生采集返回错误');
   });
 });
+
+
+describe('provider failures on the primary audio route', () => {
+  const error = 'model_protocol.model_not_registered: model has no built-in authority or explicit binding | code: session.model-reference-invalid | recommended: open-providers';
+  it.each([false, true])('keeps a main-model authorization error out of audio recovery (accepted=%s)', (commandAccepted) => {
+    const result = describeSceneLaunchAttribution({
+      stage: 'inbound-route', error: new Error(error), commandAccepted,
+      snapshot: snapshotWithInbound({ captureState: 'idle', streamBound: false, lastError: error, lastErrorCode: 'session.model-reference-invalid' }),
+      recentLogs: [logEntry('watch_mode.route_error')],
+    });
+    expect(result.outcome).toBe('session-error');
+    expect(result.message).toContain('model_protocol.model_not_registered');
+    expect(result.message).toContain('session.model-reference-invalid');
+    expect(result.message).not.toContain('二次翻译模型');
+    expect(result.message).not.toContain('重新选择系统播放设备');
+  });
+  it('uses the native classified reason rather than a readiness timeout', () => {
+    const result = describeSceneLaunchAttribution({
+      stage: 'inbound-route', error: new Error('readiness deadline'), commandAccepted: true,
+      snapshot: snapshotWithInbound({ lastError: error, lastErrorCode: 'session.model-reference-invalid' }), recentLogs: [],
+    });
+    expect(result.message).toContain(error);
+    expect(result.message).not.toContain('readiness deadline');
+  });
+  it('does not reuse stale inbound model failure for an unrelated stage', () => {
+    const result = describeSceneLaunchAttribution({
+      stage: 'speech-dispatch', error: new Error('speech failed'), commandAccepted: false,
+      snapshot: snapshotWithInbound({ lastError: null, lastErrorCode: 'session.model-reference-invalid' }), recentLogs: [],
+    });
+    expect(result.outcome).toBe('command-rejected');
+  });
+
+  it("formats modelContext and protocol failures using the unified model error formatter", () => {
+    const context = JSON.stringify({
+      modelRole: "primary-audio",
+      modelId: "qwen-audio-flash",
+      providerId: "dashscope-1",
+    });
+    const errorWithContext = "model_protocol.adapter_unavailable: adapter not supported | modelContext: " + context + " | code: session.model-reference-invalid | recommended: open-providers";
+    const result = describeSceneLaunchAttribution({
+      stage: "inbound-route",
+      error: new Error(errorWithContext),
+      commandAccepted: true,
+      snapshot: snapshotWithInbound({ lastError: errorWithContext, lastErrorCode: "session.model-reference-invalid" }),
+      recentLogs: [],
+    });
+    expect(result.outcome).toBe("session-error");
+    expect(result.message).not.toContain("{");
+    expect(result.message).not.toContain("modelContext");
+    expect(result.message).toContain("主音频模型 (qwen-audio-flash)");
+    expect(result.message).toContain("适配器不可用或不受支持");
+    expect(result.message).toContain("[session.model-reference-invalid]");
+  });
+
+});

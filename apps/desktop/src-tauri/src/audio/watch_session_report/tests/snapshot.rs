@@ -508,3 +508,89 @@ const WATCH_REPORT_SOURCE_FIXTURE: [&str; 6] = [
         assert!(report.cues[0].rendered_text.is_empty());
         assert_eq!(report.dropped_event_count, 0);
     }
+
+
+#[test]
+fn sealed_watch_report_is_not_relabelled_by_fast_start_ack() {
+    let store = WatchSessionReportStore::new();
+    let identity = livetranslate_protocol_identity();
+    let original_id = store.begin_or_reuse("provider-dashscope", &identity.exact_model_id);
+    store.bind_model_protocol_profile_identity(identity.clone()).unwrap();
+    assert_eq!(store.begin_or_reuse("", "template-dashscope-workspace::qwen3.8-omni-flash-realtime"), original_id);
+    let report = store.snapshot().unwrap();
+    assert_eq!(report.model, identity.exact_model_id);
+    assert_eq!(report.provider_id, "provider-dashscope");
+    assert_eq!(report.model_protocol_profile_identity, Some(identity));
+}
+
+
+#[test]
+fn watch_handoff_failure_preserves_the_old_sealed_report() {
+    let store = WatchSessionReportStore::new();
+    let old = livetranslate_protocol_identity();
+    let id = store.begin_or_reuse("provider-dashscope", &old.exact_model_id);
+    store.bind_model_protocol_profile_identity(old.clone()).unwrap();
+    let mut new = old.clone();
+    new.exact_model_id = "qwen3.8-livetranslate-flash-realtime".into();
+    let error = store.begin_session_with_identity("provider-dashscope", &new.exact_model_id.clone(),
+        Some(new), true, false, || Err("old owner join failed".into())).unwrap_err();
+    assert_eq!(error, "old owner join failed");
+    let report = store.snapshot().unwrap();
+    assert_eq!(report.session_id, id);
+    assert_eq!(report.status, "active");
+    assert_eq!(report.model, old.exact_model_id);
+    assert_eq!(report.model_protocol_profile_identity, Some(old));
+}
+
+#[test]
+fn watch_handoff_cannot_replace_a_report_owned_by_another_active_route() {
+    let store = WatchSessionReportStore::new();
+    let old = livetranslate_protocol_identity();
+    let id = store.begin_or_reuse("provider-dashscope", &old.exact_model_id);
+    store.bind_model_protocol_profile_identity(old.clone()).unwrap();
+    let mut new = old.clone();
+    new.exact_model_id = "qwen3.8-livetranslate-flash-realtime".into();
+    let error = store.begin_session_with_identity("provider-dashscope", &new.exact_model_id.clone(),
+        Some(new), true, true, || panic!("must not stop another route's owner")).unwrap_err();
+    assert!(error.contains("another route still owns"));
+    let report = store.snapshot().unwrap();
+    assert_eq!(report.session_id, id);
+    assert_eq!(report.model_protocol_profile_identity, Some(old));
+}
+
+#[test]
+fn watch_handoff_validates_exact_model_before_any_retirement() {
+    let store = WatchSessionReportStore::new();
+    let identity = livetranslate_protocol_identity();
+    let error = store.begin_session_with_identity("provider-dashscope", "different-model",
+        Some(identity), true, false, || panic!("invalid authority must not stop an owner")).unwrap_err();
+    assert!(error.contains("authorized exactModelId"));
+    assert!(store.snapshot().is_none());
+}
+
+
+#[test]
+fn completed_report_cannot_rotate_while_another_route_owns_same_identity() {
+    let store = WatchSessionReportStore::new();
+    let identity = livetranslate_protocol_identity();
+    let id = store.begin_or_reuse("provider-dashscope", &identity.exact_model_id);
+    store.bind_model_protocol_profile_identity(identity.clone()).unwrap();
+    store.complete();
+    let error = store.begin_session_with_identity("provider-dashscope", &identity.exact_model_id.clone(),
+        Some(identity.clone()), false, true, || panic!("must not retire another route's owner")).unwrap_err();
+    assert!(error.contains("another route still owns"));
+    let report = store.snapshot().unwrap();
+    assert_eq!(report.session_id, id);
+    assert_eq!(report.status, "completed");
+    assert_eq!(report.model_protocol_profile_identity, Some(identity));
+}
+
+#[test]
+fn new_report_cannot_be_created_while_another_route_still_owns_session() {
+    let store = WatchSessionReportStore::new();
+    let identity = livetranslate_protocol_identity();
+    let error = store.begin_session_with_identity("provider-dashscope", &identity.exact_model_id.clone(),
+        Some(identity), false, true, || panic!("must not retire another route's owner")).unwrap_err();
+    assert!(error.contains("another route still owns"));
+    assert!(store.snapshot().is_none());
+}

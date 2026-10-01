@@ -1,5 +1,5 @@
 import type { RuntimeNotification } from '../../schema/runtime-core';
-import { extractSessionErrorCode, sessionErrorPresentation } from '../../utils/session-error-presentation';
+import { extractSessionErrorCode, formatModelErrorSummary, sessionErrorPresentation } from '../../utils/session-error-presentation';
 
 /**
  * Warning sources that require cross-page visibility. Every error is a toast
@@ -27,14 +27,38 @@ export function isSessionToastNotification(notification: RuntimeNotification): b
 }
 
 /**
+ * Formats a uniform, readable summary for notifications across all entry points,
+ * explaining model failures, stripping raw JSON, and mapping session error codes.
+ */
+export function formatToastSummary(message: string, t: (key: string) => string): string {
+  const code = extractSessionErrorCode(message);
+  const presentation = sessionErrorPresentation(code);
+
+  const hasModelDomain =
+    code === "session.model-reference-invalid" ||
+    message.includes("modelContext:") ||
+    message.includes("model_protocol.") ||
+    message.includes("provider_manifest.");
+
+  if (hasModelDomain) {
+    const summary = formatModelErrorSummary(null, message, t);
+    return code ? summary + " [" + code + "]" : summary;
+  }
+
+  if (presentation) {
+    return (presentation.useRawMessage ? message : t(presentation.messageKey)) + " [" + code + "]";
+  }
+
+  return message;
+}
+
+/**
  * Localized toast text: session error codes embedded in the message resolve
  * through the presentation table (code appended for support reports); the
  * raw Rust message stays the fallback for untagged notifications.
  */
 export function toastDisplayText(message: string, t: (key: string) => string): string {
-  const code = extractSessionErrorCode(message);
-  const presentation = sessionErrorPresentation(code);
-  return presentation ? `${t(presentation.messageKey)} [${code}]` : message;
+  return formatToastSummary(message, t);
 }
 
 /** Normalizes native and local notifications into the single UI error shape. */
@@ -47,7 +71,7 @@ export function runtimeErrorPresentation(
   return {
     code: code ?? notification.id,
     title: notification.source,
-    summary: presentation ? `${t(presentation.messageKey)} [${code}]` : notification.message,
+    summary: formatToastSummary(notification.message, t),
     technicalDetail: code ? notification.message.split(' | code: ')[0] ?? null : null,
     recoveryActions: presentation ? [presentation.action] : [],
     source: notification.source,

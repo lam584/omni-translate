@@ -1154,7 +1154,7 @@
     "restartSessionButton": "Перезапустить сеанс",
     "restartSessionHint": " Перезапустите сеанс и попробуйте снова.",
     "errorCode": {
-      "modelReferenceInvalid": "Модель вторичного перевода отсутствует или не связана с включённым провайдером. Выберите другую в настройках.",
+      "modelReferenceInvalid": "Проверка вызова модели не пройдена. Ознакомьтесь с конкретной причиной и техническими подробностями.",
       "audioCaptureFailed": "Процесс захвата звука остановлен. Проверьте аудиоустройство и повторите попытку.",
       "credentialInvalid": "Ключ API недействителен или истёк. Обновите учётные данные провайдера.",
       "quotaExceeded": "Достигнута квота или лимит запросов провайдера. Проверьте использование и повторите попытку.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Основная аудиомодель",
+      "primary-text": "Основная текстовая модель",
+      "secondary-subtitle": "Модель вторичных субтитров",
+      "speech-output": "Модель вывода речи"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Протокол отсутствует или не зарегистрирован",
+      "adapter-unavailable": "Адаптер недоступен или не поддерживается",
+      "endpoint-invalid": "Недопустимая конечная точка или регион",
+      "provider-disabled": "Провайдер отключен или недоступен"
     }
   },
   "glossary": {

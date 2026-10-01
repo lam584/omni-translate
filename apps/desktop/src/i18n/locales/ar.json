@@ -1154,7 +1154,7 @@
     "restartSessionButton": "إعادة تشغيل الجلسة",
     "restartSessionHint": " أعد تشغيل الجلسة وحاول مرة أخرى.",
     "errorCode": {
-      "modelReferenceInvalid": "نموذج الترجمة الثانوية مفقود أو غير مرتبط بموفر مفعّل. اختر نموذجًا آخر من إعدادات الموفر.",
+      "modelReferenceInvalid": "لم يجتز استدعاء النموذج التحقق. يرجى مراجعة السبب المحدد والتفاصيل التقنية.",
       "audioCaptureFailed": "توقفت عملية التقاط الصوت. تحقق من جهاز الصوت ثم أعد المحاولة.",
       "credentialInvalid": "مفتاح API غير صالح أو منتهي الصلاحية. حدّث بيانات اعتماد المزوّد.",
       "quotaExceeded": "تم بلوغ حصة المزوّد أو حد المعدل. تحقق من استخدامك وحاول مرة أخرى.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "نموذج الصوت الأساسي",
+      "primary-text": "نموذج النص الأساسي",
+      "secondary-subtitle": "نموذج الترجمة الثانوية",
+      "speech-output": "نموذج الإخراج الصوتي"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "البروتوكول مفقود أو غير مسجل",
+      "adapter-unavailable": "المحول غير مدعوم أو غير متوفر",
+      "endpoint-invalid": "نقطة النهاية أو المنطقة غير صالحة",
+      "provider-disabled": "مزود الخدمة غير مفعّل أو معطل"
     }
   },
   "glossary": {

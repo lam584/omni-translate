@@ -1154,7 +1154,7 @@
     "restartSessionButton": "セッションを再起動",
     "restartSessionHint": " セッションを再起動して再試行してください。",
     "errorCode": {
-      "modelReferenceInvalid": "二次翻訳モデルが見つからないか、有効なプロバイダーに関連付けられていません。プロバイダー設定で選び直してください。",
+      "modelReferenceInvalid": "モデル呼び出しのチェックに失敗しました。具体的な原因と技術的な詳細を確認してください。",
       "audioCaptureFailed": "音声キャプチャ処理が停止しました。音声デバイスを確認して再試行してください。",
       "credentialInvalid": "APIキーが無効か期限切れです。プロバイダーの認証情報を更新してください。",
       "quotaExceeded": "プロバイダーのクォータまたはレート制限に達しました。利用状況を確認して再試行してください。",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "プライマリオ디오モデル",
+      "primary-text": "プライマリテキストモデル",
+      "secondary-subtitle": "セカンダリ字幕モデル",
+      "speech-output": "音声出力モデル"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "プロトコルが見つからないか未登録です",
+      "adapter-unavailable": "アダプターが利用できないか非対応です",
+      "endpoint-invalid": "エンドポイントまたはリージョンが無効です",
+      "provider-disabled": "プロバイダーが無効化されているか利用できません"
     }
   },
   "glossary": {

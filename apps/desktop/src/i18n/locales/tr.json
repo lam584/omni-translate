@@ -1154,7 +1154,7 @@
     "restartSessionButton": "Oturumu yeniden başlat",
     "restartSessionHint": " Oturumu yeniden başlatıp tekrar deneyin.",
     "errorCode": {
-      "modelReferenceInvalid": "İkincil çeviri modeli eksik veya etkin bir sağlayıcıya bağlı değil. Sağlayıcı ayarlarından başka bir model seçin.",
+      "modelReferenceInvalid": "Model çağrısı denetimi başarısız oldu. Lütfen belirli nedeni ve teknik ayrıntıları inceleyin.",
       "audioCaptureFailed": "Ses yakalama işlemi durdu. Ses aygıtını denetleyip yeniden deneyin.",
       "credentialInvalid": "API anahtarı geçersiz veya süresi dolmuş. Sağlayıcı kimlik bilgilerinizi güncelleyin.",
       "quotaExceeded": "Sağlayıcı kotasına veya hız sınırına ulaşıldı. Kullanımınızı kontrol edip yeniden deneyin.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Birincil ses modeli",
+      "primary-text": "Birincil metin modeli",
+      "secondary-subtitle": "İkincil altyazı modeli",
+      "speech-output": "Konuşma çıkış modeli"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Protokol eksik veya kayıtlı değil",
+      "adapter-unavailable": "Bağdaştırıcı kullanılamıyor veya desteklenmiyor",
+      "endpoint-invalid": "Uç nokta veya bölge geçersiz",
+      "provider-disabled": "Sağlayıcı devre dışı veya kullanılamıyor"
     }
   },
   "glossary": {

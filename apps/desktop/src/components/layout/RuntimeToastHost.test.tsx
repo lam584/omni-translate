@@ -176,6 +176,31 @@ describe('RuntimeToastHost rendering', () => {
 });
 
 describe('runtimeErrorPresentation', () => {
+
+  it("formats model-protocol error and strips modelContext JSON from toast summary", () => {
+    const contextJson = JSON.stringify({
+      modelRole: "primary-audio",
+      modelId: "qwen-audio-flash",
+      providerId: "dashscope-1",
+    });
+    const message = "model_protocol.adapter_unavailable: adapter not supported | modelContext: " + contextJson + " | code: session.model-reference-invalid | recommended: open-providers";
+    const notificationItem: RuntimeNotification = {
+      id: "toast-model-err",
+      level: "error",
+      source: "session",
+      message,
+      emittedAt: "2026-07-27T00:00:00.000Z",
+    };
+
+    const presentation = runtimeErrorPresentation(notificationItem, (key) => "t:" + key);
+    expect(presentation.code).toBe("session.model-reference-invalid");
+    expect(presentation.summary).not.toContain("modelContext");
+    expect(presentation.summary).not.toContain("{");
+    expect(presentation.summary).toContain("t:session.modelRole.primary-audio");
+    expect(presentation.summary).toContain("(qwen-audio-flash)");
+    expect(presentation.summary).toContain("t:session.modelReason.adapter-unavailable");
+    expect(presentation.summary).toContain("[session.model-reference-invalid]");
+  });
   it('normalizes a tagged native failure into the unified error shape', () => {
     const notification: RuntimeNotification = {
       id: 'worker-1',

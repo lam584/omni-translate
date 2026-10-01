@@ -399,12 +399,24 @@ impl AudioStateStore {
         self.session_registry.take_stt(direction)
     }
 
+    /// Includes parked preconnects and registered publishers whose capture has not started.
+    pub(crate) fn has_provider_session_owner(&self, direction: &str) -> bool {
+        self.session_registry.has_stt(direction)
+            || self.has_omni_handle(direction)
+            || self.omni_session_metadata(direction).is_some()
+            || self.has_omni_sender(direction)
+    }
+
     pub(crate) fn store_omni_handle(&self, direction: &str, handle: OmniHandle) -> Option<OmniHandle> {
         self.omni_sessions.store_handle(direction, handle)
     }
 
     pub(crate) fn store_omni_sender(&self, direction: &str, sender: Sender<Vec<u8>>) {
         self.omni_sessions.store_sender(direction, sender);
+    }
+
+    pub(crate) fn has_omni_handle(&self, direction: &str) -> bool {
+        self.omni_sessions.has_handle(direction)
     }
 
     pub(crate) fn has_omni_sender(&self, direction: &str) -> bool {

@@ -304,6 +304,19 @@ describe('Bailian UI preflight uses lossless runtime authority', () => {
     modelId: 'qwen3.5-livetranslate-flash-realtime', operation: 'realtime-translation' as const,
     baseUrl: 'https://dashscope.aliyuncs.com/api/v1', transport: 'websocket' as const, region: 'cn-beijing',
   };
+  it('keeps Workspace alias ownership, endpoint and region validation intact', () => {
+    const manifests = [...PROVIDER_MANIFEST_REGISTRY.all()];
+    const workspace = {
+      ...request, templateId: 'template-dashscope-workspace',
+      modelId: 'qwen3.8-livetranslate-flash-realtime',
+      baseUrl: 'wss://workspace-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime',
+    };
+    expect(resolveProviderProtocol(manifests, workspace).profileOwnerProviderId).toBe('bailian');
+    expectCode(() => resolveProviderProtocol(manifests, { ...workspace, baseUrl: 'https://dashscope.aliyuncs.com/api/v1' }), 'bailian-protocol-rejected');
+    expectCode(() => resolveProviderProtocol(manifests, { ...workspace, region: 'ap-southeast-1' }), 'bailian-protocol-rejected');
+    expectCode(() => resolveProviderProtocol(manifests, { ...workspace, providerId: 'openai' }), 'provider-owner-mismatch');
+    expectCode(() => resolveProviderProtocol(manifests, { ...workspace, templateId: 'template-dashscope-workspace-other' }), 'provider-template-not-found');
+  });
   it('reports endpoint and regional rejection for known models without provider I/O', () => {
     const manifests = [...PROVIDER_MANIFEST_REGISTRY.all()];
     expect(resolveProviderProtocol(manifests, request).protocolProfile.id).toBe('bailian.livetranslate.realtime.ws');

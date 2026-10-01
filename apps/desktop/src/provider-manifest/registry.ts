@@ -1,3 +1,4 @@
+import { findProviderManifestByTemplateId } from './template-ownership';
 import { resolveProviderProtocol } from './resolver';
 import type { ProviderProtocolResolutionRequest } from './resolver';
 import type { AuthorizedProviderProtocol, ProviderManifest } from './types';
@@ -65,7 +66,7 @@ export class ProviderManifestRegistry {
   }
 
   findByTemplateId(templateId: string): ProviderManifest | null {
-    return this.manifests.find((manifest) => manifest.provider.templateId === templateId) ?? null;
+    return findProviderManifestByTemplateId(this.manifests, templateId);
   }
 
   resolve(request: ProviderProtocolResolutionRequest): AuthorizedProviderProtocol {

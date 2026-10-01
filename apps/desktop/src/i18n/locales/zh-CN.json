@@ -1210,7 +1210,7 @@
       "voiceUnsupported": "当前音色不受支持，请在平台页更换音色。",
       "networkUnreachable": "无法连接语音服务，请检查网络后重新启动会话。",
       "providerInternal": "平台服务内部错误，请稍后重新启动会话。",
-      "modelReferenceInvalid": "二次翻译模型已失效或未关联到启用的平台，请前往模型设置重新选择。",
+      "modelReferenceInvalid": "模型调用检查未通过，请查看具体原因及技术详情。",
       "audioDeviceLost": "音频设备已断开或不可用，请检查设备后重试。",
       "audioCaptureFailed": "音频采集线程已退出，请检查音频设备后重试。",
       "audioFlowStalled": "音频流已停滞，请确认音频源仍在播放。"
@@ -1282,6 +1282,22 @@
       "captureErrorHint": "请在“音频路由”中重新选择系统播放设备，或确认该设备未被其他程序独占后重试。",
       "captureNotReadyReason": "{{stage}}已接受命令但未在期限内就绪（{{context}}）",
       "captureNotReadyHint": "通常是采集设备启动较慢或当前无音频输出，请确认正在播放声音后重试；若持续未就绪，请在“诊断”页查看采集日志。"
+    },
+    "modelRole": {
+      "primary-audio": "主音频模型",
+      "primary-text": "主文本模型",
+      "secondary-subtitle": "二次字幕模型",
+      "speech-output": "语音播报模型"
+    },
+    "modelReason": {
+      "session-identity-conflict": "同一会话中的协议身份发生冲突，请停止当前会话后重新启动。",
+      "authorization-identity-mismatch": "调用的模型或协议身份与授权信息不一致，校验已拒绝；请查看技术详情核对模型、协议及平台归属。",
+      "reference-invalid": "模型调用未获授权，请检查模型及平台配置。",
+      "unknown": "无法确定具体失败原因，请查看技术详情。",
+      "missing-protocol": "协议缺失或未注册",
+      "adapter-unavailable": "适配器不可用或不受支持",
+      "endpoint-invalid": "端点地址或区域无效",
+      "provider-disabled": "平台已禁用或失效"
     }
   },
   "sceneReadiness": {

@@ -2,13 +2,16 @@ import i18n from '../../i18n/config';
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { DiagnosticLogEntryRuntime } from '../../schema/runtime-core';
 import type { SceneLaunchStage } from './sceneLaunchPlan';
+import { extractSessionErrorCode, formatModelErrorSummary, sessionErrorPresentation } from '../../utils/session-error-presentation';
 
 /**
- * Three terminal outcomes of a watch launch attempt. The names describe *why*
+ * Terminal outcomes of a watch launch attempt. The names describe *why*
  * capture never became usable so the message can offer a specific next step,
  * instead of collapsing every failure into "启动超时".
  */
 export type SceneLaunchOutcome =
+  // Provider/model failures are not audio endpoint failures.
+  | 'session-error'
   // The native start_audio_route command was never acknowledged.
   | 'command-rejected'
   // The command was acknowledged, but capture never reached a usable state
@@ -64,6 +67,10 @@ function errorText(error: unknown): string {
     const candidate = error as { message?: unknown };
     if (typeof candidate.message === 'string') return candidate.message.trim();
   }
+  if (typeof error === 'object') {
+    const candidate = error as { message?: unknown };
+    if (typeof candidate.message === 'string') return candidate.message.trim();
+  }
   return String(error).trim();
 }
 
@@ -83,7 +90,23 @@ function latestRouteMarker(recentLogs: DiagnosticLogEntryRuntime[]): string | nu
   return null;
 }
 
+function sessionFailure(input: SceneLaunchAttributionInput) {
+  const detail = errorText(input.error);
+  const nativeError = input.snapshot?.inbound.lastError?.trim() ?? "";
+  // Prefer the thrown failure over a potentially stale native snapshot.
+  const thrownCode = extractSessionErrorCode(detail);
+  const nativeCode = input.stage === "inbound-route"
+    ? extractSessionErrorCode(nativeError) ?? input.snapshot?.inbound.lastErrorCode
+    : null;
+  const code = thrownCode ?? nativeCode;
+  const presentation = sessionErrorPresentation(code);
+  return presentation && presentation.action !== "check-audio-device"
+    ? { detail: thrownCode ? detail : nativeError || detail, code, presentation }
+    : null;
+}
+
 function classify(input: SceneLaunchAttributionInput): SceneLaunchOutcome {
+  if (sessionFailure(input)) return 'session-error';
   const lastError = input.snapshot?.inbound.lastError?.trim();
   const errorMarker = hasMarker(input.recentLogs, ROUTE_ERROR_MARKERS);
   if (lastError || errorMarker) return 'capture-error';
@@ -107,7 +130,7 @@ function nativeMarkerFragment(recentLogs: DiagnosticLogEntryRuntime[]): string {
 }
 
 /**
- * Builds an attributable failure message for a watch launch. The three outcomes
+ * Builds an attributable failure message for a watch launch. The outcomes
  * each produce a distinct reason plus an actionable hint, so the user learns
  * why capture failed rather than only that it was slow.
  */
@@ -121,6 +144,31 @@ export function describeSceneLaunchAttribution(input: SceneLaunchAttributionInpu
     const reason = i18n.t('session.attribution.commandRejectedReason', { stage: stageLabel, context, detail: detail ? `；${detail}` : '' });
     const hint = i18n.t('session.attribution.commandRejectedHint');
     return { outcome, message: `${reason}。${hint}` };
+  }
+
+  if (outcome === "session-error") {
+    const failure = sessionFailure(input)!;
+    let reason = failure.presentation.useRawMessage
+      ? failure.detail
+      : [i18n.t(failure.presentation.messageKey), failure.code, failure.detail].join("; ");
+
+    if (
+      failure.code === "session.model-reference-invalid" ||
+      failure.detail.includes("modelContext:") ||
+      failure.detail.includes("model_protocol.") ||
+      failure.detail.includes("provider_manifest.")
+    ) {
+      const formatted = formatModelErrorSummary(input.error, failure.detail, (key) => i18n.t(key));
+      const diagnosticPart = failure.detail.includes("modelContext:")
+        ? ""
+        : "; " + failure.detail;
+      reason = formatted + " [" + failure.code + "]" + diagnosticPart;
+    }
+
+    const hint = failure.presentation.actionKey
+      ? i18n.t(failure.presentation.actionKey)
+      : i18n.t("session.restartSessionHint");
+    return { outcome, message: [reason, hint].join("; ") };
   }
 
   if (outcome === 'capture-error') {

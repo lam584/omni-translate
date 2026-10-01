@@ -1154,7 +1154,7 @@
     "restartSessionButton": "เริ่มเซสชันใหม่",
     "restartSessionHint": " โปรดเริ่มเซสชันใหม่แล้วลองอีกครั้ง",
     "errorCode": {
-      "modelReferenceInvalid": "ไม่พบโมเดลแปลรองหรือไม่ได้เชื่อมกับผู้ให้บริการที่เปิดใช้ โปรดเลือกใหม่ในการตั้งค่าผู้ให้บริการ",
+      "modelReferenceInvalid": "การตรวจสอบการเรียกใช้โมเดลไม่ผ่าน โปรดดูสาเหตุที่เฉพาะเจาะจงและรายละเอียดทางเทคนิค",
       "audioCaptureFailed": "กระบวนการจับเสียงหยุดทำงาน โปรดตรวจสอบอุปกรณ์เสียงแล้วลองอีกครั้ง",
       "credentialInvalid": "คีย์ API ไม่ถูกต้องหรือหมดอายุ โปรดอัปเดตข้อมูลรับรองของผู้ให้บริการ",
       "quotaExceeded": "ถึงโควตาหรือขีดจำกัดอัตราของผู้ให้บริการแล้ว โปรดตรวจสอบการใช้งานแล้วลองอีกครั้ง",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "โมเดลเสียงหลัก",
+      "primary-text": "โมเดลข้อความหลัก",
+      "secondary-subtitle": "โมเดลคำบรรยายรอง",
+      "speech-output": "โมเดลเสียงพูดออก"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "โปรโตคอลสูญหายหรือไม่ได้รับการลงทะเบียน",
+      "adapter-unavailable": "อะแดปเตอร์ไม่พร้อมใช้งานหรือไม่รองรับ",
+      "endpoint-invalid": "ตำแหน่งข้อมูลหรือภูมิภาคไม่ถูกต้อง",
+      "provider-disabled": "ผู้ให้บริการถูกปิดใช้งานหรือไม่พร้อมใช้งาน"
     }
   },
   "glossary": {

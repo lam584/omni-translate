@@ -3,7 +3,6 @@ use tauri::{AppHandle, Manager};
 
 use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::engine;
-use super::super::engine::AudioRouteSupervisor;
 use super::super::glossary::GlossaryCatalog;
 use super::super::omni::session_errors::{
     split_error_markers, with_error_markers, SessionErrorCode,
@@ -11,7 +10,7 @@ use super::super::omni::session_errors::{
 use super::super::state::AudioStateStore;
 use super::super::{speech, stt, subtitle_translate};
 use super::realtime_session::{
-    apply_native_subtitle_translate_fallback, start_or_reuse_gemini_live_session,
+    apply_native_subtitle_translate_fallback, prepare_watch_report_for_plan, start_or_reuse_gemini_live_session,
     start_or_reuse_openai_realtime_session, start_or_reuse_route_omni_session,
     start_or_reuse_tencent_speech_translate_session, stop_preconnected_omni_session,
 };
@@ -89,10 +88,18 @@ where
 {
     let outcome = run_fast_watch_start_body(run_inner);
     if let FastWatchStartOutcome::Failed(reason) = &outcome {
-        state
-            .watch_session_report
-            .record_session_error("route-start-failed", reason);
-        state.watch_session_report.complete();
+        // A rejected new start has not necessarily acquired report ownership.
+        // Keep the existing report active (and unpolluted) while old publishers
+        // or another route still own it. Armed/buffering alone is not an owner.
+        let snapshot = state.snapshot();
+        let report_has_owner = snapshot.inbound.stream_bound
+            || snapshot.outbound.stream_bound
+            || state.has_provider_session_owner("inbound")
+            || state.has_provider_session_owner("outbound");
+        if !report_has_owner {
+            state.watch_session_report.record_session_error("route-start-failed", reason);
+            state.watch_session_report.complete();
+        }
         let (message, error_code, recommended_action) = split_error_markers(reason);
         state.mark_route_error(
             "inbound",
@@ -189,13 +196,8 @@ pub(crate) async fn start_audio_route(
     let fast_watch_start = direction == "inbound" && super::configured_route_mode(&config) == "watch";
     if fast_watch_start {
         let state = app.state::<AudioStateStore>();
-        let requested_model = config
-            .pointer("/devices/inboundVoiceModelId")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        state
-            .watch_session_report
-            .begin_or_reuse("", requested_model);
+        // Report ownership is established by the locked, resolved plan below.
+        // Creating/relabeling it here would race a still-running old preconnect.
         let route_id = config
             .pointer("/devices/inboundRoute/routeId")
             .and_then(Value::as_str)
@@ -408,7 +410,7 @@ fn start_omni_inbound_route(
                     &state,
                     &direction,
                     "subtitle_translate_worker_failed",
-                );
+                ).map_err(|retirement| format!("{error} | retirementError: {retirement}"))?;
                 let _ = append_diagnostics_log(
                     &app,
                     "audio",
@@ -440,7 +442,7 @@ fn start_omni_inbound_route(
             &state,
             &direction,
             "subtitle_translate_provider_unresolved",
-        );
+        )?;
         let _ = append_diagnostics_log(
             &app,
             "audio",
@@ -734,19 +736,11 @@ fn start_recognized_route_locked(
                 requested_voice_model.clone(),
                 voice_provider,
             );
-            if super::configured_route_mode(&config) == "watch" {
-                state.watch_session_report.begin_or_reuse(
-                    &plan.provider.provider_id,
-                    &plan.provider.model,
-                );
-                if let Some(authority) = plan.model_protocol_authority.as_ref() {
-                    state
-                        .watch_session_report
-                        .bind_authorized_model_protocol_profile(authority)?;
-                }
-            }
             if let Some(error) = plan.configuration_error.clone() {
                 return Err(error);
+            }
+            if direction == "inbound" && super::configured_route_mode(&config) == "watch" {
+                prepare_watch_report_for_plan(state, &plan)?;
             }
             let _ = append_diagnostics_log(
                 &app,
@@ -829,7 +823,7 @@ fn start_recognized_route_locked(
             ResolvedRouteKind::DashscopeStt => {
                 let (stt_sender, handle) = stt::start_stt(app.clone(), &state, plan.provider, direction.clone())?;
                 if let Some(previous) = state.store_stt_handle(&direction, handle) {
-                    let _ = previous.stop_tx.send(());
+                    previous.stop_and_join(&direction)?;
                 }
                 start_route_with_overlay(app, &state, &direction, config, Some(stt_sender))
             }
@@ -883,7 +877,7 @@ pub(crate) async fn stop_audio_route(
                 let _pipeline_guard = state.lock_inbound_pipeline();
                 stop_existing_inbound_pipeline(&app, &state, false)?;
             } else {
-                AudioRouteSupervisor::new(app.clone(), &state).stop(&direction)?;
+                stop_existing_route_pipeline(&app, &state, &direction, false)?;
             }
             let _ = append_diagnostics_log(
                 &app,
@@ -895,7 +889,10 @@ pub(crate) async fn stop_audio_route(
                 None,
             );
             let snapshot = state.snapshot();
-            if !snapshot.inbound.stream_bound && !snapshot.outbound.stream_bound {
+            if !snapshot.inbound.stream_bound && !snapshot.outbound.stream_bound
+                && !state.has_provider_session_owner("inbound")
+                && !state.has_provider_session_owner("outbound")
+            {
                 state.watch_session_report.complete();
             }
             crate::history::finalize_session_if_routes_idle(&app, &snapshot);

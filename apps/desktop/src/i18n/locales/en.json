@@ -1210,7 +1210,7 @@
       "voiceUnsupported": "The selected voice is not supported. Choose another voice in provider settings.",
       "networkUnreachable": "Unable to reach the speech service. Check your network and restart the session.",
       "providerInternal": "The provider reported an internal error. Restart the session and try again later.",
-      "modelReferenceInvalid": "The secondary translation model is missing or no longer linked to an enabled provider. Choose another model in provider settings.",
+      "modelReferenceInvalid": "The model invocation check failed. Please review the specific reason and technical details.",
       "audioDeviceLost": "The audio device was disconnected or is unavailable. Check the device and try again.",
       "audioCaptureFailed": "The audio capture worker stopped. Check the audio device and retry.",
       "audioFlowStalled": "The audio stream stalled. Confirm the audio source is still playing."
@@ -1282,6 +1282,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Primary audio model",
+      "primary-text": "Primary text model",
+      "secondary-subtitle": "Secondary subtitle model",
+      "speech-output": "Speech output model"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Protocol missing or not registered",
+      "adapter-unavailable": "Adapter unavailable or unsupported",
+      "endpoint-invalid": "Endpoint or region invalid",
+      "provider-disabled": "Provider disabled or unavailable"
     }
   },
   "sceneReadiness": {

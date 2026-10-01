@@ -1154,7 +1154,7 @@
     "restartSessionButton": "সেশন পুনরায় চালু করুন",
     "restartSessionHint": " সেশন পুনরায় চালু করে আবার চেষ্টা করুন।",
     "errorCode": {
-      "modelReferenceInvalid": "দ্বিতীয় অনুবাদ মডেলটি নেই বা সক্রিয় প্রদানকারীর সঙ্গে যুক্ত নয়। প্রদানকারী সেটিংসে অন্য মডেল বেছে নিন।",
+      "modelReferenceInvalid": "মডেল আহ্বানের যাচাই ব্যর্থ হয়েছে। নির্দিষ্ট কারণ ও প্রযুক্তিগত বিবরণ দেখুন।",
       "audioCaptureFailed": "অডিও ক্যাপচার প্রক্রিয়া থেমে গেছে। অডিও ডিভাইস পরীক্ষা করে আবার চেষ্টা করুন।",
       "credentialInvalid": "API কী অবৈধ বা মেয়াদোত্তীর্ণ। প্রদানকারীর শংসাপত্র আপডেট করুন।",
       "quotaExceeded": "প্রদানকারীর কোটা বা রেট সীমায় পৌঁছেছে। আপনার ব্যবহার যাচাই করে আবার চেষ্টা করুন।",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "প্রাথমিক অডিও মডেল",
+      "primary-text": "প্রাথমিক পাঠ্য মডেল",
+      "secondary-subtitle": "দ্বিতীয় সাবটাইটেল মডেল",
+      "speech-output": "স্পিচ আউটপুট মডেল"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "প্রোটোকল অনুপস্থিত বা অনিবন্ধিত",
+      "adapter-unavailable": "অ্যাডাপ্টার অনুপলব্ধ বা অসমর্থিত",
+      "endpoint-invalid": "এন্ডপয়েন্ট বা অঞ্চল অবৈধ",
+      "provider-disabled": "সরবরাহকারী অক্ষম বা অবৈধ"
     }
   },
   "glossary": {

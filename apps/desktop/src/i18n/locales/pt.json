@@ -1154,7 +1154,7 @@
     "restartSessionButton": "Reiniciar sessão",
     "restartSessionHint": " Reinicie a sessão e tente novamente.",
     "errorCode": {
-      "modelReferenceInvalid": "O modelo de tradução secundária está ausente ou não está mais ligado a um provedor ativo. Escolha outro nas configurações.",
+      "modelReferenceInvalid": "A verificação da chamada ao modelo falhou. Consulte o motivo específico e os detalhes técnicos.",
       "audioCaptureFailed": "O processo de captura de áudio parou. Verifique o dispositivo de áudio e tente novamente.",
       "credentialInvalid": "A chave de API é inválida ou expirou. Atualize as credenciais do provedor.",
       "quotaExceeded": "Cota ou limite de taxa do provedor atingido. Verifique seu uso e tente novamente.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Modelo de áudio primário",
+      "primary-text": "Modelo de texto primário",
+      "secondary-subtitle": "Modelo de legenda secundária",
+      "speech-output": "Modelo de saída de fala"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Protocolo ausente ou não registrado",
+      "adapter-unavailable": "Adaptador indisponível ou não suportado",
+      "endpoint-invalid": "Ponto de extremidade ou região inválidos",
+      "provider-disabled": "Provedor desativado ou indisponível"
     }
   },
   "glossary": {

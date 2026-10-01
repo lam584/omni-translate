@@ -1154,7 +1154,7 @@
     "restartSessionButton": "सत्र पुनः प्रारंभ करें",
     "restartSessionHint": " सत्र पुनः प्रारंभ करके फिर से प्रयास करें।",
     "errorCode": {
-      "modelReferenceInvalid": "द्वितीयक अनुवाद मॉडल गायब है या सक्षम प्रदाता से जुड़ा नहीं है। प्रदाता सेटिंग में दूसरा मॉडल चुनें।",
+      "modelReferenceInvalid": "मॉडल कॉल की जाँच विफल हुई। कृपया विशिष्ट कारण और तकनीकी विवरण देखें।",
       "audioCaptureFailed": "ऑडियो कैप्चर प्रक्रिया रुक गई। ऑडियो डिवाइस जाँचकर फिर प्रयास करें।",
       "credentialInvalid": "API कुंजी अमान्य है या समाप्त हो गई है। प्रदाता क्रेडेंशियल अपडेट करें।",
       "quotaExceeded": "प्रदाता कोटा या दर सीमा पूरी हो गई है। अपना उपयोग जांचें और पुनः प्रयास करें।",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "प्राथमिक ऑडियो मॉडल",
+      "primary-text": "प्राथमिक टेक्स्ट मॉडल",
+      "secondary-subtitle": "द्वितीयक उपशीर्षक मॉडल",
+      "speech-output": "भाषण आउटपुट मॉडल"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "प्रोटोकॉल गायब है या पंजीकृत नहीं है",
+      "adapter-unavailable": "एडेप्टर अनुपलब्ध या असमर्थित है",
+      "endpoint-invalid": "एंडपॉइंट या क्षेत्र अमान्य है",
+      "provider-disabled": "प्रदाता अक्षम या अनुपलब्ध है"
     }
   },
   "glossary": {

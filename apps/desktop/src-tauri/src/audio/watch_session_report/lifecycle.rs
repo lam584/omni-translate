@@ -15,6 +15,11 @@ impl WatchSessionReportStore {
         let mut guard = self.inner.lock().expect("watch session report poisoned");
         if let Some(session) = guard.as_mut() {
             if session.status == "active" {
+                // Fast acknowledgements carry composite references, not new protocol authority.
+                // Once bound, keep the old report immutable until its publishers have stopped.
+                if session.model_protocol_profile_identity.is_some() {
+                    return session.session_id.clone();
+                }
                 if !provider_id.trim().is_empty() {
                     session.provider_id = provider_id.to_string();
                 }
@@ -66,13 +71,60 @@ impl WatchSessionReportStore {
         session_id
     }
 
-    pub(crate) fn bind_authorized_model_protocol_profile(
+    /// Called under the inbound pipeline lock. Retiring must join all old publishers;
+    /// never hold the report mutex while waiting for a worker's final report writes.
+    pub(crate) fn begin_authorized_session(
         &self,
-        authority: &crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile,
-    ) -> Result<(), String> {
-        self.bind_model_protocol_profile_identity(ModelProtocolProfileIdentityRuntime::from(
-            authority,
-        ))
+        provider_id: &str,
+        model: &str,
+        authority: Option<&crate::provider::model_protocol_profile::AuthorizedModelProtocolProfile>,
+        replace_connection: bool,
+        other_owner_active: bool,
+        retire_previous: impl FnOnce() -> Result<(), String>,
+    ) -> Result<String, String> {
+        self.begin_session_with_identity(provider_id, model,
+            authority.map(ModelProtocolProfileIdentityRuntime::from),
+            replace_connection, other_owner_active, retire_previous)
+    }
+
+    pub(super) fn begin_session_with_identity(
+        &self,
+        provider_id: &str,
+        model: &str,
+        identity: Option<ModelProtocolProfileIdentityRuntime>,
+        replace_connection: bool,
+        other_owner_active: bool,
+        retire_previous: impl FnOnce() -> Result<(), String>,
+    ) -> Result<String, String> {
+        if identity.as_ref().is_some_and(|value| value.exact_model_id != model) {
+            return Err("model_protocol.authorization_identity_mismatch: requested model differs from authorized exactModelId".to_string());
+        }
+        let replace_report = {
+            let guard = self.inner.lock().expect("watch session report poisoned");
+            guard.as_ref().is_none_or(|session| {
+                // Creating a report after completion also replaces the session,
+                // even when the exact model and protocol identity stay the same.
+                // Unbound active reports may still be enriched with the resolved model.
+                session.status != "active"
+                    || (session.model_protocol_profile_identity.is_some()
+                        && (session.model_protocol_profile_identity != identity
+                            || session.model != model || session.provider_id != provider_id))
+            })
+        };
+        if replace_report && other_owner_active {
+            return Err("model_protocol.authorization_identity_mismatch: Watch report protocol identity changed while another route still owns the session".to_string());
+        }
+        if replace_report || replace_connection {
+            retire_previous()?;
+        }
+        if replace_report {
+            self.complete();
+        }
+        let session_id = self.begin_or_reuse(provider_id, model);
+        if let Some(identity) = identity {
+            self.bind_model_protocol_profile_identity(identity)?;
+        }
+        Ok(session_id)
     }
 
     pub(super) fn bind_model_protocol_profile_identity(

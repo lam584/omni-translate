@@ -103,8 +103,16 @@ fn connect_stt_socket(
 
 pub(crate) struct SttHandle {
     pub stop_tx: mpsc::Sender<()>,
-    #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
     pub join_handle: JoinHandle<()>,
+}
+
+impl SttHandle {
+    /// Wait for final ASR/report writes before the next route can acquire the report.
+    pub(crate) fn stop_and_join(self, direction: &str) -> Result<(), String> {
+        let _ = self.stop_tx.send(());
+        self.join_handle.join()
+            .map_err(|_| format!("STT {direction} worker panicked during route stop"))
+    }
 }
 
 pub(crate) fn start_stt(
@@ -555,6 +563,32 @@ mod tests {
         let encoded = base64_encode_pcm16(&samples);
 
         assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn stop_and_join_waits_for_final_stt_report_writes() {
+        let state = std::sync::Arc::new(AudioStateStore::new());
+        state.watch_session_report.begin_or_reuse("provider", "asr-model");
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let worker_state = state.clone();
+        let join_handle = thread::spawn(move || {
+            stop_rx.recv().unwrap();
+            worker_state.watch_session_report.record_session_error("old-stt-final", "old ASR final event");
+        });
+        SttHandle { stop_tx, join_handle }.stop_and_join("inbound").unwrap();
+        let report = state.watch_session_report.snapshot().unwrap();
+        assert!(report.issues.iter().any(|issue| issue.code == "old-stt-final"));
+    }
+
+    #[test]
+    fn stop_and_join_surfaces_stt_worker_panic() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            stop_rx.recv().unwrap();
+            panic!("injected ASR shutdown panic");
+        });
+        let error = SttHandle { stop_tx, join_handle }.stop_and_join("inbound").unwrap_err();
+        assert!(error.contains("STT inbound worker panicked"));
     }
 
     #[test]

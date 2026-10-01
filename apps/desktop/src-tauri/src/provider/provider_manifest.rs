@@ -232,10 +232,30 @@ fn provider_manifest<'a>(
     bundle: &'a ProviderManifestBundle,
     provider: &ProviderDraftInput,
 ) -> Result<Option<&'a ProviderManifest>, String> {
+    // Workspace is an explicit built-in Bailian template alias, not a model-name
+    // heuristic or a way for arbitrary/custom templates to claim another owner.
+    let workspace_alias = provider.template_id == "template-dashscope-workspace";
+    let owner_template_id = if workspace_alias {
+        "template-dashscope-realtime"
+    } else {
+        provider.template_id.as_str()
+    };
     let manifest = bundle
         .manifests
         .iter()
-        .find(|manifest| manifest.provider.template_id == provider.template_id);
+        .find(|manifest| manifest.provider.template_id == owner_template_id
+            && (!workspace_alias || manifest.provider.id == "bailian"));
+    if workspace_alias {
+        if let Some(runtime_owner) = bundle.manifests.iter()
+            .find(|candidate| candidate.provider.id == provider.provider_id) {
+            if runtime_owner.provider.id != "bailian" {
+                return Err(format!(
+                    "provider_manifest.provider_owner_mismatch: Workspace template cannot claim runtime owner '{}'",
+                    provider.provider_id
+                ));
+            }
+        }
+    }
     let declared_owner = provider
         .manifest_provider_id
         .as_deref()
@@ -908,6 +928,82 @@ mod tests {
         assert!(authorize_realtime_provider(&wrong_owner)
             .unwrap_err()
             .starts_with("provider_manifest.provider_owner_mismatch"));
+    }
+
+    fn workspace_provider() -> ProviderDraftInput {
+        let mut provider = provider(
+            "template-dashscope-workspace",
+            "qwen3.8-livetranslate-flash-realtime",
+            "wss://fixture.cn-beijing.maas.aliyuncs.com",
+            "websocket",
+        );
+        provider.provider_id = "provider-dashscope".to_string();
+        provider.kind = "dashscope".to_string();
+        provider.region = Some("cn-beijing".to_string());
+        provider.manifest_provider_id = Some("bailian".to_string());
+        provider.model_registry_version = Some(2);
+        provider.model_protocol_bindings = vec![serde_json::from_value(json!({
+            "modelId": provider.model,
+            "operation": "realtime-translation",
+            "profileOwnerProviderId": "bailian",
+            "manifestVersion": 1,
+            "profileId": "bailian.livetranslate.3_8.realtime.ws",
+            "profileVersion": 1
+        })).expect("Workspace binding fixture")];
+        provider
+    }
+
+    #[test]
+    fn workspace_alias_authorizes_exact_bailian_manifest_binding() {
+        let provider = workspace_provider();
+        let authority = authorize_realtime_provider(&provider)
+            .expect("Workspace authorization")
+            .expect("Bailian authority");
+        assert_eq!(authority.provider_owner_id, "bailian");
+        assert_eq!(authority.model_id, provider.model);
+        assert_eq!(authority.profile_id, "bailian.livetranslate.3_8.realtime.ws");
+        assert_eq!(authority.operation, "realtime-translation");
+        assert_eq!(provider.template_id, "template-dashscope-workspace");
+    }
+
+    #[test]
+    fn workspace_alias_rejects_foreign_owner_and_profile() {
+        let mut declared_owner = workspace_provider();
+        declared_owner.manifest_provider_id = Some("openai".to_string());
+        assert!(authorize_realtime_provider(&declared_owner).unwrap_err()
+            .starts_with("provider_manifest.provider_owner_mismatch"));
+        let mut runtime_owner = workspace_provider();
+        runtime_owner.provider_id = "openai".to_string();
+        assert!(authorize_realtime_provider(&runtime_owner).unwrap_err()
+            .starts_with("provider_manifest.provider_owner_mismatch"));
+        let mut profile_owner = workspace_provider();
+        profile_owner.model_protocol_bindings[0].profile_owner_provider_id = "openai".to_string();
+        assert!(authorize_realtime_provider(&profile_owner).unwrap_err()
+            .starts_with("provider_manifest.profile_declaration_mismatch"));
+        let mut stale_profile = workspace_provider();
+        stale_profile.model_protocol_bindings[0].profile_version = 999;
+        assert!(authorize_realtime_provider(&stale_profile).unwrap_err()
+            .starts_with("provider_manifest.profile_declaration_mismatch"));
+        let mut arbitrary_template = workspace_provider();
+        arbitrary_template.template_id = "template-dashscope-workspace-spoof".to_string();
+        assert!(authorize_realtime_provider(&arbitrary_template).unwrap_err()
+            .starts_with("provider_manifest.template_not_registered"));
+    }
+
+    #[test]
+    fn workspace_alias_rejects_unauthorized_endpoints() {
+        for endpoint in [
+            "wss://evil.example.test",
+            "wss://fixture.cn-beijing.maas.aliyuncs.com.evil.example.test",
+            "wss://fixture.ap-southeast-1.maas.aliyuncs.com",
+            "wss://user@fixture.cn-beijing.maas.aliyuncs.com",
+            "http://fixture.cn-beijing.maas.aliyuncs.com",
+        ] {
+            let mut provider = workspace_provider();
+            provider.base_url = endpoint.to_string();
+            assert!(authorize_realtime_provider(&provider).unwrap_err()
+                .starts_with("provider_manifest.endpoint_host_mismatch"), "accepted {endpoint}");
+        }
     }
 
     fn custom_realtime_provider() -> ProviderDraftInput {

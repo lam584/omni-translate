@@ -1154,7 +1154,7 @@
     "restartSessionButton": "அமர்வை மறுதொடக்கம் செய்",
     "restartSessionHint": " அமர்வை மறுதொடக்கம் செய்து மீண்டும் முயற்சிக்கவும்.",
     "errorCode": {
-      "modelReferenceInvalid": "இரண்டாம் மொழிபெயர்ப்பு மாதிரி இல்லை அல்லது இயக்கப்பட்ட வழங்குநருடன் இணைக்கப்படவில்லை. அமைப்புகளில் வேறு மாதிரியைத் தேர்ந்தெடுக்கவும்.",
+      "modelReferenceInvalid": "மாதிரி அழைப்பின் சரிபார்ப்பு தோல்வியடைந்தது. குறிப்பிட்ட காரணத்தையும் தொழில்நுட்ப விவரங்களையும் பார்க்கவும்.",
       "audioCaptureFailed": "ஒலி பதிவு செயலி நின்றது. ஒலி சாதனத்தைச் சரிபார்த்து மீண்டும் முயலவும்.",
       "credentialInvalid": "API விசை தவறானது அல்லது காலாவதியானது. வழங்குநர் சான்றுகளைப் புதுப்பிக்கவும்.",
       "quotaExceeded": "வழங்குநர் ஒதுக்கீடு அல்லது வீத வரம்பு எட்டப்பட்டது. உங்கள் பயன்பாட்டைச் சரிபார்த்து மீண்டும் முயற்சிக்கவும்.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "முதன்மை ஆடியோ மாதிரி",
+      "primary-text": "முதன்மை உரை மாதிரி",
+      "secondary-subtitle": "இரண்டாம் வசன மாதிரி",
+      "speech-output": "பேச்சு வெளியீட்டு மாதிரி"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "நெறிமுறை இல்லை அல்லது பதிவு செய்யப்படவில்லை",
+      "adapter-unavailable": "அடாப்டர் கிடைக்கவில்லை அல்லது ஆதரிக்கப்படவில்லை",
+      "endpoint-invalid": "இறுதிப்புள்ளி அல்லது பகுதி செல்லாது",
+      "provider-disabled": "வழங்குநர் முடக்கப்பட்டுள்ளது அல்லது கிடைக்கவில்லை"
     }
   },
   "glossary": {

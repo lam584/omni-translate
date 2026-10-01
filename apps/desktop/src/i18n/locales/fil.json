@@ -1154,7 +1154,7 @@
     "restartSessionButton": "I-restart ang session",
     "restartSessionHint": " I-restart ang session at subukang muli.",
     "errorCode": {
-      "modelReferenceInvalid": "Nawawala o hindi na nakakabit sa enabled provider ang secondary translation model. Pumili ulit sa provider settings.",
+      "modelReferenceInvalid": "Hindi pumasa sa pagsusuri ang pagtawag sa modelo. Tingnan ang tiyak na dahilan at mga teknikal na detalye.",
       "audioCaptureFailed": "Huminto ang audio capture worker. Suriin ang audio device at subukan muli.",
       "credentialInvalid": "Ang API key ay invalid o expired na. I-update ang mga kredensyal ng provider.",
       "quotaExceeded": "Naabot na ang quota o rate limit ng provider. Suriin ang paggamit at subukang muli.",
@@ -1228,6 +1228,22 @@
       "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
       "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
       "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    },
+    "modelRole": {
+      "primary-audio": "Pangunahing modelo ng audio",
+      "primary-text": "Pangunahing modelo ng teksto",
+      "secondary-subtitle": "Pangalawang modelo ng subtitle",
+      "speech-output": "Modelo ng output ng pagsasalita"
+    },
+    "modelReason": {
+      "session-identity-conflict": "Protocol identity changed within the same session. Stop the current session and restart it.",
+      "authorization-identity-mismatch": "The invoked model or protocol identity does not match its authorization and was rejected. Check technical details for model, protocol, and provider ownership.",
+      "reference-invalid": "The model invocation is not authorized. Check the model and provider configuration.",
+      "unknown": "The specific failure reason could not be determined. Check technical details.",
+      "missing-protocol": "Nawawala o hindi nakarehistro ang protocol",
+      "adapter-unavailable": "Hindi available o hindi suportado ang adapter",
+      "endpoint-invalid": "Hindi wasto ang endpoint o rehiyon",
+      "provider-disabled": "Naka-disable o hindi available ang provider"
     }
   },
   "glossary": {

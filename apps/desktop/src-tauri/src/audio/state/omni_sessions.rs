@@ -84,6 +84,9 @@ impl OmniSessionStore {
     pub(super) fn store_handle(&self, direction: &str, handle: OmniHandle) -> Option<OmniHandle> {
         self.handles.lock().expect("omni handles poisoned").insert(direction.to_string(), handle)
     }
+    pub(super) fn has_handle(&self, direction: &str) -> bool {
+        self.handles.lock().expect("omni handles poisoned").contains_key(direction)
+    }
     pub(super) fn store_sender(&self, direction: &str, sender: Sender<Vec<u8>>) {
         self.senders.lock().expect("omni senders poisoned").insert(direction.to_string(), sender);
     }

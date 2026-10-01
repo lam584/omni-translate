@@ -1,3 +1,4 @@
+import { findProviderManifestByTemplateId } from './template-ownership';
 import { authorizeModelProtocolInvocation, lookupModelProtocolProfiles, MODEL_PROTOCOL_REGISTRY, type ModelProtocolOperation, type ModelProtocolRegion, type ModelProtocolTransport } from '../model-protocol/profile-registry';
 import type {
   AuthorizedProviderProtocol,
@@ -309,7 +310,7 @@ export function resolveProviderProtocol(
   }
 
   const manifest = request.templateId
-    ? manifests.find((candidate) => candidate.provider.templateId === request.templateId)
+    ? findProviderManifestByTemplateId(manifests, request.templateId)
     : manifests.find((candidate) => candidate.provider.id === request.providerId);
   if (!manifest) {
     throw new ProviderProtocolResolutionError(

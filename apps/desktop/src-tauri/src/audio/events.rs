@@ -130,7 +130,7 @@ fn complete_inbound_capture_and_provider(
     input_completion.provider_input_closed_source_sequence =
         record_strict_watch_provider_input_closed_for_completion(state, require_omni_owner)?;
     if let Some(handle) = state.take_stt_handle("inbound") {
-        let _ = handle.stop_tx.send(());
+        handle.stop_and_join("inbound")?;
     }
     if !keep_omni {
         match state.take_omni_handle("inbound") {
@@ -244,7 +244,7 @@ fn stop_existing_route_pipeline(
     }
     AudioRouteSupervisor::new(app.clone(), state).stop(direction)?;
     if let Some(handle) = state.take_stt_handle(direction) {
-        let _ = handle.stop_tx.send(());
+        handle.stop_and_join(direction)?;
     }
     if !keep_omni {
         if let Some(handle) = state.take_omni_handle(direction) {

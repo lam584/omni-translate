@@ -63,6 +63,7 @@ fn injected_activation_hresult_marks_watch_start_failed_without_losing_the_code(
     let error = crate::audio::engine::process_loopback_route_start_error(&bridge)
         .expect("the injected sidecar failure must block Watch startup");
     let emitted = AtomicBool::new(false);
+    store.mark_route_start_requested("inbound", "watch-attempt", "loopback");
 
     let outcome = execute_fast_watch_start(
         &store,
@@ -139,4 +140,40 @@ fn a_second_fast_watch_start_supersedes_the_first_pending_one() {
     let second = store.bump_inbound_route_generation();
     assert!(!fast_watch_start_still_current(&store, first));
     assert!(fast_watch_start_still_current(&store, second));
+}
+
+
+#[test]
+fn failed_fast_start_preserves_reports_with_registered_publishers_before_capture() {
+    for direction in ["inbound", "outbound"] {
+        let store = AudioStateStore::new();
+        let id = store.watch_session_report.begin_or_reuse("provider", "model");
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let join_handle = std::thread::spawn(move || { stop_rx.recv().unwrap(); });
+        store.store_stt_handle(direction, stt::SttHandle { stop_tx, join_handle });
+        let outcome = execute_fast_watch_start(&store, || Err("new plan rejected".into()), || {});
+        assert!(matches!(outcome, FastWatchStartOutcome::Failed(_)));
+        let report = store.watch_session_report.snapshot().unwrap();
+        assert_eq!(report.session_id, id);
+        assert_eq!(report.status, "active");
+        assert!(report.issues.is_empty());
+        store.take_stt_handle(direction).unwrap().stop_and_join(direction).unwrap();
+    }
+}
+
+#[test]
+fn failed_fast_start_preserves_an_omni_handle_without_metadata_or_parked_sender() {
+    let store = AudioStateStore::new();
+    let id = store.watch_session_report.begin_or_reuse("provider", "model");
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || { stop_rx.recv().unwrap(); });
+    store.store_omni_handle("inbound", crate::audio::omni::OmniHandle::new(stop_tx, worker));
+    assert!(store.omni_session_metadata("inbound").is_none());
+    assert!(!store.has_omni_sender("inbound"));
+    execute_fast_watch_start(&store, || Err("new plan rejected".into()), || {});
+    let report = store.watch_session_report.snapshot().unwrap();
+    assert_eq!(report.session_id, id);
+    assert_eq!(report.status, "active");
+    assert!(report.issues.is_empty());
+    store.take_omni_handle("inbound").unwrap().stop_and_join("inbound").unwrap();
 }

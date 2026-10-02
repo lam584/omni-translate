@@ -30,6 +30,9 @@ struct ActivePlayback {
     cue_id: String,
     source: &'static str,
     cancelled: bool,
+    // A cleanup can fail before cancellation starts. Retain it on this exact
+    // live permit so a later barrier inherits it, not an unrelated future run.
+    cleanup_failures: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -94,6 +97,7 @@ impl DesktopPlaybackOwnership {
                 cue_id: cue_id.to_string(),
                 source,
                 cancelled: false,
+                cleanup_failures: Vec::new(),
             },
         );
         Ok(DesktopPlaybackPermit {
@@ -290,16 +294,16 @@ impl DesktopPlaybackPermit {
 
     pub(crate) fn record_cancellation_failure(&self, detail: impl Into<String>) {
         let mut state = self.ownership.lock_state();
-        let Some(playback) = state.active.get(&self.permit_id) else {
+        let owner_closed = state.owner != PlaybackOwner::Desktop;
+        let Some(playback) = state.active.get_mut(&self.permit_id) else {
             return;
         };
-        if playback.cancelled || state.owner != PlaybackOwner::Desktop {
-            let failure = format!(
-                "cue={} source={} detail={}",
-                playback.cue_id,
-                playback.source,
-                detail.into()
-            );
+        let cancelled = playback.cancelled || owner_closed;
+        let failure = format!("cue={} source={} detail={}", playback.cue_id, playback.source, detail.into());
+        if !playback.cleanup_failures.contains(&failure) {
+            playback.cleanup_failures.push(failure.clone());
+        }
+        if cancelled {
             if !state.cancellation_failures.contains(&failure) {
                 state.cancellation_failures.push(failure);
             }
@@ -331,7 +335,15 @@ impl DesktopPlaybackPermit {
 impl Drop for DesktopPlaybackPermit {
     fn drop(&mut self) {
         let mut state = self.ownership.lock_state();
-        state.active.remove(&self.permit_id);
+        if let Some(playback) = state.active.remove(&self.permit_id) {
+            if playback.cancelled || state.owner != PlaybackOwner::Desktop {
+                for failure in playback.cleanup_failures {
+                    if !state.cancellation_failures.contains(&failure) {
+                        state.cancellation_failures.push(failure);
+                    }
+                }
+            }
+        }
         drop(state);
         self.ownership.inner.changed.notify_all();
     }

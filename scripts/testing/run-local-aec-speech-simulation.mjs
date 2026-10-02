@@ -146,6 +146,7 @@ export async function runLocalAecSpeechSimulation(options){
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio.rs',
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio_tests.rs',
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_lifecycle_tests.rs',
+  'apps/desktop/src-tauri/src/audio/playback_ownership.rs',
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming.rs',
   'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
   'apps/desktop/src-tauri/src/audio/omni/protocol/native_desktop_stream.rs',

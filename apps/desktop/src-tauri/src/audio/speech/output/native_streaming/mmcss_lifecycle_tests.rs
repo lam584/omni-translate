@@ -510,3 +510,159 @@ fn partial_init_restore_failure_reaches_cancel_barrier_before_permit_drop() {
         assert_eq!(harness.calls().iter().filter(|call| matches!(call, Call::Revert { .. })).count(), 1);
     }
 }
+
+// R1b: cleanup can fail while the owner is still Desktop. A later barrier must
+// inherit failures from the permits it actually cancels, not from unrelated
+// permits that had already disappeared before this barrier began.
+fn uncancelled_partial_init_fixture() -> (Harness, DesktopPlaybackPermit, Lease<FakeAvrt>) {
+    let harness = Harness {
+        state: Rc::new(RefCell::new(State::default())),
+        owner: DesktopPlaybackOwnership::default(),
+    };
+    harness.set(|state| state.endpoint_alive = false);
+    let permit = harness.owner.acquire(CUE, "mmcss-before-cancel-init-fake").unwrap();
+    let lease = match Lease::register(FakeAvrt(harness.clone())) {
+        Ok(lease) => lease,
+        Err(failure) => panic!("unexpected fake registration failure: {}", failure.detail),
+    };
+    assert_eq!(harness.owner.test_snapshot().0, "desktop");
+    permit.ensure_active().unwrap();
+    (harness, permit, lease)
+}
+
+#[test]
+fn partial_init_restore_before_cancel_is_retained_only_when_restore_failed() {
+    for fail_restore in [false, true] {
+        let (harness, permit, mut lease) = uncancelled_partial_init_fixture();
+        harness.set(|state| state.revert_succeeds = !fail_restore);
+        let original = "injected ordinary initialization failure before any cancellation".to_owned();
+        let error = finish_failed_stream_initialization(&permit, &mut lease, original.clone(), &mut |event| {
+            record_event(&harness, event, RejectCallbacks::default())
+        });
+        assert_error_contains(&error, &[&original]);
+        assert_eq!(harness.owner.test_snapshot().0, "desktop");
+        harness.assert_permit_held();
+        permit.ensure_active().unwrap();
+        assert_receipt(&lease.receipt(), CleanupPath::Explicit, !fail_restore);
+        if fail_restore {
+            assert_error_contains(&error, &["MMCSS Audio restore failed: Win32 87"]);
+        } else {
+            assert_eq!(error, original);
+        }
+        assert_eq!(harness.state.borrow().published_receipts.len(), 1);
+        let calls = harness.calls();
+        // Cancel only AFTER the production helper attempted/recorded cleanup,
+        // but while this failed initialization still owns its real permit.
+        assert!(harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+        assert!(permit.ensure_active().is_err());
+        assert_eq!(harness.owner.test_snapshot().2, 1);
+        drop(lease);
+        drop(permit);
+        assert_eq!(harness.calls(), calls);
+        assert_eq!(harness.owner.test_snapshot().2, 0);
+        let barrier = harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO);
+        if fail_restore {
+            let barrier_error = barrier.expect_err("barrier must retain pre-cancel AVRT failure from this permit");
+            assert_error_contains(&barrier_error, &[&original, "MMCSS Audio restore failed: Win32 87"]);
+        } else {
+            barrier.expect("ordinary initialization failure with successful cleanup must not poison cancellation");
+        }
+        assert_eq!(harness.calls().iter().filter(|call| matches!(call, Call::Revert { .. })).count(), 1);
+    }
+}
+
+#[test]
+fn stream_restore_before_cancel_controls_barrier_outcome_without_second_revert() {
+    for fail_restore in [false, true] {
+        let (mut stream, harness) = fixture();
+        harness.set(|state| state.revert_succeeds = !fail_restore);
+        let finished = stream.finish(true, &mut |event| record_event(&harness, event, RejectCallbacks::default()));
+        assert_eq!(harness.owner.test_snapshot().0, "desktop");
+        harness.assert_permit_held();
+        stream.permit.ensure_active().unwrap();
+        assert!(stream.terminal && stream.prepared.is_none());
+        assert_receipt(&harness.state.borrow().published_receipts[0], CleanupPath::Explicit, !fail_restore);
+        if fail_restore {
+            let error = finished.as_ref().unwrap_err();
+            assert_error_contains(error, &["MMCSS Audio restore failed: Win32 87"]);
+            assert_eq!(stream.terminal_error.as_deref(), Some(error.as_str()));
+            harness.assert_no_success_event();
+            harness.assert_terminal_order(false, SchedulingState::RestoreFailed);
+        } else {
+            assert!(finished.is_ok());
+            harness.assert_terminal_order(true, SchedulingState::Restored);
+        }
+        let calls = harness.calls();
+        assert!(harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+        assert!(stream.permit.ensure_active().is_err());
+        assert_eq!(stream.finish(true, &mut |_| panic!("terminal finish must not repeat cleanup/events")), finished.clone());
+        drop(stream);
+        assert_eq!(harness.calls(), calls);
+        assert_eq!(harness.owner.test_snapshot().2, 0);
+        let barrier = harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO);
+        if fail_restore {
+            let barrier_error = barrier.expect_err("barrier must retain finished stream's pre-cancel restore failure");
+            assert_error_contains(&barrier_error, &[finished.as_ref().unwrap_err(), "87"]);
+        } else {
+            barrier.expect("successfully restored stream must drain the barrier normally");
+        }
+        assert_eq!(harness.calls().iter().filter(|call| matches!(call, Call::Revert { .. })).count(), 1);
+    }
+}
+
+#[test]
+fn partial_init_failure_fully_dropped_before_cancel_does_not_poison_a_new_barrier() {
+    let (harness, permit, mut lease) = uncancelled_partial_init_fixture();
+    harness.set(|state| state.revert_succeeds = false);
+    let original = "ordinary old initialization failure outside the future barrier".to_owned();
+    let error = finish_failed_stream_initialization(&permit, &mut lease, original.clone(), &mut |event| {
+        record_event(&harness, event, RejectCallbacks::default())
+    });
+    assert_error_contains(&error, &[&original, "MMCSS Audio restore failed: Win32 87"]);
+    assert_eq!(harness.owner.test_snapshot().0, "desktop");
+    let calls = harness.calls();
+    drop(lease);
+    drop(permit);
+    assert_eq!(harness.calls(), calls);
+    assert_eq!(harness.owner.test_snapshot().2, 0);
+    assert_eq!(harness.owner.test_snapshot().0, "desktop");
+    // A distinct healthy permit makes the future barrier nontrivial. It must
+    // inherit only its own cleanup outcome, not a globally sticky old failure.
+    let fresh = harness.owner.acquire("fresh-after-init-failure", "mmcss-fresh-barrier-fake").unwrap();
+    fresh.ensure_active().unwrap();
+    assert!(harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+    assert!(fresh.ensure_active().is_err());
+    drop(fresh);
+    harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO)
+        .expect("a failure from an already dropped permit must not poison a future barrier");
+    assert_eq!(harness.owner.test_snapshot().0, "process-exclusion");
+    assert_eq!(harness.owner.test_snapshot().2, 0);
+    assert_eq!(harness.calls(), calls);
+    assert_eq!(harness.calls().iter().filter(|call| matches!(call, Call::Revert { .. })).count(), 1);
+}
+
+#[test]
+fn failed_stream_fully_dropped_before_cancel_does_not_poison_a_new_barrier() {
+    let (mut stream, harness) = fixture();
+    harness.set(|state| state.revert_succeeds = false);
+    let error = stream.finish(true, &mut |event| record_event(&harness, event, RejectCallbacks::default())).unwrap_err();
+    assert_error_contains(&error, &["MMCSS Audio restore failed: Win32 87"]);
+    assert_eq!(harness.owner.test_snapshot().0, "desktop");
+    harness.assert_no_success_event();
+    harness.assert_terminal_order(false, SchedulingState::RestoreFailed);
+    let calls = harness.calls();
+    drop(stream);
+    assert_eq!(harness.calls(), calls);
+    assert_eq!(harness.owner.test_snapshot().2, 0);
+    assert_eq!(harness.owner.test_snapshot().0, "desktop");
+    let fresh = harness.owner.acquire("fresh-after-stream-failure", "mmcss-fresh-barrier-fake").unwrap();
+    assert!(harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+    assert!(fresh.ensure_active().is_err());
+    drop(fresh);
+    harness.owner.cancel_and_drain_for_process_exclusion(Duration::ZERO)
+        .expect("a failed stream outside this barrier must not contaminate the fresh permit");
+    assert_eq!(harness.owner.test_snapshot().0, "process-exclusion");
+    assert_eq!(harness.owner.test_snapshot().2, 0);
+    assert_eq!(harness.calls(), calls);
+    assert_eq!(harness.calls().iter().filter(|call| matches!(call, Call::Revert { .. })).count(), 1);
+}

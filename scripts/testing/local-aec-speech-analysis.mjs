@@ -499,6 +499,7 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
   if (!root || !receipt) return result;
   attempt('workspace-ownership', () => check(root.startsWith(path.resolve(options.analyzer?.workspaceRoot ?? '') + path.sep), 'run directory outside analyzer workspace'));
   const tap = attempt('tap-seal', () => nativeTapSeal(root, receipt.tap));
+  if (tap) result.tapEvidence = { complete: true, terminalSha256: tap.terminalSha256 };
   const physicalBytes = attempt('physical-seal', () => sealed(root, receipt.streamEvidence?.physical));
   const linearBytes = attempt('linear-reference-seal', () => sealed(root, receipt.streamEvidence?.linearReference));
   const events = attempt('stream-event-seal', () => {

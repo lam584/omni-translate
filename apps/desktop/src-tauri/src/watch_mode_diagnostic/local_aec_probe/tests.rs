@@ -13,6 +13,42 @@ fn request(root: &Path) -> ProbeRequest {
 fn root() -> tempfile::TempDir { tempfile::Builder::new().prefix("local-aec-").tempdir().unwrap() }
 
 #[test]
+fn common_request_validator_accepts_each_schema_only_with_its_fixed_execution_id() {
+    let temp = root();
+    let uuid = "abcdef78-1234-1234-1234-123456789abc";
+    for (schema, prefix) in [(1, "local-aec-"), (2, "local-aec-speech-")] {
+        let output = temp.path().join(format!("{prefix}{uuid}"));
+        fs::create_dir(&output).unwrap();
+        let mut r = request(&output);
+        r.schema_version = schema;
+        if schema == 1 { r.speech_simulation = None; }
+        // Exercise the actual shared native validator, not only validate_schema.
+        super::super::validate_request(&r, &output).unwrap();
+    }
+}
+
+#[test]
+fn common_request_validator_rejects_mixed_schema_prefixes_and_noncanonical_uuids() {
+    let temp = root();
+    let uuid = "abcdef78-1234-1234-1234-123456789abc";
+    for (schema, prefix, other_prefix) in [(1, "local-aec-", "local-aec-speech-"),
+        (2, "local-aec-speech-", "local-aec-")] {
+        let ids = [format!("{other_prefix}{uuid}"), format!("{prefix}{}", uuid.to_uppercase()),
+            format!("{prefix}{}", uuid.replace('-', "")), format!("{prefix}{{{uuid}}}"),
+            format!("{prefix}urn:uuid:{uuid}"), format!("{prefix}{uuid}-extra"),
+            format!("{prefix}not-a-uuid")];
+        for execution_id in ids {
+            let output = temp.path().join(&execution_id);
+            let mut r = request(&output);
+            r.schema_version = schema;
+            if schema == 1 { r.speech_simulation = None; }
+            let error = super::super::validate_request(&r, &output).unwrap_err();
+            assert!(error.contains("execution ID"), "schema {schema}, {execution_id}: {error}");
+        }
+    }
+}
+
+#[test]
 fn schema2_rejects_short_label_only_phases_and_changed_stream_cadence() {
     let temp = root(); let mut r = request(temp.path());
     validate_schema(&r).unwrap();
@@ -105,4 +141,96 @@ fn sealed_pcm_evidence_without_real_stage_events_is_not_a_pass() {
     let sealed=evidence.finish().unwrap();
     assert_eq!(sealed["physical"]["bytes"],0); assert_eq!(sealed["streamDrained"],false);
     assert!(evidence::StreamEvidence::new(temp.path()).is_err());
+}
+
+#[test]
+fn quiet_drain_resets_before_progress_can_hide_a_blind_observation_gap() {
+    let mut drain = drain::CaptureDrain::default();
+    let start = Instant::now();
+    let mut route = quiet_route();
+    for i in 0..100 {
+        route.frames_captured += 960;
+        assert!(!drain.observe(start + Duration::from_millis(i * 20), &route, true, true).unwrap());
+    }
+    // Old code accepted this: 3020ms unobserved, only one new 20ms chunk,
+    // and an unchanged last_frame_at. Neither the hiatus nor that snapshot
+    // establishes continuous fresh capture over the preceding two seconds.
+    route.frames_captured += 960;
+    let resumed = start + Duration::from_millis(5000);
+    assert!(!drain.observe(resumed, &route, true, true).unwrap());
+    assert_eq!(drain.resets, 1);
+    let quiet_start = route.frames_captured;
+    for i in 1..=100 {
+        route.frames_captured += 960;
+        let done = drain.observe(resumed + Duration::from_millis(i * 20), &route, true, true).unwrap();
+        assert_eq!(done, i == 100);
+    }
+    let receipt = drain.receipt(&route);
+    assert_eq!(receipt["quietStartFrame"], quiet_start);
+    assert_eq!(receipt["quietEndFrame"], quiet_start + 96_000);
+    assert_eq!(receipt["continuousQuietMs"], 2000);
+}
+
+#[test]
+fn quiet_drain_resets_on_stalled_progress_even_when_observations_keep_arriving() {
+    let mut drain = drain::CaptureDrain::default();
+    let start = Instant::now();
+    let mut route = quiet_route();
+    for i in 0..100 {
+        route.frames_captured += 960;
+        assert!(!drain.observe(start + Duration::from_millis(i * 20), &route, true, true).unwrap());
+    }
+    // Polling alone cannot refresh capture progress. The observation gaps are
+    // only 20ms, but the next advancing snapshot is 120ms after last progress.
+    for ms in [2000, 2020, 2040, 2060, 2080] {
+        assert!(!drain.observe(start + Duration::from_millis(ms), &route, true, true).unwrap());
+    }
+    route.frames_captured += 960;
+    assert!(!drain.observe(start + Duration::from_millis(2100), &route, true, true).unwrap());
+    assert_eq!(drain.resets, 1);
+    let quiet_start = route.frames_captured;
+    for i in 1..=100 {
+        route.frames_captured += 960;
+        let done = drain.observe(start + Duration::from_millis(2100 + i * 20), &route, true, true).unwrap();
+        assert_eq!(done, i == 100);
+    }
+    assert_eq!(drain.receipt(&route)["quietStartFrame"], quiet_start);
+}
+
+#[test]
+fn quiet_drain_still_requires_both_two_seconds_and_96000_new_frames() {
+    let mut drain = drain::CaptureDrain::default();
+    let start = Instant::now();
+    let mut route = quiet_route();
+    // Plenty of frames alone does not shorten the two-second window.
+    for i in 0..=199 {
+        route.frames_captured += 960;
+        assert!(!drain.observe(start + Duration::from_millis(i * 10), &route, true, true).unwrap());
+    }
+    route.frames_captured += 960;
+    assert!(drain.observe(start + Duration::from_millis(2000), &route, true, true).unwrap());
+
+    let mut slow = drain::CaptureDrain::default();
+    route.frames_captured = 0;
+    // Two seconds with insufficient capture frames is not completion either.
+    for i in 0..=100 {
+        route.frames_captured += 480;
+        assert!(!slow.observe(start + Duration::from_millis(i * 20), &route, true, true).unwrap());
+    }
+}
+
+#[test]
+fn quiet_drain_preserves_the_100ms_freshness_boundary_but_resets_above_it() {
+    let mut drain = drain::CaptureDrain::default();
+    let start = Instant::now();
+    let mut route = quiet_route();
+    for i in 0..=20 {
+        route.frames_captured += 4_800;
+        let done = drain.observe(start + Duration::from_millis(i * 100), &route, true, true).unwrap();
+        assert_eq!(done, i == 20);
+    }
+    assert_eq!(drain.resets, 0);
+    route.frames_captured += 4_800;
+    assert!(!drain.observe(start + Duration::from_millis(2101), &route, true, true).unwrap());
+    assert_eq!(drain.resets, 1);
 }

@@ -4,8 +4,8 @@ import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { localAecProbeDesktopPowerShell, AEC_PROBE_JOB_HELPER, AEC_PROBE_CAPABILITY_ID } from './run-watch-mode-local-aec-probe.mjs';
-import { verifyAecTapEvidence } from './watch-mode-aec-tap-evidence.mjs';
 import { analyzeLocalAecSpeech } from './local-aec-speech-analysis.mjs';
+import { verifyApiSpeechProvenance } from './local-aec-speech-provenance.mjs';
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const EXPECTED_BIOS = '4FCA4D56-0439-2E76-E21B-8F067FF78FBE';
 const exactEndpoint = value => /^\{0\.0\.0\.00000000\}\.\{[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\}$/iu.test(value);
@@ -50,7 +50,7 @@ export function finalizeSpeechOutcome(operation,tap,quality){
  return {overallPassed,status:overallPassed?'local-acoustic-simulation-passed':'failed',releaseEligible:false,
   realTranslationLifecycleVerified:false,semanticLeakageChainVerified:false};
 }
-export const parseLocalSpeechArgs=argv=>parseCliArgs(argv,{defaults:{desktopExecutable:'',desktopSha256:'',injectorExecutable:'',injectorSha256:'',fixtureDirectory:'',analyzerExecutable:'',analyzerSha256:'',physicalDeviceId:'',outputRoot:'artifacts/testing/aec-iteration/local-speech-runs'}});
+export const parseLocalSpeechArgs=argv=>parseCliArgs(argv,{defaults:{desktopExecutable:'',desktopSha256:'',injectorExecutable:'',injectorSha256:'',fixtureDirectory:'',synthesisDirectory:'',synthesisUsageSha256:'',synthesisPlanFileSha256:'',analyzerExecutable:'',analyzerSha256:'',physicalDeviceId:'',outputRoot:'artifacts/testing/aec-iteration/local-speech-runs'}});
 export async function runLocalAecSpeechSimulation(options){
  if(process.platform!=='win32')throw Error('local speech hardware test requires Windows');
  const fixtureRoot=fs.realpathSync.native(path.resolve(options.fixtureDirectory));
@@ -59,6 +59,8 @@ export async function runLocalAecSpeechSimulation(options){
   ||fixture.noTranslationLlmCalls!==true||fixture.sampleRateHz!==24000||fixture.chunkFrames!==2400||fixture.chunkIntervalMs!==100)throw Error('fresh API fixture contract is missing');
  const sourcePath=path.join(fixtureRoot,'source.wav'),renderPath=path.join(fixtureRoot,'translation-stream.s16le');
  if(sha(bytes(sourcePath,32*1024*1024))!==fixture.englishSource.sha256||sha(bytes(renderPath,24000*2*180))!==fixture.translation.sha256)throw Error('fixture PCM or English changed');
+ const apiProvenance=verifyApiSpeechProvenance({fixture,renderBytes:bytes(renderPath,24000*2*180),synthesisDirectory:options.synthesisDirectory,
+  expectedUsageSha256:options.synthesisUsageSha256,expectedPlanFileSha256:options.synthesisPlanFileSha256});
  const canonicalEnglishSha=fs.readFileSync(path.join(repoRoot,'scripts/testing/fixtures/watch-mode-en-original.sha256'),'utf8').trim().split(/\s/u)[0].toLowerCase();
  if(fixture.englishSource.sha256!==canonicalEnglishSha)throw Error('local speech source is not the unchanged canonical English fixture');
  const desktop=path.resolve(options.desktopExecutable),injector=path.resolve(options.injectorExecutable);
@@ -71,9 +73,13 @@ export async function runLocalAecSpeechSimulation(options){
  const analyzer=path.resolve(options.analyzerExecutable);
  if(analyzer!==path.join(repoRoot,'target','release','omni-benchmark.exe')||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('explicitly selected workspace release analyzer hash mismatch');
  const buildCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim();
+ const compiledCommit=execFileSync(desktop,['--build-commit'],{encoding:'utf8',windowsHide:true,timeout:10000}).trim();
+ if(compiledCommit!==buildCommit)throw Error('desktop compiled build commit differs from frozen source');
  if(execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim())throw Error('local speech run requires a clean frozen source commit');
  const sourceFiles=['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/local-aec-speech-analysis.mjs',
-  'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/run-watch-mode-local-aec-probe.mjs',AEC_PROBE_JOB_HELPER];
+  'scripts/testing/local-aec-speech-provenance.mjs','scripts/testing/generate-local-aec-speech-fixture.mjs','scripts/testing/fixtures/wav-fixture-utils.mjs',
+  'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
+  'scripts/testing/run-watch-mode-local-aec-probe.mjs',AEC_PROBE_JOB_HELPER];
  const sourceHashes=Object.fromEntries(sourceFiles.map(file=>[file,sha(bytes(path.join(repoRoot,file),2*1024*1024))]));
  const executionId=`local-aec-speech-${crypto.randomUUID()}`,outputRoot=path.resolve(repoRoot,options.outputRoot);
  const evidenceRoot=path.resolve(repoRoot,'artifacts/testing/aec-iteration');
@@ -87,7 +93,7 @@ export async function runLocalAecSpeechSimulation(options){
  const freeze={schemaVersion:1,artifactKind:'local-aec-speech-run-freeze',executionId,workerId:'vm171',localIdentity,scope:'local-aec-speech-simulation',releaseEligible:false,
   providerCalls:0,translationProviderCalls:0,requestSha256:sha(fs.readFileSync(requestPath)),fixtureSha256:sha(bytes(path.join(fixtureRoot,'fixture.json'),1024*1024)),
   desktopSha256:options.desktopSha256,injectorSha256:options.injectorSha256,analyzerSha256:options.analyzerSha256,buildCommit,sourceHashes,thresholds:{echoAttenuationDb:20,sourceGainToleranceDb:3,sourceCoverage:.95},
-  inputWatchdogMs:180000,frozenAt:new Date().toISOString()};write(path.join(outputDirectory,'run-freeze.json'),freeze);
+  apiProvenance,inputWatchdogMs:180000,frozenAt:new Date().toISOString()};write(path.join(outputDirectory,'run-freeze.json'),freeze);
  let outcome={schemaVersion:1,artifactKind:'local-aec-speech-simulation-result',executionId,workerId:'vm171',scope:'local-aec-speech-simulation',releaseEligible:false,
   providerCalls:0,translationProviderCalls:0,overallPassed:false,status:'failed',quality:{status:'not-run'},outputDirectory};
  try{
@@ -104,14 +110,18 @@ export async function runLocalAecSpeechSimulation(options){
   if(custody.ownedJobExited!==true||custody.exitCode!==0)throw Error('native owned job did not exit cleanly');
   const probe=json(path.join(outputDirectory,'local-aec-probe-result.json'));
   outcome.operation=inspectSpeechOperation(probe,request);
-  outcome.tap=verifyAecTapEvidence(outputDirectory,probe.tap);
-  if(!outcome.operation.passed||!outcome.tap.passed)throw Error('native operation/clock/PCM seal validation failed');
+  if(!outcome.operation.passed)throw Error('native operation validation failed');
   outcome.quality=analyzeLocalAecSpeech(outputDirectory,{nativeReceipt:probe,expectedExecutionId:executionId,expectedPhysicalDeviceId:request.physicalDeviceId,
    analyzer:{workspaceRoot:repoRoot,releaseExecutablePath:analyzer,releaseExecutableSha256:options.analyzerSha256,noBuild:true}});
   write(path.join(outputDirectory,'local-speech-quality.json'),outcome.quality);
+  outcome.tap={...outcome.quality.tapEvidence,passed:outcome.quality.tapEvidence?.complete===true,verification:'schema2-native-clock-and-PCM-seal'};
   for(const [file,digest] of Object.entries(sourceHashes))if(sha(bytes(path.join(repoRoot,file),2*1024*1024))!==digest)throw Error('frozen run source changed');
   if(sha(bytes(desktop,200*1024*1024))!==options.desktopSha256||sha(bytes(injector,100*1024*1024))!==options.injectorSha256
    ||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('frozen run executable changed');
+  verifyApiSpeechProvenance({fixture,renderBytes:bytes(renderPath,24000*2*180),synthesisDirectory:options.synthesisDirectory,
+   expectedUsageSha256:options.synthesisUsageSha256,expectedPlanFileSha256:options.synthesisPlanFileSha256});
+  if(execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim()!==buildCommit
+   ||execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim())throw Error('source commit/worktree changed during run');
   Object.assign(outcome,finalizeSpeechOutcome(outcome.operation,outcome.tap,outcome.quality));
  }catch(error){outcome.failure=error.message;}
  write(path.join(outputDirectory,'local-speech-result.json'),outcome);return outcome;

@@ -9,6 +9,7 @@ pub(super) struct CaptureDrain {
     previous_frames: u64,
     previous_segments: u64,
     last_progress: Option<Instant>,
+    last_observation: Option<Instant>,
     pub(super) resets: u64,
 }
 impl CaptureDrain {
@@ -18,13 +19,21 @@ impl CaptureDrain {
             || !matches!(route.capture_state.as_str(), "capturing" | "buffering") {
             return Err("local AEC capture closed or failed before output/capture drain".into());
         }
+        // Check the OLD timestamps before an advancing snapshot can refresh
+        // last_progress. A blind polling gap or stalled capture must never be
+        // counted toward the same continuous two-second quiet window.
+        let freshness_limit = Duration::from_millis(100);
+        let interrupted = self.last_observation.is_some_and(|t| now.saturating_duration_since(t) > freshness_limit)
+            || self.last_progress.is_some_and(|t| now.saturating_duration_since(t) > freshness_limit);
+        if interrupted && self.quiet_since.take().is_some() { self.resets += 1; }
+        self.last_observation = Some(now);
         let progressed = route.frames_captured > self.previous_frames;
         let gap = route.frames_captured.saturating_sub(self.previous_frames) > 4_800;
         let activity = route.segment_count != self.previous_segments || route.frames_captured < self.previous_frames;
         self.previous_frames = route.frames_captured;
         self.previous_segments = route.segment_count;
         if progressed { self.last_progress = Some(now); }
-        let fresh = self.last_progress.is_some_and(|t| now.saturating_duration_since(t) <= Duration::from_millis(100));
+        let fresh = self.last_progress.is_some_and(|t| now.saturating_duration_since(t) <= freshness_limit);
         let quiet = media_complete && stream_drained && fresh && !gap && !activity
             && route.vad_state == "silence" && route.active_segment_id.is_none()
             && route.last_energy_db.is_finite() && route.last_energy_db <= -60.0

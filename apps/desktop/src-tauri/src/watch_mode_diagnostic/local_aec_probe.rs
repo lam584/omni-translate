@@ -111,10 +111,16 @@ fn validate_render_boundary(boundary: EchoRenderBoundary<'_>, requested: &str) -
 }
 
 fn validate_request(request: &ProbeRequest, tap_directory: &std::path::Path) -> Result<(), String> {
-    let id = request.execution_id.strip_prefix("local-aec-")
-        .ok_or("local AEC execution ID must use local-aec-<uuid>")?;
-    uuid::Uuid::parse_str(id).map_err(|error| error.to_string())?;
-    if !matches!(request.schema_version, 1 | 2) || !request.output_directory.is_absolute()
+    let prefix = match request.schema_version {
+        1 => "local-aec-",
+        2 => "local-aec-speech-",
+        _ => return Err("unsupported local AEC request schema".into()),
+    };
+    let identity_error = || format!("local AEC schema{} execution ID must use {prefix}<canonical lowercase UUID>", request.schema_version);
+    let id = request.execution_id.strip_prefix(prefix).ok_or_else(identity_error)?;
+    let parsed = uuid::Uuid::parse_str(id).map_err(|_| identity_error())?;
+    if id != parsed.hyphenated().to_string() { return Err(identity_error()); }
+    if !request.output_directory.is_absolute()
         || !request.render_pcm_path.is_absolute()
         || request.output_directory.file_name().and_then(|name| name.to_str()) != Some(&request.execution_id)
         || !exact_render_endpoint(&request.physical_device_id)

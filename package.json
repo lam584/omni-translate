@@ -76,7 +76,7 @@
     "i18n:coverage:strict": "node ./scripts/testing/i18n-coverage.mjs --min-translation-coverage=100",
     "i18n:coverage:ratchet": "node ./scripts/testing/i18n-coverage.mjs --ratchet",
     "generate:watch-mode-aec-speech-fixture": "node ./scripts/testing/generate-local-aec-speech-fixture.mjs",
-    "test:watch-mode-local-aec-speech": "node --test ./scripts/testing/generate-local-aec-speech-fixture.test.mjs ./scripts/testing/run-local-aec-speech-simulation.test.mjs ./scripts/testing/local-aec-speech-analysis.test.mjs",
+    "test:watch-mode-local-aec-speech": "node --test ./scripts/testing/generate-local-aec-speech-fixture.test.mjs ./scripts/testing/run-local-aec-speech-simulation.test.mjs ./scripts/testing/local-aec-speech-analysis.test.mjs scripts/testing/local-aec-speech-provenance.test.mjs",
     "run:watch-mode-local-aec-speech": "node ./scripts/testing/run-local-aec-speech-simulation.mjs",
     "test:architecture-discovery": "node --test ./scripts/testing/rust-source-discovery.test.mjs",
     "test:watch-mode-aec-closed-loop": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- node --test ./scripts/testing/watch-mode-aec-closed-loop-evidence.test.mjs ./scripts/testing/watch-mode-aec-media-complete.test.mjs ./scripts/testing/watch-mode-aec-realtime-evidence.test.mjs ./scripts/testing/watch-mode-aec-scope.test.mjs ./scripts/testing/watch-mode-aec-terminal-evidence.test.mjs",

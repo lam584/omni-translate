@@ -212,6 +212,7 @@ test('real release analyzer positive, exact three phases/nonlinear/source-ended 
   const f = fixture(t); const report = f.analyze();
   assert.equal(report.passed, true, JSON.stringify(report.indeterminate) + JSON.stringify(report.violations));
   assert.equal(report.status, 'passed'); assert.equal(report.stages.length, 4);
+  assert.equal(report.tapEvidence.complete, true); assert.match(report.tapEvidence.terminalSha256, /^[a-f0-9]{64}$/u);
   assert.equal(report.stages[2].stage, 'nonlinear'); assert.ok(report.voicedTailFrames >= RATE);
   assert.equal(report.stages[3].sourceCoverage, null); assert.equal(report.stages[3].sourceSampleCount, 0);
   assert.equal(report.releaseEligible, false); assert.equal(report.modelInputLeakageVerified, false);
@@ -228,6 +229,7 @@ for (const variant of ['zero-post', 'passthrough', 'all-attenuated', 'scattered-
 test('post PCM tampering rejected before metric execution', (t) => {
   const f = fixture(t); const bytes = Buffer.from(f.laneBytes.post); bytes[800] ^= 1; f.write(AEC_TAP_FILES.post, bytes);
   const report = f.analyze(); rejected(report, /bytes\/hash mismatch/u); assert.equal(report.stages.length, 0);
+  assert.equal(report.tapEvidence, undefined);
 });
 test('physical PCM tampering rejected before metric execution', (t) => {
   const f = fixture(t); const bytes = fs.readFileSync(f.receipt.streamEvidence.physical.path); bytes[20] ^= 1;

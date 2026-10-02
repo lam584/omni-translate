@@ -36,6 +36,10 @@ fn publish_timeline<R: tauri::Runtime>(app: &AppHandle<R>, store: &AudioStateSto
 fn observe_event<R: tauri::Runtime>(app: &AppHandle<R>, store: &AudioStateStore, queue: &OmniPlaybackQueue,
     timeline: &mut DesktopPlaybackTimeline, cue_id: &str, event: DesktopStreamingEvent<'_>) -> Result<(), String> {
     match event {
+        DesktopStreamingEvent::Scheduling(receipt) => {
+            timeline.mmcss_audio = Some(receipt);
+            publish_timeline(app, store, queue, timeline, "scheduling")
+        }
         DesktopStreamingEvent::Render(event) => {
             if let crate::audio::speech::SpeakerRenderEvent::Discontinuity {
                 reason: crate::audio::state::EchoRenderBoundary::SessionStarted { session_id, endpoint_id,
@@ -264,7 +268,11 @@ pub(super) fn process_native_desktop_stream<R: tauri::Runtime>(
             }
         }
         Err(error) => {
-            if let Some(stream) = stream.as_mut() { let _ = stream.abort(&mut events); }
+            let cleanup = stream.as_mut().and_then(|stream| stream.abort(&mut events).err());
+            let error = match cleanup {
+                Some(cleanup) => format!("{error}; native desktop cleanup: {cleanup}"),
+                None => error,
+            };
             queue.abort_stream(&cue_id, expected_chunk_index, created_at_ms);
             let _ = authority.abort_stream(&cue_id, "native-desktop-stream-failed");
             record_renderer_failure(store, &cue_id, "native-desktop-stream-failed");

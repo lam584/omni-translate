@@ -7,6 +7,7 @@ import { localAecProbeDesktopPowerShell, AEC_PROBE_JOB_HELPER, AEC_PROBE_CAPABIL
 import { analyzeLocalAecSpeech } from './local-aec-speech-analysis.mjs';
 import { verifyApiSpeechProvenance } from './local-aec-speech-provenance.mjs';
 import { windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
+import { validateProbeMmcssAudio } from './local-aec-mmcss-receipt.mjs';
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const EXPECTED_BIOS = '4FCA4D56-0439-2E76-E21B-8F067FF78FBE';
 // The original 195s outer cap includes native startup and failure evidence sealing.
@@ -57,7 +58,8 @@ export function inspectSpeechOperation(probe, request) {
   &&receipt?.sourceClockValidationPassed===true&&receipt?.sourceClockValidationError===null
   &&receipt?.detail===null&&receipt?.diagnosticOnly===false,
  'source clock evidence rejected or failed injector receipt');
- check(!probe.failure&&!probe.primaryError&&!probe.cleanupError&&!probe.tapError&&!probe.streamEvidenceSealError&&!probe.sourceInjectorCleanupError,'native failure/custody/seal error');
+ check(!probe.failure&&!probe.primaryError&&!probe.cleanupError&&!probe.tapError&&!probe.streamEvidenceSealError&&!probe.sourceInjectorCleanupError&&!probe.streamAbortError,'native failure/custody/seal error');
+ const mmcssVal=validateProbeMmcssAudio(probe,request);if(!mmcssVal.valid){for(const f of mmcssVal.failures)failures.push(f);}
  return {passed:failures.length===0,failures,scope:'local-aec-speech-simulation',releaseEligible:false};
 }
 export function finalizeSpeechOutcome(operation,tap,quality,collection){
@@ -139,7 +141,15 @@ export async function runLocalAecSpeechSimulation(options){
  const compiledCommit=execFileSync(desktop,['--build-commit'],{encoding:'utf8',windowsHide:true,timeout:10000}).trim();
  if(compiledCommit!==buildCommit)throw Error('desktop compiled build commit differs from frozen source');
  if(execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim())throw Error('local speech run requires a clean frozen source commit');
- const sourceFiles=['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/local-aec-speech-analysis.mjs',
+ const sourceFiles=['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/run-local-aec-speech-simulation.test.mjs',
+  'scripts/testing/local-aec-mmcss-receipt.mjs','scripts/testing/local-aec-mmcss-receipt.test.mjs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio_tests.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_lifecycle_tests.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
+  'apps/desktop/src-tauri/src/audio/omni/protocol/native_desktop_stream.rs',
+  'scripts/testing/local-aec-speech-analysis.mjs',
   'scripts/testing/local-aec-speech-provenance.mjs','scripts/testing/generate-local-aec-speech-fixture.mjs','scripts/testing/fixtures/wav-fixture-utils.mjs',
   'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
   'scripts/testing/run-watch-mode-local-aec-probe.mjs','scripts/testing/run-watch-mode-live-production-coordinator.mjs',AEC_PROBE_JOB_HELPER];

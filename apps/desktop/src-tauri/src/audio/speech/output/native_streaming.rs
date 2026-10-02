@@ -5,6 +5,10 @@ use super::*;
 use crate::audio::playback_ownership::{DesktopPlaybackOwnership, DesktopPlaybackPermit};
 
 #[path = "native_streaming/pump_diagnostic.rs"] mod pump_diagnostic;
+#[path = "native_streaming/mmcss_audio.rs"] mod mmcss_audio;
+use mmcss_audio::{CleanupPath, SchedulingLease};
+#[cfg(test)]
+#[path = "native_streaming/mmcss_lifecycle_tests.rs"] mod mmcss_lifecycle_tests;
 
 const STARTUP_FRAMES: usize = 48_000 * 800 / 1_000;
 const STARTUP_MAX_WAIT: Duration = Duration::from_millis(1_000);
@@ -45,6 +49,7 @@ pub(crate) struct DesktopPlaybackTimeline {
     pub(crate) render_sample_rate_hz: u32,
     pub(crate) rendered_frames: u64,
     pub(crate) aborted: bool,
+    pub(crate) mmcss_audio: Option<mmcss_audio::MmcssAudioReceipt>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +83,7 @@ pub(crate) enum DesktopStreamingEvent<'a> {
     Render(SpeakerRenderEvent<'a>),
     Tap(DesktopStreamTap<'a>),
     Activity(DesktopStreamActivity),
+    Scheduling(mmcss_audio::MmcssAudioReceipt),
 }
 
 #[derive(Default)]
@@ -192,6 +198,8 @@ impl StreamingEndpoint for EventStreamingEndpoint {
 pub(crate) struct NativeDesktopStream {
     // Explicitly released before the permit (including the COM apartment).
     prepared: Option<Box<dyn StreamingEndpoint>>,
+    // Declared after endpoint: clients/event/deadline die before AVRT restore.
+    scheduling: Option<Box<dyn SchedulingLease>>,
     permit: DesktopPlaybackPermit,
     cue_id: String,
     renderer_instance_id: String,
@@ -201,6 +209,7 @@ pub(crate) struct NativeDesktopStream {
     first_audio_at: Option<Instant>,
     started: bool,
     terminal: bool,
+    terminal_error: Option<String>,
     submitted_frames: u64,
     scenario: Vec<aec_live_scenario::AecLiveScenarioAssignment>,
     scenario_phase_frames: u64,
@@ -215,7 +224,17 @@ impl NativeDesktopStream {
         cue_id: &str, first_audio_at: Instant, events: &mut F) -> Result<Self, String>
     where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
         let permit = ownership.acquire(cue_id, "native-omni-stream")?;
-        let prepared = permit.submit(|| {
+        // Register the synchronous pump thread, not an async parent task.
+        let mut scheduling = match mmcss_audio::register_audio() {
+            Ok(lease) => lease,
+            Err(failure) => {
+                let published = events(DesktopStreamingEvent::Scheduling(failure.receipt));
+                return combine_cleanup_results([Err(failure.detail), published]).map(|_| unreachable!());
+            }
+        };
+        let initialized = (|| {
+            events(DesktopStreamingEvent::Scheduling(scheduling.receipt()))?;
+            let prepared = permit.submit(|| {
             let com_apartment = WasapiComApartment::enter()?;
             let enumerator = DeviceEnumerator::new().map_err(|e| e.to_string())?;
             let device = resolve_wasapi_render_device(&enumerator, device_id)?;
@@ -237,21 +256,45 @@ impl NativeDesktopStream {
             Ok(EventStreamingEndpoint { prepared: endpoint_recovery::PreparedSpeakerRender { endpoint_id, audio_client, render_client,
                 buffer_frames, _com_apartment: com_apartment }, event_handle, deadline_wait })
         })?;
-        let scenario = active_aec_live_scenario_assignments(cue_id)?;
+            let scenario = active_aec_live_scenario_assignments(cue_id)?;
+            Ok((prepared, scenario))
+        })();
+        let (prepared, scenario) = match initialized {
+            Ok(value) => value,
+            Err(error) => {
+                // Partially constructed endpoint resources have unwound first.
+                return Err(finish_failed_stream_initialization(&permit, scheduling.as_mut(), error, events));
+            }
+        };
         let mut stream = Self { endpoint_id: prepared.prepared.endpoint_id.clone(), prepared: Some(Box::new(prepared)),
-            permit, cue_id: cue_id.into(), renderer_instance_id: format!("desktop-process-{}", std::process::id()),
+            scheduling: Some(scheduling), permit, cue_id: cue_id.into(), renderer_instance_id: format!("desktop-process-{}", std::process::id()),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: Some(first_audio_at),
-            started: false, terminal: false, submitted_frames: 0, scenario, scenario_phase_frames: SCENARIO_PHASE_FRAMES, stage: ScenarioStage::default(),
+            started: false, terminal: false, terminal_error: None, submitted_frames: 0, scenario, scenario_phase_frames: SCENARIO_PHASE_FRAMES, stage: ScenarioStage::default(),
             deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(), pump_diagnostic: None };
-        events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+        let announced = (|| {
+            events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
             reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
                 session_id: stream.session_id, endpoint_id: &stream.endpoint_id,
                 renderer_instance_id: &stream.renderer_instance_id, owner_generation: stream.permit.generation(),
             }, observed_at: Instant::now(),
         }))?;
         events(DesktopStreamingEvent::Activity(DesktopStreamActivity::Opened))?;
-        if !stream.scenario.is_empty() { stream.start_stage(events)?; }
+            if !stream.scenario.is_empty() { stream.start_stage(events)?; }
+            Ok(())
+        })();
+        if let Err(error) = announced {
+            let aborted = stream.abort(events);
+            return combine_cleanup_results([Err(error), aborted]).map(|_| unreachable!());
+        }
         Ok(stream)
+    }
+
+    pub(crate) fn scheduling_receipt(&self) -> Option<mmcss_audio::MmcssAudioReceipt> {
+        self.scheduling.as_ref().map(|lease| lease.receipt())
+    }
+    pub(crate) fn scheduling_identity(&self) -> serde_json::Value {
+        serde_json::json!({"renderSessionId": self.session_id, "ownerGeneration": self.permit.generation(),
+            "endpointId": self.endpoint_id, "rendererInstanceId": self.renderer_instance_id})
     }
 
     /// Explicit local diagnostic profile. It cannot enable normal/paid startup or
@@ -493,38 +536,83 @@ impl NativeDesktopStream {
 
     fn finish<F>(&mut self, completed: bool, events: &mut F) -> Result<(), String>
     where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
-        if self.terminal { return Ok(()); }
+        self.finish_with_path(completed, CleanupPath::Explicit, events)
+    }
+    fn finish_with_path<F>(&mut self, completed: bool, path: CleanupPath, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        if self.terminal { return self.terminal_error.clone().map_or(Ok(()), Err); }
         self.terminal = true;
         // Always release OS client before reporting terminal quiescence.
         self.prepared.take();
+        let scheduling = if let Some(lease) = self.scheduling.as_mut() {
+            let restored = lease.finish(path);
+            let published = events(DesktopStreamingEvent::Scheduling(lease.receipt()));
+            combine_cleanup_results([restored, published])
+        } else { Ok(()) };
+        let completed = completed && scheduling.is_ok();
         let reservation = if self.scenario.is_empty() { Ok(()) } else { finish_aec_live_scenario_assignments(&self.cue_id, completed) };
+        let completed = completed && reservation.is_ok();
         let boundary = events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
             reason: crate::audio::state::EchoRenderBoundary::SessionEnded { session_id: self.session_id,
                 endpoint_id: &self.endpoint_id, renderer_instance_id: &self.renderer_instance_id,
                 owner_generation: self.permit.generation(), normally_drained: completed, stream_started: self.started },
             observed_at: Instant::now(),
         }));
-        let activity = events(DesktopStreamingEvent::Activity(if completed { DesktopStreamActivity::Completed } else { DesktopStreamActivity::Aborted }));
-        reservation.and(boundary).and(activity)
+        let activity = events(DesktopStreamingEvent::Activity(if completed && boundary.is_ok() { DesktopStreamActivity::Completed } else { DesktopStreamActivity::Aborted }));
+        let result = combine_cleanup_results([scheduling, reservation, boundary, activity]);
+        if let Err(error) = &result {
+            self.permit.record_cancellation_failure(error);
+            self.terminal_error = Some(error.clone());
+        }
+        result
     }
     pub(crate) fn abort<F>(&mut self, events: &mut F) -> Result<(), String>
     where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
-        let mut cleanup = Ok(());
+        self.abort_with_path(CleanupPath::Explicit, events)
+    }
+    fn abort_with_path<F>(&mut self, path: CleanupPath, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        let mut failures = Vec::new();
         if let Some(prepared) = &self.prepared {
-            if self.started { cleanup = prepared.stop(); }
-            if let Err(e) = prepared.reset() { cleanup = Err(e); }
+            if self.started { failures.push(prepared.stop()); }
+            failures.push(prepared.reset());
         }
+        let cleanup = combine_cleanup_results(failures);
         if let Err(error) = &cleanup { self.permit.record_cancellation_failure(error); }
         self.queue.reference.clear(); self.queue.previous = None;
-        let terminal = self.finish(false, events);
-        cleanup.and(terminal)
+        let terminal = self.finish_with_path(false, path, events);
+        let result = combine_cleanup_results([cleanup, terminal]);
+        if let Err(error) = &result { self.terminal_error = Some(error.clone()); }
+        result
     }
 }
 
 impl Drop for NativeDesktopStream {
     fn drop(&mut self) {
-        if !self.terminal { let _ = self.abort(&mut |_| Ok(())); }
+        if !self.terminal {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
+                self.abort_with_path(CleanupPath::DropFallback, &mut |_| Ok(()))));
+        }
     }
+}
+
+fn combine_cleanup_results(results: impl IntoIterator<Item = Result<(), String>>) -> Result<(), String> {
+    let errors: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+}
+
+// Shared by real open() and device-free cancellation/partial-init tests. The
+// permit must still exist when a cleanup error reaches the ownership barrier.
+fn finish_failed_stream_initialization<F>(permit: &DesktopPlaybackPermit, scheduling: &mut dyn SchedulingLease,
+    original: String, events: &mut F) -> String
+where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+    let restored = scheduling.finish(CleanupPath::Explicit);
+    let published = events(DesktopStreamingEvent::Scheduling(scheduling.receipt()));
+    let cleanup = combine_cleanup_results([restored, published]);
+    let cleanup_failed = cleanup.is_err();
+    let error = combine_cleanup_results([Err(original), cleanup]).expect_err("initialization already failed");
+    if cleanup_failed { permit.record_cancellation_failure(&error); }
+    error
 }
 
 #[cfg(test)]
@@ -605,11 +693,11 @@ mod tests {
     }
     fn fake_stream(owner: &DesktopPlaybackOwnership) -> (NativeDesktopStream, std::rc::Rc<std::cell::RefCell<FakeDeviceState>>) {
         let device = std::rc::Rc::new(std::cell::RefCell::new(FakeDeviceState::default()));
-        (NativeDesktopStream { prepared: Some(Box::new(FakeEndpoint(device.clone()))),
+        (NativeDesktopStream { prepared: Some(Box::new(FakeEndpoint(device.clone()))), scheduling: None,
             permit: owner.acquire("cue-offline", "native-stream-offline").unwrap(), cue_id: "cue-offline".into(),
             renderer_instance_id: "offline-renderer".into(), endpoint_id: "offline-endpoint".into(),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: None,
-            started: false, terminal: false, submitted_frames: 0, scenario: Vec::new(), scenario_phase_frames: SCENARIO_PHASE_FRAMES,
+            started: false, terminal: false, terminal_error: None, submitted_frames: 0, scenario: Vec::new(), scenario_phase_frames: SCENARIO_PHASE_FRAMES,
             stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(), pump_diagnostic: None,
         }, device)
     }

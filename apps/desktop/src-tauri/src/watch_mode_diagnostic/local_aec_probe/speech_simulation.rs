@@ -53,6 +53,8 @@ fn healthy_capture(store: &AudioStateStore, endpoint: &str) -> Result<AudioRoute
 fn observe_event(store: &AudioStateStore, endpoint: &str, evidence: &RefCell<evidence::StreamEvidence>,
     media_complete: bool, event: DesktopStreamingEvent<'_>) -> Result<(), String> {
     match event {
+        DesktopStreamingEvent::Scheduling(receipt) => evidence.borrow_mut().record(
+            json!({"kind":"mmcss-audio","receipt":receipt})),
         DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity { reason, observed_at }) => {
             validate_render_boundary(reason, endpoint)?;
             if let EchoRenderBoundary::DeviceFault(reason) = reason {
@@ -133,7 +135,11 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         "capture":capture_receipt(&healthy_capture(&store, &request.physical_device_id)?, false)?}))?;
     let media_complete_flag = Cell::new(false);
     let timing = RefCell::new(pump_timing::PumpTiming::new());
+    let mmcss_events = RefCell::new(Vec::<Value>::new());
     let mut events = |event: DesktopStreamingEvent<'_>| {
+        if let DesktopStreamingEvent::Scheduling(receipt) = &event {
+            mmcss_events.borrow_mut().push(json!(receipt));
+        }
         if Instant::now() >= deadline { return Err("local AEC speech simulation deadline exceeded".into()); }
         let part = match &event {
             DesktopStreamingEvent::Render(SpeakerRenderEvent::Frame { .. }) => pump_timing::Part::ReferenceCallback,
@@ -242,6 +248,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                     report["render"] = json!({"requestedDeviceId":request.physical_device_id,
                         "effectiveDeviceId":receipt.physical_playback_device_id,"deviceId":receipt.physical_playback_device_id,
                         "renderedFrames":receipt.rendered_frames,"sampleRateHz":receipt.output_sample_rate_hz,
+                        "renderSessionId":stream.scheduling_identity()["renderSessionId"],
                         "channelCount":receipt.output_channel_count,"rendererInstanceId":receipt.renderer_instance_id,
                         "ownerGeneration":receipt.renderer_owner_generation,"sourcePcmFrames":samples.len(),
                         "acceptedSimulationPcmFrames":simulated_frames,"waitingSilenceSourceFrames":waiting_silence_frames,
@@ -266,14 +273,22 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
             }
             Ok(())
         })();
+        let mut stream_abort_error = None;
         if outcome.is_err() {
             let aborted = pump_timing::measure(&timing, pump_timing::Part::Abort, || stream.abort(&mut events));
-            report["streamAbortError"] = json!(aborted.err());
+            stream_abort_error = aborted.err();
+            report["streamAbortError"] = json!(stream_abort_error);
         }
+        let outcome = match (outcome, stream_abort_error) {
+            (Err(error), Some(cleanup)) => Err(format!("{error}; native desktop cleanup: {cleanup}")),
+            (result, _) => result,
+        };
         let stopped = pump_timing::measure(&timing, pump_timing::Part::SourceCleanup, || injector.stop_and_join());
         report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
         report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
         report["nativePumpDecisions"] = json!(stream.pump_diagnostic_receipt());
+        report["mmcssAudio"] = json!(stream.scheduling_receipt());
+        report["mmcssAudioIdentity"] = stream.scheduling_identity();
         let operation = match (outcome, stopped) {
             (Err(error), Err(cleanup)) => Err(format!("{error}; source injector cleanup: {cleanup}")),
             (Err(error), _) | (_, Err(error)) => Err(error),
@@ -284,6 +299,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
     // No JSON serialization or disk writes in the measured pump. Timings are
     // diagnostic-only and cannot authorize drain/clock/acoustic acceptance.
     report["pumpTiming"] = timing.borrow().receipt();
+    report["mmcssAudioEvents"] = json!(mmcss_events.into_inner());
     let sealed = evidence.borrow_mut().finish();
     match sealed {
         Ok(value) => { report["streamEvidence"] = value; }

@@ -14,7 +14,14 @@ const request=()=>createLocalSpeechRequest({executionId,outputDirectory:path.res
  renderPcmPath:path.resolve('p.pcm'),renderPcmSha256:'1'.repeat(64),injectorExecutable:path.resolve('injector.exe'),injectorExecutableSha256:'2'.repeat(64),
  sourceWavPath:path.resolve('source.wav'),sourceWavSha256:'3'.repeat(64),tailStartFrame:3069600});
 const probe=()=>({schemaVersion:2,executionId,scope:'local-aec-speech-simulation',providerCalls:0,recognitionSenderAttached:false,releaseEligible:false,status:'completed',
- capture:{effectiveDeviceId:endpoint,countsFinal:true,framesCaptured:9000000,lastError:null,lastErrorCode:null},render:{effectiveDeviceId:endpoint},
+ capture:{effectiveDeviceId:endpoint,countsFinal:true,framesCaptured:9000000,lastError:null,lastErrorCode:null},
+ render:{effectiveDeviceId:endpoint,deviceId:endpoint,renderSessionId:101,ownerGeneration:1,rendererInstanceId:'renderer-inst-1'},
+ mmcssAudio:{schemaVersion:1,taskName:'Audio',ownerThreadId:41,registrationAttempted:true,registrationSucceeded:true,taskIndex:0,registrationErrorCode:null,cleanupAttempted:true,revertAttempted:true,revertSucceeded:true,revertThreadId:41,revertErrorCode:null,restoreFailureKind:null,cleanupPath:'explicit',state:'restored'},
+ mmcssAudioEvents:[
+  {schemaVersion:1,taskName:'Audio',ownerThreadId:41,registrationAttempted:true,registrationSucceeded:true,taskIndex:0,registrationErrorCode:null,cleanupAttempted:false,revertAttempted:false,revertSucceeded:false,revertThreadId:null,revertErrorCode:null,restoreFailureKind:null,cleanupPath:null,state:'active'},
+  {schemaVersion:1,taskName:'Audio',ownerThreadId:41,registrationAttempted:true,registrationSucceeded:true,taskIndex:0,registrationErrorCode:null,cleanupAttempted:true,revertAttempted:true,revertSucceeded:true,revertThreadId:41,revertErrorCode:null,restoreFailureKind:null,cleanupPath:'explicit',state:'restored'}
+ ],
+ mmcssAudioIdentity:{renderSessionId:101,ownerGeneration:1,endpointId:endpoint,rendererInstanceId:'renderer-inst-1'},
  captureDrain:{captureRemainedOpen:true,continuousQuietMs:2000,quietStartFrame:100,quietEndFrame:96100},
  streamEvidence:{streamStartCount:1,streamDrained:true,aborted:false,mediaEndVoicedPhysicalFrames:96000},sourceMediaComplete:{passed:true,endpointId:endpoint,mediaPlaybackComplete:true,
  sourceEvidenceValidationPassed:true,sourceEvidenceValidationError:null,exitCode:0,
@@ -261,3 +268,72 @@ for(const field of ['passed','mediaPlaybackComplete','naturalRenderDrained','sou
   const p=probe();delete p.sourceMediaComplete.receipt[field];
   assert.equal(inspectSpeechOperation(p,request()).passed,false);
  });
+
+
+for (const [name, mutate] of [
+ ['missing probe.mmcssAudio', p => { delete p.mmcssAudio; }],
+ ['missing probe.mmcssAudioEvents', p => { delete p.mmcssAudioEvents; }],
+ ['missing probe.mmcssAudioIdentity', p => { delete p.mmcssAudioIdentity; }],
+ ['registration failed receipt', p => {
+   p.mmcssAudio = { ...p.mmcssAudio, registrationSucceeded: false, taskIndex: null, registrationErrorCode: 5, state: 'registrationFailed', cleanupPath: null, cleanupAttempted: false, revertAttempted: false, revertSucceeded: false };
+   p.mmcssAudioEvents = [p.mmcssAudio];
+ }],
+ ['silent fallback cleanupPath', p => { p.mmcssAudio.cleanupPath = 'silent'; p.mmcssAudioEvents[1].cleanupPath = 'silent'; }],
+ ['dropFallback cleanupPath', p => { p.mmcssAudio.cleanupPath = 'dropFallback'; p.mmcssAudioEvents[1].cleanupPath = 'dropFallback'; }],
+ ['null cleanupPath', p => { p.mmcssAudio.cleanupPath = null; p.mmcssAudioEvents[1].cleanupPath = null; }],
+ ['owner thread mismatch', p => { p.mmcssAudio.revertThreadId = p.mmcssAudio.ownerThreadId + 1; p.mmcssAudioEvents[1].revertThreadId = p.mmcssAudio.ownerThreadId + 1; }],
+ ['restore failure kind', p => { p.mmcssAudio.restoreFailureKind = 'nativeError'; p.mmcssAudio.state = 'restoreFailed'; p.mmcssAudioEvents[1].restoreFailureKind = 'nativeError'; p.mmcssAudioEvents[1].state = 'restoreFailed'; }],
+ ['revert failed', p => { p.mmcssAudio.revertSucceeded = false; p.mmcssAudioEvents[1].revertSucceeded = false; }],
+ ['schema version mismatch', p => { p.mmcssAudio.schemaVersion = 2; p.mmcssAudioEvents[1].schemaVersion = 2; }],
+ ['taskName non-Audio', p => { p.mmcssAudio.taskName = 'ProAudio'; p.mmcssAudioEvents[1].taskName = 'ProAudio'; }],
+ ['taskIndex non-u32', p => { p.mmcssAudio.taskIndex = -1; p.mmcssAudioEvents[1].taskIndex = -1; }],
+ ['events length not 2', p => { p.mmcssAudioEvents = [p.mmcssAudioEvents[0]]; }],
+ ['events[0] active not clean', p => { p.mmcssAudioEvents[0].cleanupAttempted = true; }],
+ ['events identity mismatch', p => { p.mmcssAudioEvents[0].ownerThreadId = 999; }],
+ ['final receipt not equal final event', p => { p.mmcssAudio.taskIndex = 99; }],
+ ['identity renderSessionId mismatch', p => { p.mmcssAudioIdentity.renderSessionId = 999; }],
+ ['identity ownerGeneration mismatch', p => { p.mmcssAudioIdentity.ownerGeneration = 999; }],
+ ['identity endpointId mismatch', p => { p.mmcssAudioIdentity.endpointId = 'other-endpoint'; }],
+ ['identity rendererInstanceId mismatch', p => { p.mmcssAudioIdentity.rendererInstanceId = 'other-inst'; }],
+]) test(`reject ${name}`, () => {
+  const p = probe();
+  mutate(p);
+  assert.equal(inspectSpeechOperation(p, request()).passed, false);
+});
+
+
+for (const [name, mutate] of [
+ ['primitive mmcssAudioIdentity', p => { p.mmcssAudioIdentity = 'primitive'; }],
+ ['array mmcssAudioIdentity', p => { p.mmcssAudioIdentity = [1, 2, 3]; }],
+ ['primitive render', p => { p.render = 'primitive'; }],
+ ['array render', p => { p.render = [1, 2, 3]; }],
+ ['both missing renderSessionId (undefined===undefined fake pass)', p => { delete p.mmcssAudioIdentity.renderSessionId; delete p.render.renderSessionId; }],
+ ['both missing ownerGeneration (undefined===undefined fake pass)', p => { delete p.mmcssAudioIdentity.ownerGeneration; delete p.render.ownerGeneration; }],
+ ['both missing rendererInstanceId (undefined===undefined fake pass)', p => { delete p.mmcssAudioIdentity.rendererInstanceId; delete p.render.rendererInstanceId; }],
+ ['both missing endpointId', p => { delete p.mmcssAudioIdentity.endpointId; delete p.render.effectiveDeviceId; delete p.render.deviceId; }],
+ ['renderSessionId zero', p => { p.mmcssAudioIdentity.renderSessionId = 0; p.render.renderSessionId = 0; }],
+ ['ownerGeneration negative', p => { p.mmcssAudioIdentity.ownerGeneration = -1; p.render.ownerGeneration = -1; }],
+ ['ownerGeneration unsafe integer', p => { p.mmcssAudioIdentity.ownerGeneration = Number.MAX_SAFE_INTEGER + 10; p.render.ownerGeneration = Number.MAX_SAFE_INTEGER + 10; }],
+ ['rendererInstanceId empty string', p => { p.mmcssAudioIdentity.rendererInstanceId = ''; p.render.rendererInstanceId = ''; }],
+ ['endpointId empty string', p => { p.mmcssAudioIdentity.endpointId = ''; p.render.effectiveDeviceId = ''; p.render.deviceId = ''; }],
+ ['request mismatch endpoint', p => { p.mmcssAudioIdentity.endpointId = '{0.0.0.00000000}.{00000000-0000-0000-0000-000000000000}'; }],
+]) test(`reject mmcss ${name}`, () => {
+  const p = probe();
+  mutate(p);
+  assert.equal(inspectSpeechOperation(p, request()).passed, false);
+});
+
+test('event key reordering on probe.mmcssAudioEvents still passes inspectSpeechOperation', () => {
+  const p = probe();
+  const reordered = {};
+  for (const k of Object.keys(p.mmcssAudioEvents[1]).reverse()) {
+    reordered[k] = p.mmcssAudioEvents[1][k];
+  }
+  p.mmcssAudioEvents[1] = reordered;
+  assert.equal(inspectSpeechOperation(p, request()).passed, true);
+});
+
+test('raw streamAbortError blocks forged healthy summaries even after successful MMCSS restoration', () => {
+ const p=probe();p.streamAbortError='injected endpoint stop/reset cleanup failure';
+ assert.equal(inspectSpeechOperation(p,request()).passed,false);
+});

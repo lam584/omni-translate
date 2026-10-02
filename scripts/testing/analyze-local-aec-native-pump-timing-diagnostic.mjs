@@ -9,6 +9,8 @@ export const NATIVE_PUMP_TIMING_PARTS = Object.freeze([
   'requestedSleep', 'nativeRenderWait', 'abort', 'sourceCleanup',
 ]);
 const PARTS = new Set(NATIVE_PUMP_TIMING_PARTS);
+export const NATIVE_RENDER_WAKES = Object.freeze(['notStarted', 'signaled', 'timedOut']);
+const WAKES = new Set(NATIVE_RENDER_WAKES);
 const integer = n => Number.isSafeInteger(n) && n >= 0;
 const check = (ok, message) => { if (!ok) throw Error(`native pump timing: ${message}`); };
 function span(value, completed) {
@@ -30,9 +32,15 @@ function span(value, completed) {
   const valid = value.startQpc100ns !== null && value.endQpc100ns !== null
     && value.startQpc100ns > 0 && value.endQpc100ns >= value.startQpc100ns;
   check(value.qpcValid === valid, 'inconsistent QPC validity');
+  if (value.part === 'nativeRenderWait' && value.outcome === 'completed') {
+    check(WAKES.has(value.nativeRenderWake), 'invalid nativeRenderWake for completed nativeRenderWait');
+  } else {
+    check(value.nativeRenderWake === null, 'non-null nativeRenderWake on non-wait or incomplete span');
+  }
 }
 export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
-  check(timing?.schemaVersion === 1 && timing.artifactKind === 'local-aec-pump-timing-diagnostic', 'unsupported receipt');
+  check(timing?.schemaVersion === 2 && timing.artifactKind === 'local-aec-pump-timing-diagnostic', 'unsupported receipt');
+  check(timing.wakeIdentityPolicy === 'returned-native-result/v1', 'unsupported wake identity policy');
   check(timing.diagnosticOnly === true && timing.qualityAcceptance === false
     && timing.releaseEligible === false, 'diagnostic boundary missing');
   check(timing.monotonicDurationUnit === 'microseconds' && timing.qpcUnit === '100ns', 'unsupported units');
@@ -73,9 +81,13 @@ export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
   check(Array.isArray(timing.recentSpans) && timing.recentSpans.length === Math.min(completed, 512), 'invalid retained spans');
   check(timing.evictedOldDiagnosticSpans === completed - timing.recentSpans.length, 'eviction mismatch');
   const retained = new Map();
+  const retainedBySequence = new Map();
+  const retainedWakes = {notStarted: 0, signaled: 0, timedOut: 0};
+  let latestRetainedNativeWaitSpan = null;
   for (const [index, value] of timing.recentSpans.entries()) {
     span(value, completed);
     check(value.sequence === timing.evictedOldDiagnosticSpans + index, 'noncontiguous retained sequence');
+    retainedBySequence.set(value.sequence, value);
     const total = byPart.get(value.part);
     check(value.durationMicros <= total.maximumMicros, 'retained span exceeds maximum');
     const row = retained.get(value.part) ?? {count: 0, rejected: 0, unwound: 0, invalidQpc: 0, totalMicros: 0};
@@ -85,8 +97,36 @@ export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
     row.invalidQpc += Number(!value.qpcValid);
     row.totalMicros += value.durationMicros;
     retained.set(value.part, row);
+    if (value.part === 'nativeRenderWait') {
+      latestRetainedNativeWaitSpan = value;
+      if (value.outcome === 'completed') {
+        retainedWakes[value.nativeRenderWake]++;
+      }
+    }
+  }
+  for (const kind of ['notStarted', 'signaled', 'timedOut']) {
+    check(timing.evictedOldDiagnosticSpans === 0
+      ? retainedWakes[kind] === wakes[kind]
+      : retainedWakes[kind] <= wakes[kind], `retained wake ${kind} mismatch`);
   }
   for (const [part, total] of byPart) {
+    const maximum = total.maximumSpan;
+    if (maximum) {
+      const sameSequence = retainedBySequence.get(maximum.sequence);
+      if (sameSequence) {
+        for (const key of ['sequence', 'part', 'startElapsedMicros', 'endElapsedMicros', 'durationMicros',
+          'startQpc100ns', 'endQpc100ns', 'qpcValid', 'outcome', 'nativeRenderWake']) {
+          check(maximum[key] === sameSequence[key], `maximum vs retained span ${key} mismatch`);
+        }
+      }
+      if (maximum.nativeRenderWake !== null) {
+        check(wakes[maximum.nativeRenderWake] > 0, 'maximum wake absent from global totals');
+        if (!sameSequence) {
+          check(wakes[maximum.nativeRenderWake] - retainedWakes[maximum.nativeRenderWake] > 0,
+            'evicted maximum wake absent from evicted totals');
+        }
+      }
+    }
     const row = retained.get(part) ?? {count: 0, rejected: 0, unwound: 0, invalidQpc: 0, totalMicros: 0};
     for (const key of Object.keys(row)) {
       check(Number.isSafeInteger(row[key]) && (timing.evictedOldDiagnosticSpans === 0
@@ -96,13 +136,20 @@ export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
   // Preserve classification, including rejected waits. A timeout is a completed
   // wait, not a rejection or ordinary sleep; no scheduling/quality thresholds.
   return {
-    schemaVersion: 1, artifactKind: 'local-aec-native-pump-timing-analysis-diagnostic',
+    schemaVersion: 2, artifactKind: 'local-aec-native-pump-timing-analysis-diagnostic',
     diagnosticOnly: true, qualityAcceptance: false, aecQualityAcceptance: false,
     releaseEligible: false, overallPassed: false, providerCalls: 0, deviceCalls: 0,
     nativeClockAccuracyEstablished: false, sumAcrossPartsIsNotLoopDuration: true,
     completedSpanCount: completed, evictedOldDiagnosticSpans: timing.evictedOldDiagnosticSpans,
     nativeRenderWait: {...byPart.get('nativeRenderWait')},
     nativeRenderWakeTotals: {...wakes},
+    latestRetainedNativeWaitSpan: latestRetainedNativeWaitSpan ? {
+      sequence: latestRetainedNativeWaitSpan.sequence,
+      part: latestRetainedNativeWaitSpan.part,
+      outcome: latestRetainedNativeWaitSpan.outcome,
+      nativeRenderWake: latestRetainedNativeWaitSpan.nativeRenderWake,
+      durationMicros: latestRetainedNativeWaitSpan.durationMicros,
+    } : null,
     requestedSleep: {...byPart.get('requestedSleep')},
     parts: timing.parts.map(({part, totals}) => ({part, totals: {...totals}})),
   };

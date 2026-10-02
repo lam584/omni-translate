@@ -224,3 +224,26 @@ a callback that exhausts the first block before the second step still fails.
 Whole-stream three-phase identity, exact PCM and final receipt tests remain in
 force. This repair needs a separately frozen device run, not a success marker
 on the older failed run.
+
+## Result-bound native wake diagnostics (2026-10-02)
+
+Pump timing schema v2 records `nativeRenderWake` on every span, including each
+per-part maximum. Only a completed `nativeRenderWait` has a typed
+`notStarted`, `signaled` or `timedOut` value. Rejected/unwound waits and every
+other part have null. The returned native result, duration/QPC span, maximum
+and aggregate wake totals are recorded together, after the operation returns;
+no recorder borrow crosses a callback. Generic measurement cannot create a
+completed native wait without this identity. Retention remains bounded to 512
+spans and preserves an evicted maximum's original wake identity.
+
+The offline timing analyzer rejects v1 (individual identity is unavailable),
+checks retained/global wake counts, and compares all maximum/retained identity
+fields at the same sequence. Its fault-adjacent classification is diagnostic
+only: a signaled result does not timestamp engine signaling or prove dispatch
+latency, and a timeout result alone does not prove timer quantization. Actual
+raw WAIT_FAILED and unknown statuses remain errors through the pinned vendor;
+only WAIT_TIMEOUT maps to `timedOut`. Historical receipts are not rewritten.
+
+This change adds no scheduling priority, timer-resolution change, buffer,
+timeout, PCM drop, clock tolerance or acoustic acceptance. The next frozen
+full-material vm171 run is a discriminator, not a guaranteed acoustic pass.

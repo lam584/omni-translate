@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 const RETAINED_SPANS: usize = 512;
 const PART_COUNT: usize = 13;
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Part {
     LoopGap, HealthyCapture, MediaPoll, DeltaAdmission, NativePump,
@@ -23,6 +23,21 @@ const PARTS: [Part; PART_COUNT] = [Part::LoopGap, Part::HealthyCapture, Part::Me
 #[serde(rename_all = "camelCase")]
 enum Outcome { Completed, Rejected, Unwound }
 
+// Derived only from this operation's returned native result, not aggregate counters.
+#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum NativeRenderWake { NotStarted, Signaled, TimedOut }
+impl From<crate::audio::speech::DesktopRenderWake> for NativeRenderWake {
+    fn from(wake: crate::audio::speech::DesktopRenderWake) -> Self {
+        use crate::audio::speech::DesktopRenderWake;
+        match wake {
+            DesktopRenderWake::NotStarted => Self::NotStarted,
+            DesktopRenderWake::Signaled => Self::Signaled,
+            DesktopRenderWake::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Span {
@@ -35,6 +50,7 @@ struct Span {
     end_qpc_100ns: Option<u64>,
     qpc_valid: bool,
     outcome: Outcome,
+    native_render_wake: Option<NativeRenderWake>,
 }
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,27 +80,25 @@ impl PumpTiming {
             active: 0, evicted: 0, totals: std::array::from_fn(|_| Totals::default()),
             spans: VecDeque::with_capacity(RETAINED_SPANS), native_render_wakes: [0; 3] }
     }
-    pub(super) fn record_native_render_wake(&mut self, wake: crate::audio::speech::DesktopRenderWake) {
-        use crate::audio::speech::DesktopRenderWake;
-        let index=match wake { DesktopRenderWake::NotStarted=>0, DesktopRenderWake::Signaled=>1, DesktopRenderWake::TimedOut=>2 };
-        self.native_render_wakes[index] += 1;
-    }
     pub(super) fn loop_started(&mut self) {
         let now = Instant::now();
         let qpc = crate::audio::engine::aec_timing::qpc_now_100ns();
         if let Some((before, before_qpc)) = self.previous_loop.replace((now, qpc)) {
-            self.record(Part::LoopGap, before, now, before_qpc, qpc, Outcome::Completed);
+            self.record(Part::LoopGap, before, now, before_qpc, qpc, Outcome::Completed, None);
         }
     }
     fn record(&mut self, part: Part, before: Instant, now: Instant,
-        before_qpc: Option<u64>, qpc: Option<u64>, outcome: Outcome) {
+        before_qpc: Option<u64>, qpc: Option<u64>, outcome: Outcome,
+        native_render_wake: Option<NativeRenderWake>) {
+        assert_eq!(native_render_wake.is_some(), part == Part::NativeRenderWait && outcome == Outcome::Completed);
+        if let Some(wake) = native_render_wake { self.native_render_wakes[wake as usize] += 1; }
         let micros = |time: std::time::Duration| u64::try_from(time.as_micros()).unwrap_or(u64::MAX);
         let span = Span { sequence: self.completed, part,
             start_elapsed_micros: micros(before.saturating_duration_since(self.origin)),
             end_elapsed_micros: micros(now.saturating_duration_since(self.origin)),
             duration_micros: micros(now.saturating_duration_since(before)),
             start_qpc_100ns: before_qpc, end_qpc_100ns: qpc,
-            qpc_valid: before_qpc.zip(qpc).is_some_and(|(start,end)| start > 0 && end >= start), outcome };
+            qpc_valid: before_qpc.zip(qpc).is_some_and(|(start,end)| start > 0 && end >= start), outcome, native_render_wake };
         self.completed += 1;
         let totals = &mut self.totals[part as usize];
         totals.count += 1;
@@ -101,7 +115,8 @@ impl PumpTiming {
     }
     // Serialize only AFTER the stream has drained/aborted and owned cleanup.
     pub(super) fn receipt(&self) -> Value {
-        json!({"schemaVersion":1,"artifactKind":"local-aec-pump-timing-diagnostic",
+        json!({"schemaVersion":2,"artifactKind":"local-aec-pump-timing-diagnostic",
+            "wakeIdentityPolicy":"returned-native-result/v1",
             "diagnosticOnly":true,"qualityAcceptance":false,"releaseEligible":false,
             "monotonicDurationUnit":"microseconds","qpcUnit":"100ns",
             "requestedSleepMs":2,"nativeRenderWaitTimeoutMs":2,"retainedSpanLimit":RETAINED_SPANS,
@@ -119,27 +134,39 @@ struct Measuring<'a> {
     qpc: Option<u64>, finished: bool,
 }
 impl Measuring<'_> {
-    fn finish(&mut self, outcome: Outcome) {
+    fn finish(&mut self, outcome: Outcome, native_render_wake: Option<NativeRenderWake>) {
         let now = Instant::now();
         let qpc = crate::audio::engine::aec_timing::qpc_now_100ns();
         let mut timing = self.timing.borrow_mut();
         timing.active -= 1;
-        timing.record(self.part, self.before, now, self.qpc, qpc, outcome);
+        timing.record(self.part, self.before, now, self.qpc, qpc, outcome, native_render_wake);
         self.finished = true;
     }
 }
 impl Drop for Measuring<'_> {
-    fn drop(&mut self) { if !self.finished { self.finish(Outcome::Unwound); } }
+    fn drop(&mut self) { if !self.finished { self.finish(Outcome::Unwound, None); } }
 }
 pub(super) fn measure<T>(timing: &RefCell<PumpTiming>, part: Part,
     operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    assert_ne!(part, Part::NativeRenderWait, "native waits require result-bound measurement");
+    measure_with_wake(timing, part, operation, |_| None)
+}
+pub(super) fn measure_native_render_wait(timing: &RefCell<PumpTiming>,
+    operation: impl FnOnce() -> Result<crate::audio::speech::DesktopRenderWake, String>)
+    -> Result<crate::audio::speech::DesktopRenderWake, String> {
+    measure_with_wake(timing, Part::NativeRenderWait, operation,
+        |result| result.as_ref().ok().copied().map(NativeRenderWake::from))
+}
+fn measure_with_wake<T>(timing: &RefCell<PumpTiming>, part: Part,
+    operation: impl FnOnce() -> Result<T, String>,
+    returned_wake: impl FnOnce(&Result<T, String>) -> Option<NativeRenderWake>) -> Result<T, String> {
     let mut measuring = Measuring { timing, part, before: Instant::now(),
         qpc: crate::audio::engine::aec_timing::qpc_now_100ns(), finished: false };
     timing.borrow_mut().active += 1;
     // No RefCell/Mutex guard crosses the operation. NativePump may invoke
     // callbacks that measure nested spans in this same recorder.
     let result = operation();
-    measuring.finish(if result.is_ok() { Outcome::Completed } else { Outcome::Rejected });
+    measuring.finish(if result.is_ok() { Outcome::Completed } else { Outcome::Rejected }, returned_wake(&result));
     result
 }
 
@@ -153,7 +180,7 @@ mod tests {
         let mut timing = PumpTiming::new();
         let origin = timing.origin;
         for sequence in 0..1024_u64 {
-            timing.record(Part::RequestedSleep,origin,origin+Duration::from_micros(sequence),Some(100),Some(100+sequence*10),Outcome::Completed);
+            timing.record(Part::RequestedSleep,origin,origin+Duration::from_micros(sequence),Some(100),Some(100+sequence*10),Outcome::Completed,None);
         }
         assert_eq!(timing.spans.len(),512);
         assert_eq!(timing.spans.front().unwrap().sequence,512);
@@ -194,10 +221,9 @@ mod tests {
         // Successful wakes (including timeout/not-started) are not rejections.
         use crate::audio::speech::DesktopRenderWake;
         for wake in [DesktopRenderWake::NotStarted, DesktopRenderWake::Signaled, DesktopRenderWake::TimedOut] {
-            assert_eq!(measure(&timing, Part::NativeRenderWait, || Ok(wake)), Ok(wake));
-            timing.borrow_mut().record_native_render_wake(wake);
+            assert_eq!(measure_native_render_wait(&timing, || Ok(wake)), Ok(wake));
         }
-        let result: Result<(), String> = measure(&timing, Part::NativeRenderWait,
+        let result = measure_native_render_wait(&timing,
             || Err("permit cancelled".into()));
         assert_eq!(result, Err("permit cancelled".into()));
         let timing = timing.borrow();
@@ -212,15 +238,73 @@ mod tests {
             assert_eq!(parts[index]["part"], serde_json::to_value(part).unwrap());
         }
         assert_eq!(parts[Part::NativeRenderWait as usize]["part"], "nativeRenderWait");
+        assert_eq!(receipt["schemaVersion"], 2);
+        assert_eq!(receipt["wakeIdentityPolicy"], "returned-native-result/v1");
         assert_eq!(receipt["nativeRenderWaitTimeoutMs"], 2);
+        for (index, wake) in ["notStarted", "signaled", "timedOut"].iter().enumerate() {
+            assert_eq!(receipt["recentSpans"][index]["nativeRenderWake"], *wake);
+            assert_eq!(receipt["recentSpans"][index]["outcome"], "completed");
+        }
+        assert_eq!(receipt["recentSpans"][3]["nativeRenderWake"], Value::Null);
+        let maximum = &receipt["parts"][Part::NativeRenderWait as usize]["totals"]["maximumSpan"];
+        let sequence = maximum["sequence"].as_u64().unwrap() as usize;
+        assert_eq!(maximum, &receipt["recentSpans"][sequence]);
         assert_eq!(receipt["nativeRenderWakeTotals"],json!({"notStarted":1,"signaled":1,"timedOut":1}));
         assert_eq!(receipt["activeSpanCount"], 0);
+    }
+    #[test]
+    fn returned_wait_identity_survives_nested_callback_and_unwind() {
+        use crate::audio::speech::DesktopRenderWake;
+        let timing = RefCell::new(PumpTiming::new());
+        assert_eq!(measure_native_render_wait(&timing, || {
+            measure(&timing, Part::ReferenceCallback, || Ok(()))?;
+            Ok(DesktopRenderWake::Signaled)
+        }), Ok(DesktopRenderWake::Signaled));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = measure_native_render_wait(&timing, || {
+                measure(&timing, Part::MediaPoll, || Ok(()))?;
+                panic!("wait panic");
+            });
+        })).is_err());
+        let timing = timing.borrow();
+        assert_eq!(timing.active, 0); assert_eq!(timing.completed, 4);
+        assert_eq!(timing.spans[0].native_render_wake, None);
+        assert_eq!(timing.spans[1].native_render_wake, Some(NativeRenderWake::Signaled));
+        assert_eq!(timing.spans[2].native_render_wake, None);
+        assert_eq!(timing.spans[3].outcome, Outcome::Unwound);
+        assert_eq!(timing.spans[3].native_render_wake, None);
+        assert_eq!(timing.native_render_wakes, [0, 1, 0]);
+    }
+    #[test]
+    fn evicted_maximum_keeps_its_own_wake_not_the_latest_aggregate() {
+        let mut timing = PumpTiming::new(); let origin = timing.origin;
+        for sequence in 0..1024_u64 {
+            let wake = if sequence == 0 { NativeRenderWake::Signaled } else { NativeRenderWake::TimedOut };
+            let duration = if sequence == 0 { 2000 } else { sequence };
+            timing.record(Part::NativeRenderWait, origin, origin + Duration::from_micros(duration),
+                Some(100), Some(100 + duration * 10), Outcome::Completed, Some(wake));
+        }
+        assert_eq!(timing.native_render_wakes, [0, 1, 1023]);
+        assert_eq!(timing.evicted, 512);
+        assert!(timing.spans.iter().all(|span| span.native_render_wake == Some(NativeRenderWake::TimedOut)));
+        let maximum = timing.totals[Part::NativeRenderWait as usize].maximum_span.as_ref().unwrap();
+        assert_eq!(maximum.sequence, 0);
+        assert_eq!(maximum.native_render_wake, Some(NativeRenderWake::Signaled));
+        assert_eq!(timing.receipt()["parts"][Part::NativeRenderWait as usize]["totals"]["maximumSpan"]["nativeRenderWake"], "signaled");
+    }
+    #[test]
+    fn generic_measurement_cannot_fabricate_a_completed_native_wait() {
+        let timing = RefCell::new(PumpTiming::new()); let mut called = false;
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = measure(&timing, Part::NativeRenderWait, || { called = true; Ok(()) });
+        })).is_err());
+        assert!(!called); assert_eq!(timing.borrow().completed, 0); assert_eq!(timing.borrow().active, 0);
     }
     #[test]
     fn missing_zero_or_retreating_qpc_never_becomes_clock_authority() {
         let mut timing=PumpTiming::new();let now=timing.origin;
         for (start,end) in [(None,Some(1)),(Some(0),Some(1)),(Some(5),Some(4))] {
-            timing.record(Part::LoopGap,now,now+Duration::from_micros(100),start,end,Outcome::Completed);
+            timing.record(Part::LoopGap,now,now+Duration::from_micros(100),start,end,Outcome::Completed,None);
         }
         assert_eq!(timing.totals[Part::LoopGap as usize].invalid_qpc,3);
         assert!(timing.spans.iter().all(|span|!span.qpc_valid));

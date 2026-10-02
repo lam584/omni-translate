@@ -8,6 +8,7 @@ use crate::audio::state::NativeCaptureStartAck;
 #[path = "evidence.rs"] mod evidence;
 #[path = "async_evidence_writer.rs"] mod async_evidence_writer;
 #[path = "injector.rs"] mod injector;
+#[path = "owned_collection.rs"] mod owned_collection;
 #[path = "media_collection.rs"] mod media_collection;
 #[cfg(test)]
 #[path = "tests.rs"] mod tests;
@@ -231,7 +232,12 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         let stopped = injector.stop_and_join();
         report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
         report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
-        media_collection::finish_collection(outcome.and(stopped), source_evidence_failure)
+        let operation = match (outcome, stopped) {
+            (Err(error), Err(cleanup)) => Err(format!("{error}; source injector cleanup: {cleanup}")),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            _ => Ok(()),
+        };
+        media_collection::finish_collection(operation, source_evidence_failure)
     });
     let sealed = evidence.borrow_mut().finish();
     match sealed {

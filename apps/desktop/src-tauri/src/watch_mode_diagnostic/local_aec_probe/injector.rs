@@ -3,6 +3,7 @@ use super::super::*;
 use super::contract::MediaStarted;
 use super::media_collection::{CollectedMedia, collect_media_complete};
 use std::process::{Child, Command, Stdio};
+use super::owned_collection::OwnedCollection;
 
 const RECEIPT_FILE: &str = "local-aec-source-media-receipt.json";
 const STDERR_FILE: &str = "local-aec-source-media-stderr.log";
@@ -38,6 +39,7 @@ pub(super) struct InjectorChild {
     receipt_path: PathBuf,
     source_pcm_path: PathBuf,
     exited: bool,
+    collection: OwnedCollection<CollectedMedia>,
 }
 impl InjectorChild {
     pub(super) fn spawn(request: &ProbeRequest) -> Result<Self, String> {
@@ -64,87 +66,122 @@ impl InjectorChild {
         let child = command.spawn().map_err(|e| e.to_string())?;
         let start = MediaStarted { execution_id: request.execution_id.clone(), physical_device_id: request.physical_device_id.clone(),
             process_id: child.id(), started_at_ms };
-        Ok(Self { child, _executable: executable, _source: source, start, receipt_path, source_pcm_path, exited: false })
+        Ok(Self { child, _executable: executable, _source: source, start, receipt_path, source_pcm_path, exited: false, collection: OwnedCollection::new() })
     }
     pub(super) fn poll_complete(&mut self, request: &ProbeRequest) -> Result<Option<CollectedMedia>, String> {
-        let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? else { return Ok(None); };
-        self.exited = true;
-        let bytes = read_bounded(&self.receipt_path, MAX_REQUEST_BYTES)?;
-        let marker = json!({"executionId":request.execution_id,"sourceMediaReceiptSha256":format!("{:x}",Sha256::digest(&bytes))});
-        let now = crate::shared::time::now_unix_millis();
-        let mut collected = collect_media_complete(request, &self.start, &bytes, now, status.code())?;
-        let result = &mut collected.bound;
-        let sim = request.speech_simulation.as_ref().ok_or("missing speechSimulation")?;
-        if result["receipt"]["mediaPath"] != sim.source_wav_path.to_string_lossy().as_ref()
-            || result["receipt"]["sourcePcm48kMonoPath"] != self.source_pcm_path.to_string_lossy().as_ref() {
-            return Err("source injector receipt PCM/media path mismatch".into());
+        if !self.exited {
+            let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? else { return Ok(None); };
+            self.exited = true;
+            let request = request.clone();
+            let start = self.start.clone();
+            let receipt_path = self.receipt_path.clone();
+            let source_pcm_path = self.source_pcm_path.clone();
+            self.collection.start(move || collect_completed_media(&request, &start,
+                &receipt_path, &source_pcm_path, status.code()))?;
         }
-        let source_pcm = read_bounded(&self.source_pcm_path, 48_000*4*300)?;
-        let source_frames = source_pcm.len() as u64 / 4;
-        if source_pcm.len() % 4 != 0
-            || source_pcm.chunks_exact(4).any(|bytes| { let sample=f32::from_le_bytes(bytes.try_into().unwrap()); !sample.is_finite() || sample.abs()>1.0 })
-            || result["receipt"]["renderedFrames"].as_u64().zip(result["receipt"]["postrollSilenceFrames"].as_u64())
-                .is_none_or(|(media,postroll)| media.checked_add(postroll)!=Some(source_frames)) {
-            return Err("source injector physical PCM does not cover the full receipt span".into());
-        }
-        let clock_path = request.output_directory.join("aec-source-playback-clock.jsonl");
-        if result["receipt"]["sourceClockMetadataPath"] != clock_path.to_string_lossy().as_ref() {
-            return Err("source actual clock sidecar path mismatch".into());
-        }
-        let clock_bytes = read_clock_journal(&clock_path, collected.evidence_failure.is_some())?;
-        let clock_validation = validate_source_clock(&clock_bytes, &result["receipt"], source_frames);
-        result["sourceClockIndependentValidationPassed"] = json!(clock_validation.is_ok());
-        let mut clock_rejection = None;
-        let clock_end = match clock_validation {
-            Ok(end) => end,
-            Err(error) => {
-                result["sourceClockIndependentValidationError"] = json!(error);
-                clock_rejection = Some(error);
-                Value::Null
-            }
-        };
-        let raw_path = request.output_directory.join("aec-source-playback-clock-raw-diagnostic.jsonl");
-        if result["receipt"]["sourceClockRawTracePath"] != raw_path.to_string_lossy().as_ref() {
-            return Err("source raw clock sidecar path mismatch".into());
-        }
-        let raw_bytes = read_bounded(&raw_path, 32*1024*1024)?;
-        let raw_end = validate_raw_clock_collection(&raw_bytes, &result["receipt"], source_frames)?;
-        result["sourceClockRawMetadataPath"] = json!(raw_path);
-        result["sourceClockRawSha256"] = json!(format!("{:x}",Sha256::digest(&raw_bytes)));
-        result["sourceClockRawBytes"] = json!(raw_bytes.len());
-        result["sourceClockPhysicalEnd"] = raw_end;
-        result["sourceClockMetadataPath"] = json!(clock_path);
-        result["sourceClockSha256"] = json!(format!("{:x}",Sha256::digest(&clock_bytes)));
-        result["sourceClockEnd"] = clock_end;
-        result["sourcePcmSha256"] = json!(format!("{:x}",Sha256::digest(&source_pcm)));
-        result["sourcePcmBytes"] = json!(source_pcm.len());
-        result["sourcePcmFormat"] = json!("f32le");
-        result["sourcePcmSampleRateHz"] = json!(48_000);
-        result["sourcePcmChannelCount"] = json!(1);
-        result["sourcePcmFrames"] = json!(source_frames);
-        result["sourceWavSha256"] = json!(sim.source_wav_sha256);
-        result["injectorExecutableSha256"] = json!(sim.injector_executable_sha256);
-        result["exitCode"] = json!(status.code());
-        result["sourceEvidenceValidationPassed"] = json!(collected.evidence_failure.is_none());
-        result["sourceEvidenceValidationError"] = json!(collected.evidence_failure);
-        result["passed"] = json!(collected.evidence_failure.is_none());
-        result["endpointId"] = result["receipt"]["endpointId"].clone();
-        result["processId"] = result["receipt"]["processId"].clone();
-        result["spawnedByNative"] = json!(true);
-        result["providerCalls"] = json!(0);
-        if let Some(error) = clock_rejection { collected.reject_evidence(error); }
-        exclusive_json(&request.output_directory.join(super::contract::COMPLETE_FILE), &marker)?;
-        Ok(Some(collected))
+        self.collection.poll()
     }
     pub(super) fn stop_and_join(&mut self) -> Result<(), String> {
-        if self.exited { return Ok(()); }
-        self.child.kill().map_err(|e| e.to_string())?;
-        self.child.wait().map_err(|e| e.to_string())?;
-        self.exited = true; Ok(())
+        let stopped = (|| {
+            if !self.exited {
+                if self.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                    self.child.kill().map_err(|e| e.to_string())?;
+                    self.child.wait().map_err(|e| e.to_string())?;
+                }
+                self.exited = true;
+            }
+            Ok(())
+        })();
+        // Pinned executable/source handles remain owned until both the child
+        // and all collection work have actually stopped. Rendering is drained
+        // or aborted before this cleanup, never while poll is pumping audio.
+        let collected = finish_collector(&mut self.collection);
+        match (stopped, collected) {
+            (Err(child), Err(collection)) => Err(format!("{child}; source collector cleanup: {collection}")),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            _ => Ok(()),
+        }
     }
 }
 impl Drop for InjectorChild {
     fn drop(&mut self) { let _ = self.stop_and_join(); }
+}
+
+// A typed clock rejection is a result, not a worker I/O error. Abort/deadline
+// cleanup must retain it even when the live pump never consumed the result.
+fn finish_collector(collection: &mut OwnedCollection<CollectedMedia>) -> Result<(), String> {
+    let result = collection.finish()?;
+    super::media_collection::finish_collection(Ok(()), result.and_then(|media| media.evidence_failure))
+}
+
+fn collect_completed_media(request: &ProbeRequest, start: &MediaStarted, receipt_path: &Path,
+    source_pcm_path: &Path, exit_code: Option<i32>) -> Result<CollectedMedia, String> {
+    let bytes = read_bounded(receipt_path, MAX_REQUEST_BYTES)?;
+    let marker = json!({"executionId":request.execution_id,"sourceMediaReceiptSha256":format!("{:x}",Sha256::digest(&bytes))});
+    let now = crate::shared::time::now_unix_millis();
+    let mut collected = collect_media_complete(request, start, &bytes, now, exit_code)?;
+    let result = &mut collected.bound;
+    let sim = request.speech_simulation.as_ref().ok_or("missing speechSimulation")?;
+    if result["receipt"]["mediaPath"] != sim.source_wav_path.to_string_lossy().as_ref()
+        || result["receipt"]["sourcePcm48kMonoPath"] != source_pcm_path.to_string_lossy().as_ref() {
+        return Err("source injector receipt PCM/media path mismatch".into());
+    }
+    let source_pcm = read_bounded(source_pcm_path, 48_000*4*300)?;
+    let source_frames = source_pcm.len() as u64 / 4;
+    if source_pcm.len() % 4 != 0
+        || source_pcm.chunks_exact(4).any(|bytes| { let sample=f32::from_le_bytes(bytes.try_into().unwrap()); !sample.is_finite() || sample.abs()>1.0 })
+        || result["receipt"]["renderedFrames"].as_u64().zip(result["receipt"]["postrollSilenceFrames"].as_u64())
+            .is_none_or(|(media,postroll)| media.checked_add(postroll)!=Some(source_frames)) {
+        return Err("source injector physical PCM does not cover the full receipt span".into());
+    }
+    let clock_path = request.output_directory.join("aec-source-playback-clock.jsonl");
+    if result["receipt"]["sourceClockMetadataPath"] != clock_path.to_string_lossy().as_ref() {
+        return Err("source actual clock sidecar path mismatch".into());
+    }
+    let clock_bytes = read_clock_journal(&clock_path, collected.evidence_failure.is_some())?;
+    let clock_validation = validate_source_clock(&clock_bytes, &result["receipt"], source_frames);
+    result["sourceClockIndependentValidationPassed"] = json!(clock_validation.is_ok());
+    let mut clock_rejection = None;
+    let clock_end = match clock_validation {
+        Ok(end) => end,
+        Err(error) => {
+            result["sourceClockIndependentValidationError"] = json!(error);
+            clock_rejection = Some(error);
+            Value::Null
+        }
+    };
+    let raw_path = request.output_directory.join("aec-source-playback-clock-raw-diagnostic.jsonl");
+    if result["receipt"]["sourceClockRawTracePath"] != raw_path.to_string_lossy().as_ref() {
+        return Err("source raw clock sidecar path mismatch".into());
+    }
+    let raw_bytes = read_bounded(&raw_path, 32*1024*1024)?;
+    let raw_end = validate_raw_clock_collection(&raw_bytes, &result["receipt"], source_frames)?;
+    result["sourceClockRawMetadataPath"] = json!(raw_path);
+    result["sourceClockRawSha256"] = json!(format!("{:x}",Sha256::digest(&raw_bytes)));
+    result["sourceClockRawBytes"] = json!(raw_bytes.len());
+    result["sourceClockPhysicalEnd"] = raw_end;
+    result["sourceClockMetadataPath"] = json!(clock_path);
+    result["sourceClockSha256"] = json!(format!("{:x}",Sha256::digest(&clock_bytes)));
+    result["sourceClockEnd"] = clock_end;
+    result["sourcePcmSha256"] = json!(format!("{:x}",Sha256::digest(&source_pcm)));
+    result["sourcePcmBytes"] = json!(source_pcm.len());
+    result["sourcePcmFormat"] = json!("f32le");
+    result["sourcePcmSampleRateHz"] = json!(48_000);
+    result["sourcePcmChannelCount"] = json!(1);
+    result["sourcePcmFrames"] = json!(source_frames);
+    result["sourceWavSha256"] = json!(sim.source_wav_sha256);
+    result["injectorExecutableSha256"] = json!(sim.injector_executable_sha256);
+    result["exitCode"] = json!(exit_code);
+    result["sourceEvidenceValidationPassed"] = json!(collected.evidence_failure.is_none());
+    result["sourceEvidenceValidationError"] = json!(collected.evidence_failure);
+    result["passed"] = json!(collected.evidence_failure.is_none());
+    result["endpointId"] = result["receipt"]["endpointId"].clone();
+    result["processId"] = result["receipt"]["processId"].clone();
+    result["spawnedByNative"] = json!(true);
+    result["providerCalls"] = json!(0);
+    if let Some(error) = clock_rejection { collected.reject_evidence(error); }
+    exclusive_json(&request.output_directory.join(super::contract::COMPLETE_FILE), &marker)?;
+    Ok(collected)
 }
 
 // Only a rejected-evidence collection can seal an empty accepted journal. It
@@ -293,3 +330,6 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+#[path = "injector_collection_tests.rs"] mod collection_tests;

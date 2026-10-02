@@ -6,7 +6,7 @@ pub(super) const READY_FILE: &str = "local-aec-ready.json";
 pub(super) const START_FILE: &str = "media-started.marker";
 pub(super) const COMPLETE_FILE: &str = "media-complete.marker";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SpeechSimulationRequest {
     pub(super) chunk_frames: usize,
@@ -64,7 +64,7 @@ pub(super) fn read_speech_pcm(request: &ProbeRequest) -> Result<Vec<i16>, String
     Ok(samples)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct MediaStarted {
     pub(super) execution_id: String,

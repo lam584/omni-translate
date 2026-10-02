@@ -26,7 +26,7 @@ const STIMULUS_SAMPLE_RATE_HZ: u32 = 16_000;
 const STIMULUS_CHANNEL_COUNT: u16 = 1;
 const STIMULUS_PREAMBLE_FRAMES: usize = 16_000;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProbeRequest {
     schema_version: u32,

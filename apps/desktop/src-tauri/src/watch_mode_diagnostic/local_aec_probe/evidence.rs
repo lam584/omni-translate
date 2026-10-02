@@ -1,28 +1,30 @@
 use super::super::*;
 use crate::audio::speech::{DesktopStreamTap, DesktopStreamActivity};
-use std::io::BufWriter;
+use super::async_evidence_writer::AsyncEvidenceWriter;
 
 struct PcmEvidence {
     path: PathBuf,
-    writer: BufWriter<fs::File>,
+    writer: AsyncEvidenceWriter,
     hash: Sha256,
     samples: u64,
 }
 impl PcmEvidence {
     fn new(path: PathBuf) -> Result<Self, String> {
-        let file = fs::OpenOptions::new().create_new(true).write(true).open(&path).map_err(|e| e.to_string())?;
-        Ok(Self { path, writer: BufWriter::new(file), hash: Sha256::new(), samples: 0 })
+        let writer = AsyncEvidenceWriter::new(path.clone())?;
+        Ok(Self { path, writer, hash: Sha256::new(), samples: 0 })
     }
     fn write(&mut self, samples: &[f32]) -> Result<(), String> {
         if samples.len() % 2 != 0 || samples.iter().any(|s| !s.is_finite() || s.abs() > 1.0) {
             return Err("device evidence contains invalid stereo f32 PCM".into());
         }
         let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-        self.writer.write_all(&bytes).map_err(|e| e.to_string())?;
-        self.hash.update(&bytes); self.samples += samples.len() as u64; Ok(())
+        self.hash.update(&bytes);
+        self.writer.write(bytes)?; self.samples += samples.len() as u64; Ok(())
     }
     fn finish(&mut self) -> Result<Value, String> {
-        self.writer.flush().and_then(|_| self.writer.get_ref().sync_all()).map_err(|e| e.to_string())?;
+        let seal = self.writer.finish()?;
+        if seal.written_bytes != self.samples*4 || seal.sha256 != format!("{:x}",self.hash.clone().finalize())
+            || !seal.flushed || !seal.synced { return Err("async PCM evidence seal differs from accepted producer bytes".into()); }
         Ok(json!({"path":self.path,"sha256":format!("{:x}",self.hash.clone().finalize()),
             "sampleCount":self.samples,"frameCount":self.samples/2,"bytes":self.samples*4,
             "sampleRateHz":48000,"channelCount":2,"format":"f32le","flushed":true,"synced":true}))
@@ -32,10 +34,11 @@ impl PcmEvidence {
 pub(super) struct StreamEvidence {
     physical: PcmEvidence,
     reference: PcmEvidence,
-    records: BufWriter<fs::File>,
+    records: AsyncEvidenceWriter,
     records_path: PathBuf,
     records_hash: Sha256,
     record_count: u64,
+    record_bytes: u64,
     pub(super) stages: Vec<Value>,
     pub(super) late_voiced_frames: u64,
     pub(super) stream_starts: u32,
@@ -46,10 +49,10 @@ pub(super) struct StreamEvidence {
 impl StreamEvidence {
     pub(super) fn new(output: &Path) -> Result<Self, String> {
         let records_path = output.join("local-aec-stream-events.jsonl");
-        let records = fs::OpenOptions::new().create_new(true).write(true).open(&records_path).map_err(|e| e.to_string())?;
+        let records = AsyncEvidenceWriter::new(records_path.clone())?;
         Ok(Self { physical: PcmEvidence::new(output.join("local-aec-physical-48k-stereo.f32le"))?,
             reference: PcmEvidence::new(output.join("local-aec-linear-reference-48k-stereo.f32le"))?,
-            records: BufWriter::new(records), records_path, records_hash: Sha256::new(), record_count: 0,
+            records, records_path, records_hash: Sha256::new(), record_count: 0, record_bytes: 0,
             stages: Vec::new(), late_voiced_frames: 0, stream_starts: 0, completed: false, aborted: false, session_id: None })
     }
     pub(super) fn record(&mut self, mut value: Value) -> Result<(), String> {
@@ -57,8 +60,9 @@ impl StreamEvidence {
         value["observedAtMs"] = json!(crate::shared::time::now_unix_millis());
         value["scope"] = json!("local-aec-speech-simulation");
         let mut bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?; bytes.push(b'\n');
-        self.records.write_all(&bytes).map_err(|e| e.to_string())?;
-        self.records_hash.update(&bytes); self.record_count += 1; Ok(())
+        self.records_hash.update(&bytes);
+        let byte_count = bytes.len() as u64; self.records.write(bytes)?;
+        self.record_bytes += byte_count; self.record_count += 1; Ok(())
     }
     pub(super) fn stream_started(&mut self) { self.stream_starts += 1; }
     pub(super) fn activity(&mut self, activity: DesktopStreamActivity) -> Result<(), String> {
@@ -117,7 +121,11 @@ impl StreamEvidence {
     pub(super) fn finish(&mut self) -> Result<Value, String> {
         // Seal every evidence file before returning a completed operation.
         let physical = self.physical.finish(); let reference = self.reference.finish();
-        let events = self.records.flush().and_then(|_| self.records.get_ref().sync_all()).map_err(|e| e.to_string());
+        let events = self.records.finish().and_then(|seal| {
+            if seal.written_bytes != self.record_bytes || seal.sha256 != format!("{:x}",self.records_hash.clone().finalize())
+                || !seal.flushed || !seal.synced { return Err("async JSONL evidence seal differs from accepted producer bytes".into()); }
+            Ok(())
+        });
         events.as_ref().map_err(|e| e.clone())?;
         Ok(json!({"physical":physical?,"linearReference":reference?,"events":{
             "path":self.records_path,"sha256":format!("{:x}",self.records_hash.clone().finalize()),
@@ -130,4 +138,37 @@ impl StreamEvidence {
 fn float_hash(samples: &[f32]) -> String {
     let mut hash = Sha256::new(); for sample in samples { hash.update(sample.to_le_bytes()); }
     format!("{:x}",hash.finalize())
+}
+
+#[cfg(test)]
+mod asynchronous_seal_tests {
+    use super::*;
+    #[test]
+    fn pcm_seal_joins_ordered_writes_and_preserves_native_bytes() {
+        let root=tempfile::tempdir().unwrap();let path=root.path().join("physical.f32le");
+        let mut pcm=PcmEvidence::new(path.clone()).unwrap();
+        let first=vec![0.125_f32,-0.25];
+        let second=[0.5_f32,-0.75,0.0,0.25];
+        pcm.write(&first).unwrap();pcm.write(&second).unwrap();
+        let seal=pcm.finish().unwrap();let repeated=pcm.finish().unwrap();
+        let expected:Vec<u8>=first.iter().chain(second.iter()).flat_map(|s|s.to_le_bytes()).collect();
+        assert_eq!(fs::read(path).unwrap(),expected);assert_eq!(seal,repeated);
+        assert_eq!(seal["sampleCount"],6);assert_eq!(seal["frameCount"],3);
+        assert_eq!(seal["sha256"],format!("{:x}",Sha256::digest(&expected)));
+        assert_eq!(seal["flushed"],true);assert_eq!(seal["synced"],true);
+    }
+    #[test]
+    fn asynchronous_jsonl_seal_is_bound_to_producer_sequence_and_hash() {
+        let root=tempfile::tempdir().unwrap();let mut evidence=StreamEvidence::new(root.path()).unwrap();
+        evidence.record(json!({"kind":"one"})).unwrap();evidence.record(json!({"kind":"two"})).unwrap();
+        let seal=evidence.finish().unwrap();let bytes=fs::read(root.path().join("local-aec-stream-events.jsonl")).unwrap();
+        let rows:Vec<Value>=std::str::from_utf8(&bytes).unwrap().lines().map(|s|serde_json::from_str(s).unwrap()).collect();
+        assert_eq!(rows[0]["sequence"],0);assert_eq!(rows[1]["sequence"],1);
+        assert_eq!(rows[0]["kind"],"one");assert_eq!(rows[1]["kind"],"two");
+        assert_eq!(seal["events"]["eventCount"],2);
+        assert_eq!(seal["events"]["sha256"],format!("{:x}",Sha256::digest(&bytes)));
+        assert_eq!(seal["events"]["flushed"],true);assert_eq!(seal["events"]["synced"],true);
+        // A perfectly sealed file does not invent completed playback/stages.
+        assert!(evidence.validate(40_000,120_000).is_err());assert_eq!(seal["streamDrained"],false);
+    }
 }

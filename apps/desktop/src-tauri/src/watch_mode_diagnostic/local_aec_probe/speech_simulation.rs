@@ -6,6 +6,7 @@ use crate::audio::state::NativeCaptureStartAck;
 #[path = "contract.rs"] mod contract;
 #[path = "drain.rs"] mod drain;
 #[path = "evidence.rs"] mod evidence;
+#[path = "async_evidence_writer.rs"] mod async_evidence_writer;
 #[path = "injector.rs"] mod injector;
 #[path = "media_collection.rs"] mod media_collection;
 #[cfg(test)]

@@ -95,3 +95,18 @@ Never change quality targets based on a real-run result.
 Core boundary changes still require human review; automated agent review is not a
 substitute. Logs and PCM are ignored artifacts and must be preserved separately
 before removing or archiving the worktree.
+
+## Diagnostic source-clock failures
+
+The source injector retains rejected native clock observations separately in
+`aec-source-playback-clock-failures.jsonl`: raw position/frequency/QPC/padding,
+computed origin, the last accepted anchor and the validation error. It flushes
+and syncs accepted and rejected evidence before returning failure. Rejected
+observations never change the anchor or count as successful coverage, and a
+latched error prevents a later `finish()` from manufacturing success. The fixed
+1 ms origin-consistency bound and all acoustic targets remain unchanged.
+
+A standalone source-clock probe is diagnostic only: it cannot certify c03,
+Provider lifecycle, real-time translation, AEC suppression or matrix acceptance.
+Keep its receipt, original English asset identity, binary hash and rejected
+observations separate from local acoustic simulation results.

@@ -5,19 +5,19 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 const RETAINED_SPANS: usize = 512;
-const PART_COUNT: usize = 12;
+const PART_COUNT: usize = 13;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Part {
     LoopGap, HealthyCapture, MediaPoll, DeltaAdmission, NativePump,
     ReferenceCallback, PhysicalCallback, LifecycleCallback, DrainCheck,
-    RequestedSleep, Abort, SourceCleanup,
+    RequestedSleep, NativeRenderWait, Abort, SourceCleanup,
 }
 const PARTS: [Part; PART_COUNT] = [Part::LoopGap, Part::HealthyCapture, Part::MediaPoll,
     Part::DeltaAdmission, Part::NativePump, Part::ReferenceCallback,
     Part::PhysicalCallback, Part::LifecycleCallback, Part::DrainCheck,
-    Part::RequestedSleep, Part::Abort, Part::SourceCleanup];
+    Part::RequestedSleep, Part::NativeRenderWait, Part::Abort, Part::SourceCleanup];
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -55,13 +55,19 @@ pub(super) struct PumpTiming {
     active: u64,
     evicted: u64,
     totals: [Totals; PART_COUNT],
+    native_render_wakes: [u64; 3],
     spans: VecDeque<Span>,
 }
 impl PumpTiming {
     pub(super) fn new() -> Self {
         Self { origin: Instant::now(), previous_loop: None, completed: 0,
             active: 0, evicted: 0, totals: std::array::from_fn(|_| Totals::default()),
-            spans: VecDeque::with_capacity(RETAINED_SPANS) }
+            spans: VecDeque::with_capacity(RETAINED_SPANS), native_render_wakes: [0; 3] }
+    }
+    pub(super) fn record_native_render_wake(&mut self, wake: crate::audio::speech::DesktopRenderWake) {
+        use crate::audio::speech::DesktopRenderWake;
+        let index=match wake { DesktopRenderWake::NotStarted=>0, DesktopRenderWake::Signaled=>1, DesktopRenderWake::TimedOut=>2 };
+        self.native_render_wakes[index] += 1;
     }
     pub(super) fn loop_started(&mut self) {
         let now = Instant::now();
@@ -98,10 +104,11 @@ impl PumpTiming {
         json!({"schemaVersion":1,"artifactKind":"local-aec-pump-timing-diagnostic",
             "diagnosticOnly":true,"qualityAcceptance":false,"releaseEligible":false,
             "monotonicDurationUnit":"microseconds","qpcUnit":"100ns",
-            "requestedSleepMs":2,"retainedSpanLimit":RETAINED_SPANS,
+            "requestedSleepMs":2,"nativeRenderWaitTimeoutMs":2,"retainedSpanLimit":RETAINED_SPANS,
             "completedSpanCount":self.completed,"activeSpanCount":self.active,
             "evictedOldDiagnosticSpans":self.evicted,"nestedSpansMayOverlap":true,
             "sumAcrossPartsIsNotLoopDuration":true,
+            "nativeRenderWakeTotals":{"notStarted":self.native_render_wakes[0],"signaled":self.native_render_wakes[1],"timedOut":self.native_render_wakes[2]},
             "parts":PARTS.iter().zip(&self.totals).map(|(part,total)|json!({"part":part,"totals":total})).collect::<Vec<_>>(),
             "recentSpans":self.spans})
     }
@@ -180,6 +187,34 @@ mod tests {
         assert_eq!(timing.active,0);
         assert_eq!(timing.totals[Part::NativePump as usize].rejected,1);
         assert_eq!(timing.totals[Part::MediaPoll as usize].unwound,1);
+    }
+    #[test]
+    fn native_render_wait_is_separate_from_sleep_and_preserves_errors() {
+        let timing = RefCell::new(PumpTiming::new());
+        // Successful wakes (including timeout/not-started) are not rejections.
+        use crate::audio::speech::DesktopRenderWake;
+        for wake in [DesktopRenderWake::NotStarted, DesktopRenderWake::Signaled, DesktopRenderWake::TimedOut] {
+            assert_eq!(measure(&timing, Part::NativeRenderWait, || Ok(wake)), Ok(wake));
+            timing.borrow_mut().record_native_render_wake(wake);
+        }
+        let result: Result<(), String> = measure(&timing, Part::NativeRenderWait,
+            || Err("permit cancelled".into()));
+        assert_eq!(result, Err("permit cancelled".into()));
+        let timing = timing.borrow();
+        assert_eq!(timing.totals[Part::NativeRenderWait as usize].count, 4);
+        assert_eq!(timing.totals[Part::NativeRenderWait as usize].rejected, 1);
+        assert_eq!(timing.totals[Part::RequestedSleep as usize].count, 0);
+        let receipt = timing.receipt();
+        let parts = receipt["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), PART_COUNT);
+        for (index, part) in PARTS.iter().enumerate() {
+            assert_eq!(*part as usize, index);
+            assert_eq!(parts[index]["part"], serde_json::to_value(part).unwrap());
+        }
+        assert_eq!(parts[Part::NativeRenderWait as usize]["part"], "nativeRenderWait");
+        assert_eq!(receipt["nativeRenderWaitTimeoutMs"], 2);
+        assert_eq!(receipt["nativeRenderWakeTotals"],json!({"notStarted":1,"signaled":1,"timedOut":1}));
+        assert_eq!(receipt["activeSpanCount"], 0);
     }
     #[test]
     fn missing_zero_or_retreating_qpc_never_becomes_clock_authority() {

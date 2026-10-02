@@ -251,9 +251,19 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                     report["capture"] = capture_receipt(&route, false)?;
                     break;
                 }
-                pump_timing::measure(&timing, pump_timing::Part::RequestedSleep, || {
-                    std::thread::sleep(Duration::from_millis(2)); Ok(())
-                })?;
+                // Start/terminal polling retains the ordinary cadence. Only a
+                // running device owns an event wait; never wait then sleep in
+                // the same iteration. Timeout is a normal pump wake, while
+                // permit/device errors propagate to the existing abort path.
+                if stream_receipt.is_none() && stream.device_started() {
+                    let wake = pump_timing::measure(&timing, pump_timing::Part::NativeRenderWait,
+                        || stream.wait_for_device(Duration::from_millis(2)))?;
+                    timing.borrow_mut().record_native_render_wake(wake);
+                } else {
+                    pump_timing::measure(&timing, pump_timing::Part::RequestedSleep, || {
+                        std::thread::sleep(Duration::from_millis(2)); Ok(())
+                    })?;
+                }
             }
             Ok(())
         })();

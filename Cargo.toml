@@ -8,6 +8,7 @@ members = [
   "crates/omni-bridge-protocol",
   "crates/omni-logging",
   "crates/omni-webrtc-aec3",
+  "third-party/wasapi-0.24.0",
 ]
 # Standalone diagnostic tools keep their own lockfiles and target directories.
 # Without this exclude, cargo's workspace discovery rejects building them in place
@@ -17,3 +18,7 @@ exclude = [
   "scripts/diagnostics/omni-benchmark",
   "scripts/diagnostics/omni-realtime",
 ]
+
+# Same pinned upstream library with audited event ownership/status repairs.
+[patch.crates-io]
+wasapi = { path = "third-party/wasapi-0.24.0" }

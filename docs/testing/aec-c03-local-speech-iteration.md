@@ -162,3 +162,45 @@ other statuses but cannot produce a successful c03 receipt. No production AEC
 quality threshold or fixed-origin validation is relaxed by this observability
 change. A replacement mapping still requires its own proven contract across
 the producer, desktop consumer and independent analyzer.
+
+
+## Incremental render event scheduling (2026-10-02)
+
+The native incremental speaker client uses `EventsShared` and binds its own
+WASAPI event before Start. It retains the 20 ms device-buffer request, 480-frame
+writes, 800 ms software startup buffer and 1000 ms maximum startup wait. The
+ordinary whole-cue and endpoint-recovery renderers are unchanged. Running
+provider command reads are nonblocking; running idle/backpressure/drain waits
+use the device event with a bounded 2 ms timeout instead of unconditional sleep.
+The simulator uses the same production wait and records it as `nativeRenderWait`,
+not `requestedSleep`. Successful signal, timeout and not-started results have
+separate typed totals; rejected/unwound waits remain failures in their spans.
+
+A signal authorizes another padding query, never acoustic output or completion.
+Cancellation is checked before and after the wait without holding the ownership
+mutex. Clients are released before their registered event and playback permit.
+The pinned upstream wasapi 0.24.0 helper collapsed all non-signaled Win32 results
+to EventTimeout and leaked a newly created event if registration failed. A small
+source-provenance-checked vendored patch now owns the event before registration,
+and classifies the original WAIT_* status: only WAIT_TIMEOUT is idle; failure
+and unexpected statuses propagate. No LastError-clearing workaround remains.
+The event is registered last in endpoint construction. The library-only vendor
+manifest preserves production dependencies, omitting only example/dev tooling;
+upstream source and minimal patch identities are explicitly recorded. This core
+boundary requires both consumer suites, provenance checks and human review.
+
+Deterministic tests use the observed 1056-frame capacity: 960-frame padding
+leaves only 96 free frames; each normal engine wake allows an unchanged
+480-frame refill. A missed wake that empties padding to zero still fails,
+retaining the queued source before cleanup. Timeouts and event signals cannot
+manufacture a receipt, reopen a client, drop PCM or relax an AEC threshold.
+The diagnostic timing analyzer is included in the existing local speech test
+command and remains diagnostic-only, never a replacement quality analyzer.
+
+This scheduling patch still requires frozen real-device evidence. Passing its
+unit tests is not an AEC acoustic pass, a paid c03 pass or release acceptance.
+
+The vendor attributes preserve upstream CRLF/spacing instead of formatting
+hash-pinned files; its inventory/hash gate detects any content change. Newly
+written event tests retain the ordinary whitespace checks. This preservation
+exception changes no PCM, acoustic threshold or runtime failure acceptance.

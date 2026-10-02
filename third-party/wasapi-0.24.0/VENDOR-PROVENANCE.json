@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "artifactKind": "wasapi-event-vendor-provenance",
+  "upstream": {
+    "name": "wasapi",
+    "version": "0.24.0",
+    "license": "MIT",
+    "registrySource": "registry+https://github.com/rust-lang/crates.io-index",
+    "rootLockFile": "Cargo.lock",
+    "rootLockSha256AtImport": "8587bae3b575c198d133de77bce8ddac1c57c607ee941ddc9d3e45bfde435952",
+    "rootLockPackageChecksum": "ee144c215d8d31e94c1a599fbaf540ca82a7017e4f1786816b179f334fac751d",
+    "packageArchiveSha256": "ee144c215d8d31e94c1a599fbaf540ca82a7017e4f1786816b179f334fac751d",
+    "registryDirectory": "E:/oaec-c03-temp/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/wasapi-0.24.0",
+    "registryFilesComparedByteForByteWithChecksumVerifiedArchive": true,
+    "crateChecksum": "ee144c215d8d31e94c1a599fbaf540ca82a7017e4f1786816b179f334fac751d"
+  },
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "upstreamSha256": "743d1062a7ef70cb33773625c9684b98edb1e0498da72bf063e7b09cae99a592",
+      "patchedSha256": "2c0c2f4148af8ae8383ffe67699f646b24c3aaf6d3342d9b0c701aa9deb79b4c",
+      "modified": true
+    },
+    {
+      "path": "LICENSE.txt",
+      "upstreamSha256": "55c8990ea1221b3f21cb1e603e97f8ea268cc8db082999ed59e39fc43d45fedf",
+      "patchedSha256": "55c8990ea1221b3f21cb1e603e97f8ea268cc8db082999ed59e39fc43d45fedf",
+      "modified": false
+    },
+    {
+      "path": "README.md",
+      "upstreamSha256": "85f12f9f1c4fc8da2e6dea4e13b10e28e62841b591316229b062129fdde3bde6",
+      "patchedSha256": "85f12f9f1c4fc8da2e6dea4e13b10e28e62841b591316229b062129fdde3bde6",
+      "modified": false
+    },
+    {
+      "path": "examples/aec.rs",
+      "upstreamSha256": "47ee0f8932ec8555eaadd737bf38ff6ffad97159f48a8c784053fea44a6f6c10",
+      "patchedSha256": "47ee0f8932ec8555eaadd737bf38ff6ffad97159f48a8c784053fea44a6f6c10",
+      "modified": false
+    },
+    {
+      "path": "examples/device_notifications.rs",
+      "upstreamSha256": "04a0cbd3c99c86ad28778696b60d98acf3c7b28819b502e03ec99c4348daee3f",
+      "patchedSha256": "04a0cbd3c99c86ad28778696b60d98acf3c7b28819b502e03ec99c4348daee3f",
+      "modified": false
+    },
+    {
+      "path": "examples/devices.rs",
+      "upstreamSha256": "595ae4b61366d77d0be4dd84dca072db396011c7cfe24f01cdea412e56c40b71",
+      "patchedSha256": "595ae4b61366d77d0be4dd84dca072db396011c7cfe24f01cdea412e56c40b71",
+      "modified": false
+    },
+    {
+      "path": "examples/loopback.rs",
+      "upstreamSha256": "b37ea8d3fa2038f44a073f0151f51e999f2042b192a33543771ab1f16eb68138",
+      "patchedSha256": "b37ea8d3fa2038f44a073f0151f51e999f2042b192a33543771ab1f16eb68138",
+      "modified": false
+    },
+    {
+      "path": "examples/playnoise_exclusive.rs",
+      "upstreamSha256": "1af5284087be804090f6869526af62553b64531ed67193fe8454da6aebcfb80c",
+      "patchedSha256": "1af5284087be804090f6869526af62553b64531ed67193fe8454da6aebcfb80c",
+      "modified": false
+    },
+    {
+      "path": "examples/playnoise_exclusive_poll.rs",
+      "upstreamSha256": "2d7f1a403e2523c4ee05072efacdccbc68a3af78830379bf186dd8295dd8f1ba",
+      "patchedSha256": "2d7f1a403e2523c4ee05072efacdccbc68a3af78830379bf186dd8295dd8f1ba",
+      "modified": false
+    },
+    {
+      "path": "examples/playsine.rs",
+      "upstreamSha256": "98d741de0659b4103fe22af6423d7a41ccf9a7dbbb92809295ed4bd24b14be39",
+      "patchedSha256": "98d741de0659b4103fe22af6423d7a41ccf9a7dbbb92809295ed4bd24b14be39",
+      "modified": false
+    },
+    {
+      "path": "examples/playsine_events.rs",
+      "upstreamSha256": "101f8595d07dc83828c683df4e8b26e873e2e049ad45d265ecb642ee0bcdd7a2",
+      "patchedSha256": "101f8595d07dc83828c683df4e8b26e873e2e049ad45d265ecb642ee0bcdd7a2",
+      "modified": false
+    },
+    {
+      "path": "examples/playsine_poll.rs",
+      "upstreamSha256": "b4cc3df28d59112e4ed04c27bed81720833e9b64ed414431b13b8a74946e8ad1",
+      "patchedSha256": "b4cc3df28d59112e4ed04c27bed81720833e9b64ed414431b13b8a74946e8ad1",
+      "modified": false
+    },
+    {
+      "path": "examples/processes.rs",
+      "upstreamSha256": "19248c6794d998486bcdaecec3aadc286f02a58fffe70fe82a01b930d47df3ae",
+      "patchedSha256": "19248c6794d998486bcdaecec3aadc286f02a58fffe70fe82a01b930d47df3ae",
+      "modified": false
+    },
+    {
+      "path": "examples/record.rs",
+      "upstreamSha256": "5001b41e4e930d1d3a6676bbdc0c27deb640a43a0c5482e05d8a8fed0120f641",
+      "patchedSha256": "5001b41e4e930d1d3a6676bbdc0c27deb640a43a0c5482e05d8a8fed0120f641",
+      "modified": false
+    },
+    {
+      "path": "examples/record_application.rs",
+      "upstreamSha256": "de276c6c7249a59ea6b4ad737349fe8c1ebc962816d41269180c240c67422160",
+      "patchedSha256": "de276c6c7249a59ea6b4ad737349fe8c1ebc962816d41269180c240c67422160",
+      "modified": false
+    },
+    {
+      "path": "src/api.rs",
+      "upstreamSha256": "3029e6b6e31d0002961c0058502a42b8a9213eeb533f43b48a3a0f9a549ab24b",
+      "patchedSha256": "67b77bb104950917e92ca24388736bf3f8bb74d3dd3f54f2526772eebe9ebb30",
+      "modified": true
+    },
+    {
+      "path": "src/errors.rs",
+      "upstreamSha256": "3c823f0b6f938bc20a4d3a44cb3574d42a10502fbf1dde79350b01bfbf58f0a1",
+      "patchedSha256": "610d31f26d4ad40ee9492370a6aa80c0d8aa10a2f9f2a4c599fb4dd159a837ac",
+      "modified": true
+    },
+    {
+      "path": "src/events.rs",
+      "upstreamSha256": "8371e741e3b8eaaa8436bc0063931c82ef6ee063e69b7e2d3812b2796e71cc92",
+      "patchedSha256": "8371e741e3b8eaaa8436bc0063931c82ef6ee063e69b7e2d3812b2796e71cc92",
+      "modified": false
+    },
+    {
+      "path": "src/lib.rs",
+      "upstreamSha256": "26e6b551bc41171a2b3cd95d3840497f69791e7329853e0285c08dc0f9178460",
+      "patchedSha256": "26e6b551bc41171a2b3cd95d3840497f69791e7329853e0285c08dc0f9178460",
+      "modified": false
+    },
+    {
+      "path": "src/waveformat.rs",
+      "upstreamSha256": "a25dfaf138dbb77a7efd82a8377d76155823bf7f7c747811f4723ee5ac0a8498",
+      "patchedSha256": "a25dfaf138dbb77a7efd82a8377d76155823bf7f7c747811f4723ee5ac0a8498",
+      "modified": false
+    }
+  ],
+  "addedFiles": [
+    {
+      "path": "src/event_handle_tests.rs",
+      "sha256": "d533c422f938df7aec58406b19bc05b76f0a617741dad8e684599ee5b544b797",
+      "patchedSha256": "d533c422f938df7aec58406b19bc05b76f0a617741dad8e684599ee5b544b797",
+      "purpose": "Seven device-free raw classification and registration RAII policy unit tests."
+    }
+  ],
+  "intent": [
+    "Fix event handle leakage if SetEventHandle fails, by taking Handle RAII ownership immediately after CreateEventA.",
+    "Match raw WAIT_OBJECT_0/WAIT_TIMEOUT/WAIT_FAILED distinctly. Only WAIT_TIMEOUT is EventTimeout; preserve immediate thread Win32 error on WAIT_FAILED and raw unexpected result codes.",
+    "The pinned windows-core 0.62.2 uses windows-result 0.4.1, whose Error::from_thread is the renamed Error::from_win32 and reads GetLastError. No SetLastError workaround is introduced.",
+    "Library-only offline validation: remove 12 explicit example tables and the rand/simplelog/sysinfo dev-dependency tables. Package/lib/production dependency bytes and upstream library tests remain unchanged. All 12 published example source files remain unchanged.",
+    "Root workspace/member/patch/lock integration belongs to the main agent and is not part of this vendoring change."
+  ],
+  "excludedUpstreamFiles": [
+    "Cargo.lock",
+    "Cargo.toml.orig",
+    ".cargo_vcs_info.json",
+    ".cargo-ok",
+    ".gitignore",
+    ".github/**"
+  ],
+  "exactPatches": [
+    {
+      "file": "src/api.rs",
+      "intent": "Import the distinct raw wait result constants.",
+      "beforeUtf8": "Win32::Foundation::{HANDLE, WAIT_OBJECT_0},",
+      "afterUtf8": "Win32::Foundation::{HANDLE, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},"
+    },
+    {
+      "file": "src/api.rs",
+      "intent": "Own CreateEventA success before fallible SetEventHandle; Handle::drop closes on registration error.",
+      "beforeUtf8": "        let h_event = unsafe { CreateEventA(None, false, false, PCSTR::null())? };\r\n        unsafe { self.client.SetEventHandle(h_event)? };\r\n        Ok(Handle { handle: h_event })",
+      "afterUtf8": "        let event = Handle {\r\n            handle: unsafe { CreateEventA(None, false, false, PCSTR::null())? },\r\n        };\r\n        register_event_handle(event, |event| {\r\n            unsafe { self.client.SetEventHandle(event.handle)? };\r\n            Ok(())\r\n        })"
+    },
+    {
+      "file": "src/api.rs",
+      "intent": "Factor only the registration RAII and raw wait classification policies for device-free unit tests.",
+      "beforeUtf8": "impl Handle {\r\n    /// Wait for an event on a handle, with a timeout given in ms",
+      "afterUtf8": "// Keep ownership across registration, including its error/unwind paths.\r\n// Generic only to exercise the same RAII policy without creating OS handles.\r\nfn register_event_handle<T>(\r\n    event: T,\r\n    register: impl FnOnce(&T) -> WasapiRes<()>,\r\n) -> WasapiRes<T> {\r\n    register(&event)?;\r\n    Ok(event)\r\n}\r\n\r\nfn event_wait_result(\r\n    result: WAIT_EVENT,\r\n    failure_error: impl FnOnce() -> windows_core::Error,\r\n) -> WasapiRes<()> {\r\n    match result {\r\n        WAIT_OBJECT_0 => Ok(()),\r\n        WAIT_TIMEOUT => Err(WasapiError::EventTimeout),\r\n        WAIT_FAILED => Err(failure_error().into()),\r\n        unexpected => Err(WasapiError::UnexpectedWaitResult(unexpected.0)),\r\n    }\r\n}\r\n\r\nimpl Handle {\r\n    /// Wait for an event on a handle, with a timeout given in ms"
+    },
+    {
+      "file": "src/api.rs",
+      "intent": "Only WAIT_TIMEOUT is EventTimeout; capture the Win32 error immediately on WAIT_FAILED.",
+      "beforeUtf8": "        let retval = unsafe { WaitForSingleObject(self.handle, timeout_ms) };\r\n        if retval.0 != WAIT_OBJECT_0.0 {\r\n            return Err(WasapiError::EventTimeout);\r\n        }\r\n        Ok(())",
+      "afterUtf8": "        let retval = unsafe { WaitForSingleObject(self.handle, timeout_ms) };\r\n        // windows-core 0.62 uses from_thread (formerly from_win32). Capture\r\n        // GetLastError immediately on WAIT_FAILED, before any cleanup/logging.\r\n        event_wait_result(retval, windows_core::Error::from_thread)"
+    },
+    {
+      "file": "src/api.rs",
+      "intent": "Wire the focused device-free policy unit tests, without changing existing tests.",
+      "beforeUtf8": "// Struct wrapping an [IAudioEffectsManager]",
+      "afterUtf8": "#[cfg(test)]\r\n#[path = \"event_handle_tests.rs\"]\r\nmod event_handle_tests;\r\n\r\n// Struct wrapping an [IAudioEffectsManager]"
+    },
+    {
+      "file": "src/errors.rs",
+      "intent": "Preserve unexpected wait codes in an explicit public error variant.",
+      "beforeUtf8": "    #[error(\"Handle wait timed out\")]\r\n    EventTimeout,",
+      "afterUtf8": "    #[error(\"Handle wait timed out\")]\r\n    EventTimeout,\r\n    #[error(\"Unexpected handle wait result: {0:#010x}\")]\r\n    UnexpectedWaitResult(u32),"
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"aec\"\npath = \"examples/aec.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"device_notifications\"\npath = \"examples/device_notifications.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"devices\"\npath = \"examples/devices.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"loopback\"\npath = \"examples/loopback.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"playnoise_exclusive\"\npath = \"examples/playnoise_exclusive.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"playnoise_exclusive_poll\"\npath = \"examples/playnoise_exclusive_poll.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"playsine\"\npath = \"examples/playsine.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"playsine_events\"\npath = \"examples/playsine_events.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"playsine_poll\"\npath = \"examples/playsine_poll.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"processes\"\npath = \"examples/processes.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"record\"\npath = \"examples/record.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only validation: remove explicit example target; retain its published source unchanged.",
+      "beforeUtf8": "[[example]]\nname = \"record_application\"\npath = \"examples/record_application.rs\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only offline validation: omit unused example dev-dependency; retain all library tests and production dependencies.",
+      "beforeUtf8": "[dev-dependencies.rand]\nversion = \"0.10\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only offline validation: omit unused example dev-dependency; retain all library tests and production dependencies.",
+      "beforeUtf8": "[dev-dependencies.simplelog]\nversion = \"0.12\"\n\n",
+      "afterUtf8": ""
+    },
+    {
+      "file": "Cargo.toml",
+      "intent": "Library-only offline validation: omit unused example dev-dependency; retain all library tests and production dependencies.",
+      "beforeUtf8": "[dev-dependencies.sysinfo]\nversion = \"0.38\"\n",
+      "afterUtf8": ""
+    }
+  ],
+  "validation": {
+    "packageArchiveChecksumAndRegistryFileComparison": "passed",
+    "cargoOrBuildExecuted": false,
+    "hardwareOrAudioApisExecuted": false,
+    "networkUsed": false,
+    "unitTestsExecuted": false,
+    "unitTestCount": 7,
+    "remaining": "Main agent must run offline workspace resolution and --lib tests; policy tests do not assert a real kernel handle close."
+  },
+  "metadataHashPolicy": "VENDOR-PROVENANCE.json is implicitly the metadata artifact, excluded from its own files/addedFiles hashes; freeze its full SHA256 in the external verifier test constant."
+}

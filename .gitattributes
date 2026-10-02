@@ -30,3 +30,7 @@ scripts/testing/watch-mode-balanced-release-plan.mjs text eol=lf
 scripts/testing/watch-mode-local-isolation.mjs text eol=lf
 scripts/development/build-desktop-release.mjs text eol=lf
 scripts/installer/build-sysvad-driver.ps1 text eol=lf
+# Retain published vendor bytes (including CRLF/trailing whitespace); integrity
+# is enforced by the frozen upstream/patch manifest rather than reformatting.
+third-party/wasapi-0.24.0/** -text linguist-vendored whitespace=-blank-at-eol,-blank-at-eof,cr-at-eol
+third-party/wasapi-0.24.0/src/event_handle_tests.rs whitespace=blank-at-eol,blank-at-eof,cr-at-eol

@@ -142,6 +142,23 @@ struct ScenarioStage {
 
 // Injectable only at the device boundary: tests exercise the production pump,
 // startup policy, submit clock, tap ordering and receipt rules without hardware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopRenderWake { NotStarted, Signaled, TimedOut }
+
+// A bounded OS wait: round up and never convert to Win32 INFINITE.
+fn render_wait_timeout_ms(timeout: Duration) -> Result<u32, String> {
+    let millis = timeout.as_nanos().div_ceil(1_000_000);
+    if millis >= u128::from(u32::MAX) { return Err("native desktop event wait must be finite".into()); }
+    Ok(millis as u32)
+}
+fn render_wake_result(result: Result<(), wasapi::WasapiError>) -> Result<DesktopRenderWake, String> {
+    match result {
+        Ok(()) => Ok(DesktopRenderWake::Signaled),
+        Err(wasapi::WasapiError::EventTimeout) => Ok(DesktopRenderWake::TimedOut),
+        Err(error) => Err(format!("native desktop event wait: {error}")),
+    }
+}
+
 trait StreamingEndpoint {
     fn buffer_frames(&self) -> u32;
     fn padding(&self) -> Result<u32, String>;
@@ -149,16 +166,25 @@ trait StreamingEndpoint {
     fn start(&self) -> Result<(), String>;
     fn stop(&self) -> Result<(), String>;
     fn reset(&self) -> Result<(), String>;
+    fn wait(&self, timeout: Duration) -> Result<DesktopRenderWake, String>;
 }
-impl StreamingEndpoint for endpoint_recovery::PreparedSpeakerRender {
-    fn buffer_frames(&self) -> u32 { self.buffer_frames }
-    fn padding(&self) -> Result<u32, String> { self.audio_client.get_current_padding().map_err(|e| e.to_string()) }
+// Only the incremental renderer changes. Drop COM clients before their event.
+struct EventStreamingEndpoint {
+    prepared: endpoint_recovery::PreparedSpeakerRender,
+    event_handle: wasapi::Handle,
+}
+impl StreamingEndpoint for EventStreamingEndpoint {
+    fn buffer_frames(&self) -> u32 { self.prepared.buffer_frames }
+    fn padding(&self) -> Result<u32, String> { self.prepared.audio_client.get_current_padding().map_err(|e| e.to_string()) }
     fn write(&self, frames: usize, bytes: &[u8]) -> Result<(), String> {
-        self.render_client.write_to_device(frames, bytes, None).map_err(|e| e.to_string())
+        self.prepared.render_client.write_to_device(frames, bytes, None).map_err(|e| e.to_string())
     }
-    fn start(&self) -> Result<(), String> { self.audio_client.start_stream().map_err(|e| e.to_string()) }
-    fn stop(&self) -> Result<(), String> { self.audio_client.stop_stream().map_err(|e| e.to_string()) }
-    fn reset(&self) -> Result<(), String> { self.audio_client.reset_stream().map_err(|e| e.to_string()) }
+    fn start(&self) -> Result<(), String> { self.prepared.audio_client.start_stream().map_err(|e| e.to_string()) }
+    fn stop(&self) -> Result<(), String> { self.prepared.audio_client.stop_stream().map_err(|e| e.to_string()) }
+    fn reset(&self) -> Result<(), String> { self.prepared.audio_client.reset_stream().map_err(|e| e.to_string()) }
+    fn wait(&self, timeout: Duration) -> Result<DesktopRenderWake, String> {
+        render_wake_result(self.event_handle.wait_for_event(render_wait_timeout_ms(timeout)?))
+    }
 }
 
 pub(crate) struct NativeDesktopStream {
@@ -196,15 +222,18 @@ impl NativeDesktopStream {
             let format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
             let buffer_duration_hns = calculate_period_100ns(48_000 * RENDER_BUFFER_MS / 1_000, 48_000);
             audio_client.initialize_client(&format, &WasapiDirection::Render,
-                &StreamMode::PollingShared { autoconvert: true, buffer_duration_hns }).map_err(|e| e.to_string())?;
+                &StreamMode::EventsShared { autoconvert: true, buffer_duration_hns }).map_err(|e| e.to_string())?;
             let render_client = audio_client.get_audiorenderclient().map_err(|e| e.to_string())?;
             let buffer_frames = audio_client.get_buffer_size().map_err(|e| e.to_string())?;
             if buffer_frames == 0 { return Err("native desktop endpoint has a zero-frame buffer".into()); }
-            Ok(endpoint_recovery::PreparedSpeakerRender { endpoint_id, audio_client, render_client,
-                buffer_frames, _com_apartment: com_apartment })
+            // Register last: no fallible operation may drop an already-bound
+            // event before its client during construction failure.
+            let event_handle = audio_client.set_get_eventhandle().map_err(|e| e.to_string())?;
+            Ok(EventStreamingEndpoint { prepared: endpoint_recovery::PreparedSpeakerRender { endpoint_id, audio_client, render_client,
+                buffer_frames, _com_apartment: com_apartment }, event_handle })
         })?;
         let scenario = active_aec_live_scenario_assignments(cue_id)?;
-        let mut stream = Self { endpoint_id: prepared.endpoint_id.clone(), prepared: Some(Box::new(prepared)),
+        let mut stream = Self { endpoint_id: prepared.prepared.endpoint_id.clone(), prepared: Some(Box::new(prepared)),
             permit, cue_id: cue_id.into(), renderer_instance_id: format!("desktop-process-{}", std::process::id()),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: Some(first_audio_at),
             started: false, terminal: false, submitted_frames: 0, scenario, scenario_phase_frames: SCENARIO_PHASE_FRAMES, stage: ScenarioStage::default(),
@@ -256,6 +285,17 @@ impl NativeDesktopStream {
                 pending_prefix_frames:self.stage.prefix_remaining, submitted_frames:self.submitted_frames,
                 requested_frames:frames, started:self.started, ended:self.queue.ended, stage_index:self.stage.index, decision });
         }
+    }
+    pub(crate) fn device_started(&self) -> bool { self.started && !self.terminal }
+    /// A wake only permits polling; it is not proof of physical PCM output.
+    /// Never hold the ownership mutex while waiting: cancellation must proceed.
+    pub(crate) fn wait_for_device(&self, timeout: Duration) -> Result<DesktopRenderWake, String> {
+        self.permit.ensure_active()?;
+        if self.terminal { return Err("event wait after native desktop terminal".into()); }
+        if !self.started { return Ok(DesktopRenderWake::NotStarted); }
+        let result = self.prepared.as_ref().ok_or("native desktop client closed")?.wait(timeout);
+        self.permit.ensure_active()?;
+        result
     }
     pub(crate) fn can_accept(&self, source_frames: usize) -> bool { self.queue.can_accept(source_frames) }
     pub(crate) fn push_pcm(&mut self, samples: &[i16], sample_rate_hz: u32) -> Result<(), String> {
@@ -524,15 +564,21 @@ mod tests {
         assert!(!q.can_accept(2)); assert!(q.push(&[1, 2]).is_err());
         q.end().unwrap(); assert!(!q.can_accept(0));
     }
-    #[derive(Default)]
-    struct FakeDeviceState { padding: u32, writes: Vec<Vec<f32>>, starts: u32, stops: u32, resets: u32 }
+    struct FakeDeviceState {
+        capacity: u32, padding: u32, writes: Vec<Vec<f32>>, starts: u32, stops: u32, resets: u32,
+        waits: Vec<Duration>, wakes: VecDeque<(Result<DesktopRenderWake, String>, u32)>,
+    }
+    impl Default for FakeDeviceState {
+        fn default() -> Self { Self { capacity:960, padding:0, writes:Vec::new(), starts:0, stops:0, resets:0,
+            waits:Vec::new(), wakes:VecDeque::new() } }
+    }
     struct FakeEndpoint(std::rc::Rc<std::cell::RefCell<FakeDeviceState>>);
     impl StreamingEndpoint for FakeEndpoint {
-        fn buffer_frames(&self) -> u32 { 960 }
+        fn buffer_frames(&self) -> u32 { self.0.borrow().capacity }
         fn padding(&self) -> Result<u32,String> { Ok(self.0.borrow().padding) }
         fn write(&self, frames: usize, bytes: &[u8]) -> Result<(),String> {
             let mut s = self.0.borrow_mut();
-            if s.padding as usize + frames > 960 { return Err("fake device overflow".into()); }
+            if s.padding as usize + frames > s.capacity as usize { return Err("fake device overflow".into()); }
             s.padding += frames as u32;
             s.writes.push(bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect());
             Ok(())
@@ -540,6 +586,11 @@ mod tests {
         fn start(&self) -> Result<(),String> { self.0.borrow_mut().starts += 1; Ok(()) }
         fn stop(&self) -> Result<(),String> { self.0.borrow_mut().stops += 1; Ok(()) }
         fn reset(&self) -> Result<(),String> { let mut s=self.0.borrow_mut(); s.resets+=1; s.padding=0; Ok(()) }
+        fn wait(&self, timeout: Duration) -> Result<DesktopRenderWake,String> {
+            let mut s=self.0.borrow_mut(); s.waits.push(timeout);
+            let (result,consumed)=s.wakes.pop_front().unwrap_or((Ok(DesktopRenderWake::TimedOut),0));
+            s.padding=s.padding.saturating_sub(consumed); result
+        }
     }
     fn fake_stream(owner: &DesktopPlaybackOwnership) -> (NativeDesktopStream, std::rc::Rc<std::cell::RefCell<FakeDeviceState>>) {
         let device = std::rc::Rc::new(std::cell::RefCell::new(FakeDeviceState::default()));
@@ -550,6 +601,74 @@ mod tests {
             started: false, terminal: false, submitted_frames: 0, scenario: Vec::new(), scenario_phase_frames: SCENARIO_PHASE_FRAMES,
             stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(), pump_diagnostic: None,
         }, device)
+    }
+    #[test]
+    fn event_wait_rounds_up_and_rejects_infinite_or_overflow() {
+        assert_eq!(render_wait_timeout_ms(Duration::ZERO),Ok(0));
+        assert_eq!(render_wait_timeout_ms(Duration::from_nanos(1)),Ok(1));
+        assert_eq!(render_wait_timeout_ms(Duration::from_millis(2)),Ok(2));
+        assert!(render_wait_timeout_ms(Duration::from_millis(u64::from(u32::MAX))).is_err());
+        assert!(render_wait_timeout_ms(Duration::MAX).is_err());
+    }
+    #[test]
+    fn event_timeout_is_not_a_device_failure_or_physical_completion() {
+        assert_eq!(render_wake_result(Ok(())),Ok(DesktopRenderWake::Signaled));
+        assert_eq!(render_wake_result(Err(wasapi::WasapiError::EventTimeout)),Ok(DesktopRenderWake::TimedOut));
+        assert!(render_wake_result(Err(wasapi::WasapiError::ClientNotInit)).is_err());
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Ok(DesktopRenderWake::NotStarted));
+        assert!(device.borrow().waits.is_empty());
+        stream.push_pcm(&vec![100;19_200],24_000).unwrap(); stream.poll(&mut |_|Ok(())).unwrap();
+        let submitted=stream.submitted_frames;
+        assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Ok(DesktopRenderWake::TimedOut));
+        assert_eq!(stream.submitted_frames,submitted); assert!(!stream.terminal);
+        device.borrow_mut().wakes.push_back((Err("device wait failed".into()),0));
+        assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Err("device wait failed".into()));
+        stream.abort(&mut |_|Ok(())).unwrap();
+        assert!(stream.wait_for_device(Duration::ZERO).is_err()); assert!(!stream.device_started());
+    }
+    #[test]
+    fn cancelled_owner_cannot_wait_or_inherit_an_event_wake() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.push_pcm(&vec![100;19_200],24_000).unwrap(); stream.poll(&mut |_|Ok(())).unwrap();
+        assert!(owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+        assert!(stream.wait_for_device(Duration::from_millis(2)).is_err());
+        assert!(device.borrow().waits.is_empty());
+    }
+    #[test]
+    fn actual_1056_frame_capacity_refills_on_each_engine_wake_without_reopening() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        device.borrow_mut().capacity=1056;
+        stream.push_pcm(&vec![100;19_200],24_000).unwrap(); stream.poll(&mut |_|Ok(())).unwrap();
+        assert_eq!(device.borrow().padding,960);
+        for _ in 0..30 {
+            // 96 free frames is insufficient for an unchanged 480-frame block.
+            let before=stream.submitted_frames; stream.poll(&mut |_|Ok(())).unwrap();
+            assert_eq!(stream.submitted_frames,before);
+            device.borrow_mut().wakes.push_back((Ok(DesktopRenderWake::Signaled),480));
+            assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Ok(DesktopRenderWake::Signaled));
+            stream.poll(&mut |_|Ok(())).unwrap();
+            assert_eq!(device.borrow().padding,960);
+            assert_eq!(stream.submitted_frames,before+480);
+        }
+        assert_eq!(device.borrow().starts,1); assert_eq!(device.borrow().resets,0);
+        assert_eq!(device.borrow().waits.len(),30);
+    }
+    #[test]
+    fn missed_wake_960_to_zero_trace_still_fails_and_keeps_queued_source() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        device.borrow_mut().capacity=1056;
+        stream.push_pcm(&vec![100;19_200],24_000).unwrap(); stream.poll(&mut |_|Ok(())).unwrap();
+        let queued=stream.queue.buffered_frames(); let submitted=stream.submitted_frames;
+        device.borrow_mut().wakes.push_back((Ok(DesktopRenderWake::Signaled),960));
+        stream.wait_for_device(Duration::from_millis(2)).unwrap();
+        let error=stream.poll(&mut |event| match event {
+            DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("truthful underrun".into()),
+            _=>Ok(()),
+        }).unwrap_err();
+        assert_eq!(error,"truthful underrun"); assert_eq!(stream.queue.buffered_frames(),queued);
+        assert_eq!(stream.submitted_frames,submitted); assert_eq!(device.borrow().starts,1);
     }
     #[test]
     fn production_pump_renders_before_done_then_drains_exactly_once_in_one_session() {

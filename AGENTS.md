@@ -90,6 +90,29 @@ coreCodeRules:
       - command: "npm run coverage:gate:base"
         description: "共享 Rust crates 覆盖率棘轮"
 
+  - id: native-wasapi-events
+    boundaryKind: explicit-core-boundary
+    paths:
+      - "third-party/wasapi-0.24.0/**"
+    requiredReview: true
+    requiredValidation:
+      - command: "npm run test:wasapi-events -- --offline --locked --jobs 1"
+        description: "上游固定版本库与原始事件状态/RAII反例"
+      - command: "npm run test:wasapi-provenance"
+        description: "上游文件身份与最小补丁完整性"
+      - command: "npm run test:desktop-shell"
+        description: "桌面完整消费方测试"
+      - command: "npm run test:bridge-service-native"
+        description: "桥接完整消费方测试"
+      - command: "npm run test:integration:bridge-contract"
+        description: "跨进程消费者契约测试"
+      - command: "npm run test:contracts"
+        description: "契约与配置路径一致性"
+      - command: "npm run audit:architecture"
+        description: "架构边界审计"
+      - command: "npm run audit:dead-code"
+        description: "死代码豁免审计"
+
   - id: driver-interface
     boundaryKind: explicit-core-boundary
     paths:

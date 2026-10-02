@@ -3,7 +3,7 @@ mod support;
 
 #[path = "output/native_streaming.rs"]
 mod native_streaming;
-pub(crate) use native_streaming::{DesktopPlaybackTimeline, DesktopStreamActivity, DesktopStreamTap, DesktopStreamingEvent, NativeDesktopStream};
+pub(crate) use native_streaming::{DesktopPlaybackTimeline, DesktopRenderWake, DesktopStreamActivity, DesktopStreamTap, DesktopStreamingEvent, NativeDesktopStream};
 
 use support::{
     audio_frames_to_duration, f32_samples_to_le_bytes, next_render_session_id,

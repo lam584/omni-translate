@@ -3,6 +3,19 @@ use super::*;
 use crate::audio::speech::{DesktopPlaybackTimeline, DesktopStreamTap, DesktopStreamActivity, DesktopStreamingEvent, NativeDesktopStream};
 
 const MAX_RESPONSE_SAMPLES: usize = 24_000 * 240;
+const DESKTOP_STREAM_WAIT: Duration = Duration::from_millis(2);
+
+fn desktop_command_timeout(device_started: bool) -> Duration {
+    if device_started { Duration::ZERO } else { DESKTOP_STREAM_WAIT }
+}
+
+fn wait_after_desktop_command_timeout<T>(device_started: bool,
+    wait: impl FnOnce(Duration) -> Result<T, String>) -> Result<(), String> {
+    // Before Start, recv_timeout already waited for provider PCM. Do not add
+    // another wait; once running, only the device event owns this bounded wait.
+    if device_started { wait(DESKTOP_STREAM_WAIT)?; }
+    Ok(())
+}
 
 struct DesktopPlaybackActivityGuard<'a>(&'a OmniPlaybackQueue);
 impl Drop for DesktopPlaybackActivityGuard<'_> {
@@ -175,17 +188,22 @@ pub(super) fn process_native_desktop_stream<R: tauri::Runtime>(
             }
             if let Some(receipt) = renderer.poll(&mut events)? { return Ok(receipt); }
             if ended || !renderer.can_accept(OMNI_OUTPUT_SAMPLE_RATE_HZ as usize / 10) {
-                thread::sleep(Duration::from_millis(2));
+                renderer.wait_for_device(DESKTOP_STREAM_WAIT)?;
                 continue;
             }
-            let command = match queue.recv_timeout(Duration::from_millis(2)) {
+            let device_started = renderer.device_started();
+            let command = match queue.recv_timeout(desktop_command_timeout(device_started)) {
                 OmniPlaybackReceiveOutcome::Command { command, dropped } => {
                     record_native_playback_stale(app, store, &dropped, "realtime-budget-before-start"); command
                 }
                 OmniPlaybackReceiveOutcome::StaleDropped(dropped) => {
                     record_native_playback_stale(app, store, &dropped, "realtime-budget-before-start"); continue;
                 }
-                OmniPlaybackReceiveOutcome::Timeout => continue,
+                OmniPlaybackReceiveOutcome::Timeout => {
+                    wait_after_desktop_command_timeout(device_started,
+                        |timeout| renderer.wait_for_device(timeout))?;
+                    continue;
+                }
                 OmniPlaybackReceiveOutcome::Stopped => return Err("native desktop shutdown without provider End".into()),
             };
             let OmniPlaybackCommand::Stream { cue_id: next_cue, response_id: next_response,
@@ -310,5 +328,52 @@ mod desktop_evidence_failure_tests {
         assert!(matches!(queue.recv_timeout(Duration::ZERO), OmniPlaybackReceiveOutcome::Stopped));
         assert_eq!(queue.inner.timeline_evidence.lock().unwrap().failure_owner(),
             Some(("ack-cue".into(), "ack-response".into())));
+    }
+}
+
+#[cfg(test)]
+mod desktop_wait_policy_tests {
+    use super::*;
+
+    #[test]
+    fn command_receive_only_blocks_before_device_start() {
+        assert_eq!(desktop_command_timeout(false), Duration::from_millis(2));
+        assert_eq!(desktop_command_timeout(true), Duration::ZERO);
+    }
+
+    #[test]
+    fn pre_start_command_timeout_does_not_wait_twice() {
+        let mut waits = Vec::new();
+        let result = wait_after_desktop_command_timeout(false, |timeout| {
+            waits.push(timeout);
+            Err::<(), _>("device wait must not run before Start".to_string())
+        });
+        assert_eq!(result, Ok(()));
+        assert!(waits.is_empty());
+    }
+
+    #[test]
+    fn running_command_timeout_uses_one_bounded_device_wait() {
+        let mut waits = Vec::new();
+        // Neither a signal nor a genuine device timeout is a terminal failure.
+        for signaled in [true, false] {
+            let result = wait_after_desktop_command_timeout(true, |timeout| {
+                waits.push(timeout);
+                Ok(signaled)
+            });
+            assert_eq!(result, Ok(()));
+        }
+        assert_eq!(waits, vec![Duration::from_millis(2); 2]);
+    }
+
+    #[test]
+    fn running_device_wait_failure_remains_terminal() {
+        for error in ["wasapi event wait failed", "playback permit cancelled"] {
+            let result = wait_after_desktop_command_timeout(true, |timeout| {
+                assert_eq!(timeout, Duration::from_millis(2));
+                Err::<(), _>(error.to_string())
+            });
+            assert_eq!(result, Err(error.to_string()));
+        }
     }
 }

@@ -204,3 +204,23 @@ The vendor attributes preserve upstream CRLF/spacing instead of formatting
 hash-pinned files; its inventory/hash gate detects any content change. Newly
 written event tests retain the ordinary whitespace checks. This preservation
 exception changes no PCM, acoustic threshold or runtime failure acceptance.
+
+
+## Active-phase refill boundary (2026-10-02)
+
+Frozen event-wake run a4e998d6 reached the exact first 40-second reference
+boundary without an earlier underrun, then failed after the first 480-frame
+80 ms prefix write. Padding drained 0 -> 480 -> 0 over 10.1395 ms while 28799
+reference frames remained queued. This is not an acoustic stage pass, and the
+failed recording/source-clock evidence remains sealed and unchanged.
+
+The production pump now gives a deliberate active-phase transition the same
+maximum two consecutive, unchanged 480-frame writes as startup before yielding.
+It neither restarts the active client nor enlarges the buffer, changes the
+scheduled 80/160 ms prefixes, skips PCM or disables unexpected underrun checks.
+Steady-state polls still admit one block. An old single-step/wait replay must
+fail; a two-block prime followed by one consumed device period must refill;
+a callback that exhausts the first block before the second step still fails.
+Whole-stream three-phase identity, exact PCM and final receipt tests remain in
+force. This repair needs a separately frozen device run, not a success marker
+on the older failed run.

@@ -17,8 +17,12 @@ function span(value, completed) {
     check(integer(value[key]), `invalid span ${key}`);
   }
   check(value.sequence < completed, 'span sequence outside completed range');
-  check(value.endElapsedMicros >= value.startElapsedMicros
-    && value.durationMicros === value.endElapsedMicros - value.startElapsedMicros, 'inconsistent span duration');
+  // Rust floors each Instant offset and Duration independently to microseconds.
+  // For E = S + D, floor(E) - floor(S) = floor(D) + carry, carry in {0, 1}.
+  // This is a one-sided quantization identity, NOT a +/-1us data tolerance.
+  const elapsedMicros = value.endElapsedMicros - value.startElapsedMicros;
+  check(elapsedMicros >= 0 && value.durationMicros <= elapsedMicros
+    && elapsedMicros - value.durationMicros <= 1, 'inconsistent span duration');
   check(['completed', 'rejected', 'unwound'].includes(value.outcome), 'invalid span outcome');
   for (const key of ['startQpc100ns', 'endQpc100ns']) {
     check(value[key] === null || integer(value[key]), `invalid span ${key}`);

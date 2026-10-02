@@ -345,11 +345,17 @@ impl NativeDesktopStream {
         // Match the established WASAPI renderer: admit two real 10ms blocks
         // BEFORE Start, not merely 800ms into the software queue. No extra
         // startup wait, synthetic PCM, client restart or underrun suppression.
-        // Once running, preserve the one-block nonblocking pump contract.
+        // A deliberate phase transition drains the still-running client to
+        // zero too. Prime it with the same two real blocks before yielding;
+        // otherwise one event period empties its single 480-frame prefix.
+        // Steady-state remains one block. Never restart/expand the buffer or
+        // suppress an unexpected underrun (including during either callback).
+        let stage_before = self.stage.index;
         for _ in 0..2 {
             let before = self.submitted_frames;
             let result = self.poll_step(events)?;
-            if result.is_some() || self.started || self.submitted_frames == before { return Ok(result); }
+            let active_stage_transition = self.started && self.stage.index != stage_before;
+            if result.is_some() || (self.started && !active_stage_transition) || self.submitted_frames == before { return Ok(result); }
         }
         Ok(None)
     }
@@ -634,6 +640,105 @@ mod tests {
         assert!(owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
         assert!(stream.wait_for_device(Duration::from_millis(2)).is_err());
         assert!(device.borrow().waits.is_empty());
+    }
+    fn stream_at_active_stage_boundary(before_stage: usize) -> (NativeDesktopStream, std::rc::Rc<std::cell::RefCell<FakeDeviceState>>, DesktopPlaybackOwnership) {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        device.borrow_mut().capacity=1056;
+        stream.scenario=aec_live_scenario::ordered_speech_simulation_assignments();
+        stream.start_stage(&mut |_|Ok(())).unwrap();
+        stream.push_pcm(&vec![100;24_000],24_000).unwrap();
+        stream.poll(&mut |_|Ok(())).unwrap();
+        let boundary=stream.scenario_phase_frames;
+        assert!(before_stage<2);
+        stream.stage.index=before_stage;
+        stream.stage.prefix_remaining=0;
+        stream.submitted_frames=boundary*(before_stage as u64+1)+if before_stage==1 {3840} else {0};
+        stream.queue.submitted_source_frames=boundary*(before_stage as u64+1);
+        stream.queue.accepted_source_frames=(stream.queue.submitted_source_frames+stream.queue.buffered_frames() as u64)/2;
+        stream.stage.reference_frames=boundary;
+        stream.stage.physical_frames=boundary+if before_stage==1 {3840} else {0};
+        stream.stage.end_submit_frame=stream.submitted_frames;
+        // The real boundary crosses padding=0 while the client keeps running.
+        device.borrow_mut().padding=0;
+        (stream,device,owner)
+    }
+    #[test]
+    fn former_single_prefix_step_reproduces_boundary_underrun_with_queued_source() {
+        let (mut stream,device,_owner)=stream_at_active_stage_boundary(0);
+        stream.poll_step(&mut |_|Ok(())).unwrap(); assert_eq!(device.borrow().padding,480);
+        assert_eq!(stream.stage.index,1); assert!(stream.queue.buffered_frames()>480);
+        device.borrow_mut().wakes.push_back((Ok(DesktopRenderWake::Signaled),480));
+        stream.wait_for_device(Duration::from_millis(2)).unwrap();
+        assert!(stream.poll_step(&mut |event| match event {
+            DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("boundary underrun".into()),
+            _=>Ok(()),
+        }).is_err());
+    }
+    #[test]
+    fn both_active_phase_transitions_prime_two_unchanged_prefix_blocks_before_wait() {
+        for previous_stage in 0..2 {
+            let (mut stream,device,_owner)=stream_at_active_stage_boundary(previous_stage);
+            let before=stream.submitted_frames; let queued=stream.queue.buffered_frames();
+            stream.poll(&mut |_|Ok(())).unwrap();
+            assert_eq!(stream.stage.index,previous_stage+1); assert_eq!(device.borrow().padding,960);
+            assert_eq!(stream.submitted_frames,before+960); assert_eq!(stream.queue.buffered_frames(),queued);
+            assert_eq!(stream.stage.prefix_remaining,3840*(previous_stage+1)-960);
+            assert_eq!(device.borrow().starts,1); assert_eq!(device.borrow().resets,0);
+            device.borrow_mut().wakes.push_back((Ok(DesktopRenderWake::Signaled),480));
+            stream.wait_for_device(Duration::from_millis(2)).unwrap();
+            stream.poll(&mut |_|Ok(())).unwrap();
+            assert_eq!(device.borrow().padding,960); assert_eq!(stream.submitted_frames,before+1440);
+            assert_eq!(device.borrow().waits.len(),1);
+        }
+    }
+    #[test]
+    fn partial_callback_consumption_does_not_claim_full_padding_or_lose_prefix() {
+        for previous_stage in 0..2 {
+            let (mut stream,device,_owner)=stream_at_active_stage_boundary(previous_stage);
+            let before=stream.submitted_frames; let mut taps=Vec::new();
+            stream.poll(&mut |event| {
+                if let DesktopStreamingEvent::Tap(tap)=event {
+                    taps.push((tap.physical_start_frame,tap.physical_end_frame));
+                    if taps.len()==1 { device.borrow_mut().padding-=240; }
+                }
+                Ok(())
+            }).unwrap();
+            assert_eq!(stream.submitted_frames,before+960); assert_eq!(device.borrow().padding,720);
+            assert_eq!(taps,vec![(before,before+480),(before+480,before+960)]);
+            assert_eq!(stream.stage.prefix_remaining,3840*(previous_stage+1)-960);
+            device.borrow_mut().wakes.push_back((Ok(DesktopRenderWake::Signaled),480));
+            stream.wait_for_device(Duration::from_millis(2)).unwrap();
+            stream.poll(&mut |_|Ok(())).unwrap(); assert_eq!(device.borrow().padding,720);
+        }
+    }
+    #[test]
+    fn second_prime_tap_exhaustion_cannot_authorize_completion_or_hide_next_fault() {
+        for previous_stage in 0..2 {
+            let (mut stream,device,_owner)=stream_at_active_stage_boundary(previous_stage); let mut taps=0;
+            assert!(stream.poll(&mut |event| { if let DesktopStreamingEvent::Tap(_)=event {
+                taps+=1; if taps==2 { device.borrow_mut().padding=0; }
+            } Ok(()) }).unwrap().is_none());
+            assert_eq!(taps,2); assert!(!stream.terminal); assert_eq!(device.borrow().padding,0);
+            assert!(stream.poll(&mut |event| match event {
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("second tap stall retained".into()),
+                _=>Ok(()),
+            }).is_err());
+            assert_eq!(device.borrow().starts,1); assert_eq!(device.borrow().resets,0);
+        }
+    }
+    #[test]
+    fn phase_prime_callback_consuming_first_block_still_fails_instead_of_hiding_gap() {
+        let (mut stream,device,_owner)=stream_at_active_stage_boundary(0); let mut taps=0;
+        let result=stream.poll(&mut |event| match event {
+            DesktopStreamingEvent::Tap(_) => {taps+=1; device.borrow_mut().padding=0; Ok(())},
+            DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("callback stalled phase prime".into()),
+            _=>Ok(()),
+        });
+        assert!(result.is_err()); assert_eq!(taps,1); assert_eq!(device.borrow().starts,1);
+        assert_eq!(stream.stage.prefix_remaining,3840-480);
     }
     #[test]
     fn actual_1056_frame_capacity_refills_on_each_engine_wake_without_reopening() {

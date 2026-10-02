@@ -73,7 +73,7 @@ test('reject malformed spans, totals, retention and unsealed/acceptance receipts
     v => { v.recentSpans[0].part = 'sleep'; },
     v => { v.recentSpans[0].outcome = 'timedOut'; },
     v => { v.recentSpans[0].qpcValid = false; },
-    v => { v.recentSpans[0].endElapsedMicros++; },
+    v => { v.recentSpans[0].endElapsedMicros += 2; }, // +1 can be legitimate independent flooring.
     v => { v.parts.find(p => p.part === 'nativeRenderWait').totals.rejected = 3; },
     v => { v.parts.find(p => p.part === 'nativeRenderWait').totals.maximumSpan.part = 'requestedSleep'; },
     v => { v.evictedOldDiagnosticSpans = 1; },
@@ -81,6 +81,81 @@ test('reject malformed spans, totals, retention and unsealed/acceptance receipts
     v => { v.parts.find(p => p.part === 'nativeRenderWait').totals.count = NaN; },
   ]) {
     const value = fixture([['nativeRenderWait', 2000]]); edit(value);
+    assert.throws(() => analyze(value), /native pump timing/u);
+  }
+});
+// Quantize independently from integer nanoseconds, matching Duration::as_micros.
+// Never derive duration from the already-floored elapsed offsets.
+function quantizedReceipt(startNs, endNs) {
+  const durationMicros = Number((endNs - startNs) / 1000n);
+  const value = fixture([['nativeRenderWait', durationMicros]]);
+  const span = value.recentSpans[0];
+  span.startElapsedMicros = Number(startNs / 1000n);
+  span.endElapsedMicros = Number(endNs / 1000n);
+  value.parts.find(p => p.part === 'nativeRenderWait').totals.maximumSpan = structuredClone(span);
+  return value;
+}
+test('independent floors accept submicrosecond carry without rewriting diagnostic values', () => {
+  for (const [startNs, endNs, expectedCarry] of [
+    [100n, 900n, 0],       // Duration zero, no boundary crossed.
+    [900n, 1100n, 1],      // 0.2us duration, endpoints in adjacent buckets.
+    [1900n, 2100n, 1],
+    [100n, 2100n, 0],      // Exact 2us duration.
+    [900n, 2100n, 1],      // 1.2us duration, floored endpoint difference 2us.
+    [2000n, 2000n, 0],
+  ]) {
+    const value = quantizedReceipt(startNs, endNs), before = structuredClone(value);
+    const span = value.recentSpans[0];
+    assert.equal(span.endElapsedMicros - span.startElapsedMicros - span.durationMicros, expectedCarry);
+    const result = analyze(value);
+    assert.deepEqual(value, before);
+    assert.equal(result.nativeRenderWait.totalMicros, Number((endNs - startNs) / 1000n));
+    assert.equal(result.nativeRenderWait.maximumSpan.durationMicros, span.durationMicros);
+    assert.equal(result.qualityAcceptance, false);
+    assert.equal(result.aecQualityAcceptance, false);
+    assert.equal(result.overallPassed, false);
+    assert.equal(result.releaseEligible, false);
+    assert.equal(result.nativeClockAccuracyEstablished, false);
+  }
+});
+test('all 1000 nanosecond origin residues obey the one-sided floor identity', () => {
+  const carries = new Set();
+  for (let residue = 0n; residue < 1000n; residue++) {
+    for (const durationNs of [0n, 1n, 99n, 500n, 999n, 1000n, 1001n, 1999n, 2000n, 2500n]) {
+      const startNs = 10000n + residue, endNs = startNs + durationNs;
+      const expectedCarry = Number((residue + durationNs % 1000n) / 1000n);
+      const value = quantizedReceipt(startNs, endNs), span = value.recentSpans[0];
+      assert.equal(span.endElapsedMicros - span.startElapsedMicros - span.durationMicros, expectedCarry);
+      carries.add(expectedCarry);
+      assert.doesNotThrow(() => analyze(value));
+    }
+  }
+  assert.deepEqual([...carries].sort(), [0, 1]);
+});
+test('both maximum and retained spans reject impossible floor relationships', () => {
+  for (const location of ['maximum', 'recent']) {
+    for (const corrupt of [
+      span => { span.durationMicros = span.endElapsedMicros - span.startElapsedMicros + 1; }, // Wrong direction, even 1us.
+      span => { span.durationMicros = span.endElapsedMicros - span.startElapsedMicros - 2; }, // Exceeds carry bound.
+      span => { span.endElapsedMicros = span.startElapsedMicros - 1; }, // Reversed monotonic endpoints.
+    ]) {
+      const value = quantizedReceipt(19900n, 21100n);
+      corrupt(location === 'maximum'
+        ? value.parts.find(p => p.part === 'nativeRenderWait').totals.maximumSpan
+        : value.recentSpans[0]);
+      assert.throws(() => analyze(value), /inconsistent span duration/u);
+    }
+  }
+});
+test('floor compatibility does not grant a 1us tolerance to aggregate or QPC errors', () => {
+  for (const corrupt of [
+    value => { value.parts.find(p => p.part === 'nativeRenderWait').totals.maximumMicros++; },
+    value => { value.parts.find(p => p.part === 'nativeRenderWait').totals.totalMicros++; },
+    value => { value.recentSpans[0].qpcValid = false; },
+    value => { value.nativeRenderWakeTotals.signaled++; },
+  ]) {
+    const value = quantizedReceipt(900n, 2100n);
+    corrupt(value);
     assert.throws(() => analyze(value), /native pump timing/u);
   }
 });

@@ -64,3 +64,11 @@ test('final outcome requires independent quality and cannot claim a Provider or 
   assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},{...quality,...patch}).overallPassed,false);
  assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},undefined).overallPassed,false);
 });
+
+test('actual Windows PowerShell 5.1 boundary restores builtin hashing under a foreign PS7 module path', {skip:process.platform!=='win32'}, async()=>{
+ const {spawnSync}=await import('node:child_process');const {windowsPowerShellEnvironment}=await import('./run-watch-mode-live-production-coordinator.mjs');
+ const environment=windowsPowerShellEnvironment({...process.env,PSModulePath:'Z:\\nonexistent-ps7-modules'});
+ const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',"$ErrorActionPreference='Stop';(Get-FileHash -LiteralPath 'package.json' -Algorithm SHA256).Hash"],{cwd:process.cwd(),encoding:'utf8',windowsHide:true,timeout:10000,env:environment});
+ assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.trim().toLowerCase(),sha(fs.readFileSync('package.json')));
+ const source=fs.readFileSync(new URL('./run-local-aec-speech-simulation.mjs',import.meta.url),'utf8');assert.match(source,/timeout:195000,maxBuffer:4\*1024\*1024,env:windowsPowerShellEnvironment\(\)/u);
+});

@@ -6,6 +6,7 @@ import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { localAecProbeDesktopPowerShell, AEC_PROBE_JOB_HELPER, AEC_PROBE_CAPABILITY_ID } from './run-watch-mode-local-aec-probe.mjs';
 import { analyzeLocalAecSpeech } from './local-aec-speech-analysis.mjs';
 import { verifyApiSpeechProvenance } from './local-aec-speech-provenance.mjs';
+import { windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const EXPECTED_BIOS = '4FCA4D56-0439-2E76-E21B-8F067FF78FBE';
 const exactEndpoint = value => /^\{0\.0\.0\.00000000\}\.\{[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\}$/iu.test(value);
@@ -68,7 +69,7 @@ export async function runLocalAecSpeechSimulation(options){
  if(sha(desktopBytes)!==options.desktopSha256||sha(injectorBytes)!==options.injectorSha256)throw Error('explicitly selected native executable hash mismatch');
  if(!desktopBytes.includes(Buffer.from(AEC_PROBE_CAPABILITY_ID)))throw Error('selected desktop has no guarded no-provider startup capability');
  const localIdentity=JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
-  '[ordered]@{uuidBios=(Get-CimInstance Win32_ComputerSystemProduct).UUID;sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId;user=[Environment]::UserName}|ConvertTo-Json -Compress'],{encoding:'utf8',windowsHide:true,timeout:10000}).replace(/^\uFEFF/u,''));
+  '[ordered]@{uuidBios=(Get-CimInstance Win32_ComputerSystemProduct).UUID;sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId;user=[Environment]::UserName}|ConvertTo-Json -Compress'],{encoding:'utf8',windowsHide:true,timeout:10000,env:windowsPowerShellEnvironment()}).replace(/^\uFEFF/u,''));
  if(localIdentity.uuidBios.toUpperCase()!==EXPECTED_BIOS||localIdentity.sessionId===0||localIdentity.user.toLowerCase()!=='vmuser')throw Error('this execution is not the bound interactive vm171 worker');
  const analyzer=path.resolve(options.analyzerExecutable);
  if(analyzer!==path.join(repoRoot,'target','release','omni-benchmark.exe')||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('explicitly selected workspace release analyzer hash mismatch');
@@ -79,7 +80,7 @@ export async function runLocalAecSpeechSimulation(options){
  const sourceFiles=['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/local-aec-speech-analysis.mjs',
   'scripts/testing/local-aec-speech-provenance.mjs','scripts/testing/generate-local-aec-speech-fixture.mjs','scripts/testing/fixtures/wav-fixture-utils.mjs',
   'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
-  'scripts/testing/run-watch-mode-local-aec-probe.mjs',AEC_PROBE_JOB_HELPER];
+  'scripts/testing/run-watch-mode-local-aec-probe.mjs','scripts/testing/run-watch-mode-live-production-coordinator.mjs',AEC_PROBE_JOB_HELPER];
  const sourceHashes=Object.fromEntries(sourceFiles.map(file=>[file,sha(bytes(path.join(repoRoot,file),2*1024*1024))]));
  const executionId=`local-aec-speech-${crypto.randomUUID()}`,outputRoot=path.resolve(repoRoot,options.outputRoot);
  const evidenceRoot=path.resolve(repoRoot,'artifacts/testing/aec-iteration');
@@ -102,7 +103,7 @@ export async function runLocalAecSpeechSimulation(options){
    deadlineUtc,helperPath:helper,helperSha256:sha(bytes(helper,1024*1024))});
   write(path.join(outputDirectory,'process-launch-authority.json'),{schemaVersion:1,executionId,helperSha256:sha(bytes(helper,1024*1024)),deadlineUtc,scriptSha256:sha(Buffer.from(script,'utf8'))});
   const r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
-   {encoding:'utf8',windowsHide:true,cwd:repoRoot,timeout:195000,maxBuffer:4*1024*1024});
+   {encoding:'utf8',windowsHide:true,cwd:repoRoot,timeout:195000,maxBuffer:4*1024*1024,env:windowsPowerShellEnvironment()});
   fs.writeFileSync(path.join(outputDirectory,'launcher.stdout.log'),r.stdout??'','utf8');fs.writeFileSync(path.join(outputDirectory,'launcher.stderr.log'),r.stderr??'','utf8');
   if(r.error||r.status!==0)throw Error(r.error?.message??`local desktop job failed: exit ${r.status}`);
   const line=r.stdout.trim().split(/\r?\n/u).at(-1),custody=JSON.parse(line);

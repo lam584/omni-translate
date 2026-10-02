@@ -118,3 +118,20 @@ separate frozen counterexample accumulates 0.1 ms error per adjacent interval
 until it violates the 1 ms global bound, preventing a consecutive-only check
 from replacing global validation. More complete diagnostic evidence is needed
 before changing any alignment model or mapping rule.
+
+## Full source-clock diagnostic channel
+
+The injector flag `--diagnostic-source-clock-trace` is isolated from c03. It
+requires a 48 kHz reference path and unchanged full media: cropping, gain, added
+silence and reference-only playback are rejected. It keeps observing the same
+native client after the first strict error, until endpoint padding drains and
+IAudioClock position/frequency crosses the complete source frame span, within
+the original absolute safety deadline. The strict error remains latched. The
+diagnostic receipt always has `passed=false`, `diagnosticOnly=true`, and a
+nonzero process exit; it cannot be a healthy c03 media completion.
+
+The raw JSONL retains independent before/after QPC and its frequency. The current
+wasapi wrapper does not expose successful HRESULT accuracy distinctions, so
+`rawClockHresult=null` and `rawClockAccuracyAvailable=false` are honest unknowns.
+No S_OK is invented. The independent offline diagnostic analyzer computes clock
+facts only and never grants acoustic, Provider or release acceptance.

@@ -62,6 +62,15 @@ impl SourcePlaybackClock {
             Err(error) => self.reject(None, error),
         }
     }
+    pub(super) fn observe_raw_clock(&mut self, raw: Result<(u64, u64, u64), String>,
+        submitted: usize, padding: Result<usize, String>) -> Result<(), String> {
+        if let Some(error) = &self.failure { return Err(error.clone()); }
+        match raw {
+            Ok((position, frequency, qpc)) => self.observe_sample(ClockObservation { position, frequency, qpc, submitted, padding }),
+            Err(error) => self.reject(None, error),
+        }
+    }
+    pub(super) fn validation_failure(&self) -> Option<&str> { self.failure.as_deref() }
     fn observe_sample(&mut self, sample: ClockObservation) -> Result<(), String> {
         if let Some(error) = &self.failure { return Err(error.clone()); }
         let ClockObservation { position, frequency, qpc, .. } = sample;

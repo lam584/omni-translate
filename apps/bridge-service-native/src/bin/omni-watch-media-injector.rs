@@ -7,7 +7,10 @@ fn main() {
 #[cfg(windows)]
 fn main() {
     match injector::run() {
-        Ok(result) => println!("{}", serde_json::to_string(&result).unwrap()),
+        Ok(result) => {
+            println!("{}", serde_json::to_string(&result).unwrap());
+            if !result.passed { std::process::exit(1); }
+        },
         Err(error) => {
             println!(
                 "{}",
@@ -74,6 +77,9 @@ mod injector {
         pub source_pcm48k_mono_path: Option<String>,
         pub source_clock_metadata_path: Option<String>,
         pub detail: Option<String>,
+        pub diagnostic_only: bool,
+        pub natural_render_drained: bool,
+        pub source_clock_raw_trace_path: Option<String>,
     }
 
     pub(super) struct InjectorError {
@@ -151,6 +157,9 @@ mod injector {
                 source_pcm48k_mono_path: None,
                 source_clock_metadata_path: None,
                 detail: Some(error.detail),
+                diagnostic_only: false,
+                natural_render_drained: false,
+                source_clock_raw_trace_path: None,
             }
         }
     }
@@ -163,6 +172,7 @@ mod injector {
         reference_pcm16k_mono_path: Option<PathBuf>,
         reference_pcm48k_mono_path: Option<PathBuf>,
         reference_only: bool,
+        diagnostic_source_clock_trace: bool,
         source_gain_db: f32,
         restart_quiet_window_after_seconds: f64,
         restart_quiet_window_seconds: f64,
@@ -172,6 +182,12 @@ mod injector {
     #[path = "source_clock.rs"]
     mod source_clock;
     use source_clock::SourcePlaybackClock;
+    #[path = "source_clock/raw_trace.rs"]
+    mod source_clock_raw_trace;
+    use source_clock_raw_trace::RawClockTrace;
+    #[path = "render.rs"]
+    mod render;
+    use render::MediaRender;
     #[cfg(test)]
     use source_clock::source_clock_origin;
 
@@ -255,107 +271,11 @@ mod injector {
         }
     }
 
-    struct MediaRender {
-        audio_client: AudioClient,
-        render_client: AudioRenderClient,
-        audio_clock: Option<AudioClock>,
-        event_handle: Handle,
-        buffer_frames: usize,
-    }
-
-    impl MediaRender {
-        fn open_event_driven_unstarted(
-            device: &Device,
-            format: &WaveFormat,
-            render_sample_rate_hz: u32,
-            clock_requested: bool,
-        ) -> Result<Self, InjectorError> {
-            let mut audio_client = device
-                .get_iaudioclient()
-                .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
-            audio_client
-                .initialize_client(
-                    format,
-                    &Direction::Render,
-                    &StreamMode::EventsShared {
-                        autoconvert: true,
-                        buffer_duration_hns: INJECTOR_EVENT_BUFFER_DURATION_HNS,
-                    },
-                )
-                .map_err(|error| format!("initialize-event-render: {}", error_text(error)))?;
-            let buffer_frames = audio_client
-                .get_buffer_size()
-                .map_err(|error| format!("query-event-render-buffer: {}", error_text(error)))?
-                as usize;
-            validate_injector_event_buffer_frames(buffer_frames, render_sample_rate_hz)
-                .map_err(|detail| InjectorError::with_buffer(detail, buffer_frames))?;
-            let event_handle = audio_client.set_get_eventhandle().map_err(|error| {
-                InjectorError::with_buffer(
-                    format!("create-render-event: {}", error_text(error)),
-                    buffer_frames,
-                )
-            })?;
-            let render_client = audio_client.get_audiorenderclient().map_err(|error| {
-                InjectorError::with_buffer(
-                    format!("get-render-client: {}", error_text(error)),
-                    buffer_frames,
-                )
-            })?;
-            let audio_clock = if clock_requested { Some(audio_client.get_audioclock().map_err(|error| {
-                InjectorError::with_buffer(format!("get-render-clock: {}", error_text(error)), buffer_frames)
-            })?) } else { None };
-            Ok(Self {
-                audio_clock,
-                audio_client,
-                render_client,
-                event_handle,
-                buffer_frames,
-            })
-        }
-
-        fn start(&self) -> Result<(), String> {
-            self.audio_client
-                .start_stream()
-                .map_err(|error| format!("start-render-stream: {}", error_text(error)))
-        }
-
-        fn wait_for_refill(&self) -> Result<(), String> {
-            self.event_handle
-                .wait_for_event(1_000)
-                .map_err(|error| format!("render event wait failed: {}", error_text(error)))
-        }
-
-        fn write_available(&mut self, pending: &mut VecDeque<f32>) -> Result<usize, String> {
-            let available_frames = self
-                .audio_client
-                .get_available_space_in_frames()
-                .map_err(error_text)? as usize;
-            if available_frames == 0 || pending.is_empty() {
-                return Ok(0);
-            }
-
-            let frames = available_frames.min(pending.len() / TARGET_CHANNELS);
-            let mut packet = Vec::with_capacity(frames * BYTES_PER_FRAME);
-            for _ in 0..(frames * TARGET_CHANNELS) {
-                packet.extend_from_slice(&pending.pop_front().unwrap().to_le_bytes());
-            }
-            self.render_client
-                .write_to_device(frames, &packet, None)
-                .map_err(error_text)?;
-            Ok(frames)
-        }
-
-        fn current_padding_frames(&self) -> Result<usize, String> {
-            self.audio_client
-                .get_current_padding()
-                .map(|frames| frames as usize)
-                .map_err(error_text)
-        }
-    }
-
-    impl Drop for MediaRender {
-        fn drop(&mut self) {
-            let _ = self.audio_client.stop_stream();
+    fn observe_source_clock(clock: &mut SourcePlaybackClock, trace: &mut Option<RawClockTrace>,
+        render: &MediaRender, submitted: usize) -> Result<(), String> {
+        match trace {
+            Some(trace) => trace.observe(render, submitted, clock),
+            None => clock.observe(render, submitted),
         }
     }
 
@@ -417,6 +337,9 @@ mod injector {
                 source_pcm48k_mono_path: None,
                 source_clock_metadata_path: None,
                 detail: Some("reference-only; no render endpoint opened".to_string()),
+                diagnostic_only: false,
+                natural_render_drained: false,
+                source_clock_raw_trace_path: None,
             });
         }
         initialize_mta().ok().map_err(error_text)?;
@@ -502,6 +425,9 @@ mod injector {
         let mut pacing_authority = RenderPacingAuthority::default();
         let mut observed_prefill_frames = 0;
         let mut source_clock = SourcePlaybackClock::new(args.reference_pcm48k_mono_path.as_deref(), &endpoint_id, render_sample_rate_hz)?;
+        let mut raw_trace = if args.diagnostic_source_clock_trace {
+            Some(RawClockTrace::new(args.reference_pcm48k_mono_path.as_deref().unwrap(), &endpoint_id, render_sample_rate_hz)?)
+        } else { None };
         let result = (|| -> Result<InjectorResult, String> {
             observed_prefill_frames = render.write_available(&mut pending).map_err(|error| {
                 format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
@@ -534,7 +460,7 @@ mod injector {
                     )
                 })?;
                 let observed_at = Instant::now();
-                source_clock.observe(&render, pacing_authority.submitted_frames)?;
+                observe_source_clock(&mut source_clock, &mut raw_trace, &render, pacing_authority.submitted_frames)?;
                 let padding_frames = render.current_padding_frames().map_err(|error| {
                     format!("media refill padding query failed: submittedFrames={rendered_frames} totalFrames={total_frames} detail={error}")
                 })?;
@@ -583,12 +509,22 @@ mod injector {
                 render_sample_rate_hz,
                 render_started_at,
                 render_absolute_timeout,
+                || { if raw_trace.is_some() {
+                    observe_source_clock(&mut source_clock, &mut raw_trace, &render, pacing_authority.submitted_frames)?;
+                } Ok(()) },
             )?;
 
-            source_clock.observe(&render, pacing_authority.submitted_frames)?;
-            source_clock.finish()?;
+            observe_source_clock(&mut source_clock, &mut raw_trace, &render, pacing_authority.submitted_frames)?;
+            if let Some(trace) = raw_trace.as_mut() {
+                trace.wait_until_device_crosses_source(&render, total_frames, render_sample_rate_hz, &mut source_clock,
+                    render_started_at, render_absolute_timeout)?;
+            }
+            let clock_validation_error = source_clock.finish().err();
+            if raw_trace.is_none() {
+                if let Some(error) = &clock_validation_error { return Err(error.clone()); }
+            }
             Ok(InjectorResult {
-                passed: true,
+                passed: raw_trace.is_none(),
                 media_path: args.media_path.display().to_string(),
                 endpoint_id,
                 endpoint_name,
@@ -617,9 +553,18 @@ mod injector {
                 source_clock_frequency: source_clock.frequency,
                 source_pcm48k_mono_path: args.reference_pcm48k_mono_path.as_ref().map(|p| p.display().to_string()),
                 source_clock_metadata_path: source_clock.metadata_path.as_ref().map(|p| p.display().to_string()),
-                detail: None,
+                detail: raw_trace.as_ref().map(|_| format!("diagnostic-only full clock trace; strict validation: {}", clock_validation_error.as_deref().unwrap_or("no clock violation observed"))),
+                diagnostic_only: raw_trace.is_some(),
+                natural_render_drained: true,
+                source_clock_raw_trace_path: raw_trace.as_ref().map(|trace| trace.path.display().to_string()),
             })
         })();
+        let result = if let Some(trace) = raw_trace.as_mut() {
+            match trace.finish() {
+                Ok(()) => result,
+                Err(error) => Err(match result { Err(original) => format!("{original}; {error}"), Ok(_) => error }),
+            }
+        } else { result };
         result.map_err(|detail| {
             InjectorError::with_render(
                 detail,
@@ -638,6 +583,7 @@ mod injector {
         let mut reference_pcm16k_mono_path = None;
         let mut reference_pcm48k_mono_path = None;
         let mut reference_only = false;
+        let mut diagnostic_source_clock_trace = false;
         let mut source_gain_db = 0.0_f32;
         let mut restart_quiet_window_after_seconds = 0.0_f64;
         let mut restart_quiet_window_seconds = 0.0_f64;
@@ -658,6 +604,7 @@ mod injector {
                     reference_pcm48k_mono_path = Some(PathBuf::from(next_arg(&mut args, "--reference-pcm48k-mono-path")?));
                 }
                 "--reference-only" => reference_only = true,
+                "--diagnostic-source-clock-trace" => diagnostic_source_clock_trace = true,
                 "--gain-db" => {
                     let raw = next_arg(&mut args, "--gain-db")?;
                     source_gain_db = raw
@@ -708,6 +655,9 @@ mod injector {
                 other => return Err(format!("unknown argument: {other}")),
             }
         }
+        validate_diagnostic_trace_options(diagnostic_source_clock_trace, reference_only, reference_pcm48k_mono_path.is_some(),
+            max_seconds.is_some() || source_gain_db != 0.0 || restart_quiet_window_after_seconds != 0.0
+                || restart_quiet_window_seconds != 0.0 || postroll_silence_seconds != 0.0)?;
         let restart_window_disabled = restart_quiet_window_after_seconds == 0.0
             && restart_quiet_window_seconds == 0.0;
         let restart_window_valid = restart_quiet_window_after_seconds.is_finite()
@@ -727,11 +677,19 @@ mod injector {
             reference_pcm16k_mono_path,
             reference_pcm48k_mono_path,
             reference_only,
+            diagnostic_source_clock_trace,
             source_gain_db,
             restart_quiet_window_after_seconds,
             restart_quiet_window_seconds,
             postroll_silence_seconds,
         })
+    }
+
+    fn validate_diagnostic_trace_options(enabled: bool, reference_only: bool, has_48k_reference: bool, media_modified: bool) -> Result<(), String> {
+        if enabled && (reference_only || !has_48k_reference || media_modified) {
+            return Err("diagnostic source clock trace requires unchanged full media, real playback and a 48k reference path".into());
+        }
+        Ok(())
     }
 
     fn next_arg(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
@@ -841,12 +799,14 @@ mod injector {
         render_sample_rate_hz: u32,
         render_started_at: Instant,
         render_absolute_timeout: Duration,
+        mut observe_clock: impl FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         let mut padding_frames = render.current_padding_frames().map_err(|error| {
             format!(
                 "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames=unknown renderSampleRateHz={render_sample_rate_hz} detail={error}"
             )
         })?;
+        observe_clock()?;
         let initial_observed_at = Instant::now();
         if render_absolute_timeout_expired(
             render_started_at,
@@ -863,6 +823,7 @@ mod injector {
         }
         let mut last_progress_at = initial_observed_at;
         while padding_frames > 0 {
+            observe_clock()?;
             render.wait_for_refill().map_err(|error| {
                 format!("media drain event wait failed: submittedFrames={submitted_frames} paddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}")
             })?;

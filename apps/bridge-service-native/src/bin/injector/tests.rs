@@ -346,3 +346,13 @@
         assert!(source_clock_origin(48_000, 48_000, 9_999_999).is_err());
         assert!(source_clock_origin(u64::MAX, 1, u64::MAX).is_err());
     }
+
+    #[test]
+    fn diagnostic_trace_cannot_crop_mute_add_silence_or_skip_real_playback() {
+        assert!(validate_diagnostic_trace_options(true,false,true,false).is_ok());
+        for (reference_only,has_reference,modified) in [(true,true,false),(false,false,false),(false,true,true)] {
+            assert!(validate_diagnostic_trace_options(true,reference_only,has_reference,modified).is_err());
+        }
+        // No behavior change in the normal media tool.
+        assert!(validate_diagnostic_trace_options(false,true,false,true).is_ok());
+    }

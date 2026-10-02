@@ -9,6 +9,13 @@ import { verifyApiSpeechProvenance } from './local-aec-speech-provenance.mjs';
 import { windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const EXPECTED_BIOS = '4FCA4D56-0439-2E76-E21B-8F067FF78FBE';
+// The original 195s outer cap includes native startup and failure evidence sealing.
+// Keep the native 180s input watchdog separate; reserve 5s for JobObject cleanup.
+export const LOCAL_SPEECH_BUDGETS = Object.freeze({ inputMs:180000, ownedJobMs:190000, outerMs:195000 });
+export function localSpeechJobDeadline(nowMs) {
+ if(!Number.isSafeInteger(nowMs)||nowMs<0||nowMs>8640000000000000-LOCAL_SPEECH_BUDGETS.ownedJobMs)throw Error("invalid local speech launch time");
+ return new Date(nowMs+LOCAL_SPEECH_BUDGETS.ownedJobMs).toISOString();
+}
 const exactEndpoint = value => /^\{0\.0\.0\.00000000\}\.\{[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\}$/iu.test(value);
 function bytes(file, limit) {
  const resolved=fs.realpathSync.native(file),stat=fs.lstatSync(file);
@@ -25,7 +32,7 @@ export function createLocalSpeechRequest({executionId,outputDirectory,physicalDe
  if(![outputDirectory,renderPcmPath,injectorExecutable,sourceWavPath].every(p=>path.isAbsolute(p)))throw Error('local speech request needs absolute paths');
  return {schemaVersion:2,executionId,outputDirectory,physicalDeviceId,renderPcmPath,renderPcmSha256,speechSimulation:{
   injectorExecutable,injectorExecutableSha256,sourceWavPath,sourceWavSha256,chunkFrames:2400,chunkIntervalMs:100,
-  stageDurationMs:40000,deadlineMs:180000,tailStartFrame}};
+  stageDurationMs:40000,deadlineMs:LOCAL_SPEECH_BUDGETS.inputMs,tailStartFrame}};
 }
 export function inspectSpeechOperation(probe, request) {
  const failures=[];
@@ -94,16 +101,16 @@ export async function runLocalAecSpeechSimulation(options){
  const freeze={schemaVersion:1,artifactKind:'local-aec-speech-run-freeze',executionId,workerId:'vm171',localIdentity,scope:'local-aec-speech-simulation',releaseEligible:false,
   providerCalls:0,translationProviderCalls:0,requestSha256:sha(fs.readFileSync(requestPath)),fixtureSha256:sha(bytes(path.join(fixtureRoot,'fixture.json'),1024*1024)),
   desktopSha256:options.desktopSha256,injectorSha256:options.injectorSha256,analyzerSha256:options.analyzerSha256,buildCommit,sourceHashes,thresholds:{echoAttenuationDb:20,sourceGainToleranceDb:3,sourceCoverage:.95},
-  apiProvenance,inputWatchdogMs:180000,frozenAt:new Date().toISOString()};write(path.join(outputDirectory,'run-freeze.json'),freeze);
+  apiProvenance,inputWatchdogMs:LOCAL_SPEECH_BUDGETS.inputMs,ownedJobWatchdogMs:LOCAL_SPEECH_BUDGETS.ownedJobMs,outerWatchdogMs:LOCAL_SPEECH_BUDGETS.outerMs,frozenAt:new Date().toISOString()};write(path.join(outputDirectory,'run-freeze.json'),freeze);
  let outcome={schemaVersion:1,artifactKind:'local-aec-speech-simulation-result',executionId,workerId:'vm171',scope:'local-aec-speech-simulation',releaseEligible:false,
   providerCalls:0,translationProviderCalls:0,overallPassed:false,status:'failed',quality:{status:'not-run'},outputDirectory};
  try{
-  const helper=path.resolve(repoRoot,AEC_PROBE_JOB_HELPER),deadlineUtc=new Date(Date.now()+180000).toISOString();
+  const helper=path.resolve(repoRoot,AEC_PROBE_JOB_HELPER),deadlineUtc=localSpeechJobDeadline(Date.now());
   const script=localAecProbeDesktopPowerShell({executable:desktop,executableSha256:options.desktopSha256,runtimeRoot:repoRoot,outputDirectory,requestPath,
    deadlineUtc,helperPath:helper,helperSha256:sha(bytes(helper,1024*1024))});
   write(path.join(outputDirectory,'process-launch-authority.json'),{schemaVersion:1,executionId,helperSha256:sha(bytes(helper,1024*1024)),deadlineUtc,scriptSha256:sha(Buffer.from(script,'utf8'))});
   const r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
-   {encoding:'utf8',windowsHide:true,cwd:repoRoot,timeout:195000,maxBuffer:4*1024*1024,env:windowsPowerShellEnvironment()});
+   {encoding:'utf8',windowsHide:true,cwd:repoRoot,timeout:LOCAL_SPEECH_BUDGETS.outerMs,maxBuffer:4*1024*1024,env:windowsPowerShellEnvironment()});
   fs.writeFileSync(path.join(outputDirectory,'launcher.stdout.log'),r.stdout??'','utf8');fs.writeFileSync(path.join(outputDirectory,'launcher.stderr.log'),r.stderr??'','utf8');
   if(r.error||r.status!==0)throw Error(r.error?.message??`local desktop job failed: exit ${r.status}`);
   const line=r.stdout.trim().split(/\r?\n/u).at(-1),custody=JSON.parse(line);

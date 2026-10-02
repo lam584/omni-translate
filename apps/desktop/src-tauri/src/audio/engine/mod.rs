@@ -21,6 +21,7 @@ use super::contracts::{
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{
     AecCaptureFrameMetadata, AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity,
+    NativeCaptureStartAck,
     CapturedSegmentAudio,
     RouteInputCompletionEvidence, RouteInputCompletionRequest,
 };
@@ -261,6 +262,10 @@ pub(crate) fn start_route(
     let worker_spec = spec.clone();
     let failure_context = bridge_source_context.clone();
 
+    // Bridge has no IAudioClient Start authority. Native cold/warm activation
+    // allocates a fresh token owned by its active capture handle.
+    let native_capture_start = (!spec.uses_bridge_source()).then(NativeCaptureStartAck::new);
+    let native_capture_start_for_worker = native_capture_start.clone();
     let init_done = Arc::new(AtomicBool::new(false));
     let init_done_for_worker = init_done.clone();
     let init_done_for_watchdog = init_done.clone();
@@ -277,6 +282,7 @@ pub(crate) fn start_route(
                 input_completion_rx,
                 stt_sender,
                 init_done: Some(init_done_for_worker),
+                native_capture_start: native_capture_start_for_worker,
                 bridge_source_context,
             };
             if let Err(error) = worker.run(&audio_state) {
@@ -359,6 +365,7 @@ pub(crate) fn start_route(
         AudioRouteHandle {
             stop_tx,
             join_handle,
+            native_capture_start,
         },
     );
     if let Some(input_completion_tx) = input_completion_tx {

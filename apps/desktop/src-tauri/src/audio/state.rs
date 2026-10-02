@@ -44,6 +44,8 @@ mod bridge_source_evidence;
 mod omni_sessions;
 mod omni_session_lifecycle;
 mod session_registry;
+mod native_capture_start;
+pub(crate) use native_capture_start::NativeCaptureStartAck;
 mod metrics;
 mod route_state;
 mod subtitle_store;
@@ -76,6 +78,8 @@ use translation_lifecycle::cue_revision;
 pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
+    /// Only native WASAPI capture handles own this per-activation token.
+    pub native_capture_start: Option<NativeCaptureStartAck>,
 }
 
 
@@ -840,6 +844,11 @@ impl AudioStateStore {
 
     pub(crate) fn insert_session(&self, direction: &str, handle: AudioRouteHandle) {
         self.session_registry.insert(direction, handle);
+    }
+
+    /// Returns only the currently registered, live native capture owner.
+    pub(crate) fn native_capture_start_ack(&self, direction: &str) -> Option<NativeCaptureStartAck> {
+        self.session_registry.native_capture_start_ack(direction)
     }
 
     pub(crate) fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {

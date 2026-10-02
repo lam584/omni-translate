@@ -834,6 +834,7 @@ pub(crate) fn start_subtitle_translate(
         AudioRouteHandle {
             stop_tx,
             join_handle,
+            native_capture_start: None,
         },
     );
 

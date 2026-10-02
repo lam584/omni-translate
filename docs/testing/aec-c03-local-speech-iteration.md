@@ -26,6 +26,11 @@ iterations without generating more paid speech.
 - Bind the real interactive vm171 identity and explicit physical render endpoint.
 - Use unchanged canonical English and newly generated Chinese, without process
   exclusion, muting capture, deleting input blocks, or disabling translation audio.
+- Arm English playback only after the active native capture handle acknowledges
+  a successful `IAudioClient.Start`. Bind the acknowledgement to that handle, not
+  optimistic `stream_bound`/init state or the endpoint name. Idle loopback may
+  have zero frames at arm; final acceptance still requires complete advancing
+  PCM/clock evidence. Replaced/exited owners and Start failures cannot arm.
 - Native code owns the exact hash-bound English injector process; a JobObject owns
   the desktop and all descendants. No caller-created successful media markers.
 - Feed 2400-frame/100 ms PCM increments into one production NativeDesktopStream.
@@ -35,7 +40,10 @@ iterations without generating more paid speech.
   and endpoint padding drains. Cue creation or wall-clock estimates are not enough.
 - Continue Chinese speech and live capture after English completion. Drain render,
   then require two seconds of fresh advancing quiet capture. Polling/capture gaps
-  and new activity reset the quiet interval. The 180-second deadline only fails.
+  and new activity reset the quiet interval. The 180-second input deadline only fails.
+  The existing 195-second outer cap is unchanged; the owned JobObject has a
+  190-second bound so native startup/sealing do not compete with the input budget,
+  with the final five seconds reserved for forced cleanup. No timeout grants pass.
 
 ## Evidence and thresholds
 

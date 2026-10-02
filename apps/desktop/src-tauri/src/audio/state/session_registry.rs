@@ -83,6 +83,13 @@ impl SessionRegistry {
         self.sessions.lock().expect("audio sessions poisoned").insert(direction.to_string(), handle);
     }
 
+    pub(super) fn native_capture_start_ack(&self, direction: &str) -> Option<super::NativeCaptureStartAck> {
+        let sessions = self.sessions.lock().expect("audio sessions poisoned");
+        let handle = sessions.get(direction)?;
+        if handle.join_handle.is_finished() { return None; }
+        handle.native_capture_start.clone()
+    }
+
     pub(super) fn take(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.sessions.lock().expect("audio sessions poisoned").remove(direction)
     }
@@ -106,5 +113,70 @@ impl SessionRegistry {
             .lock()
             .expect("route input completion senders poisoned")
             .remove(direction)
+    }
+}
+
+
+#[cfg(test)]
+mod native_start_ack_tests {
+    use super::*;
+    use crate::audio::state::NativeCaptureStartAck;
+
+    fn parked_handle(ack: Option<NativeCaptureStartAck>) -> AudioRouteHandle {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        AudioRouteHandle {
+            stop_tx,
+            join_handle: std::thread::spawn(move || { let _ = stop_rx.recv(); }),
+            native_capture_start: ack,
+        }
+    }
+
+    fn join_handle(handle: AudioRouteHandle) {
+        let _ = handle.stop_tx.send(());
+        handle.join_handle.join().unwrap();
+    }
+
+    #[test]
+    fn registry_returns_only_active_owner_not_old_same_endpoint_ack() {
+        let registry = SessionRegistry::new();
+        let old = NativeCaptureStartAck::new();
+        registry.insert("inbound", parked_handle(Some(old.clone())));
+        assert!(registry.native_capture_start_ack("inbound").unwrap().same_owner(&old));
+        let old_handle = registry.take("inbound").unwrap();
+        assert!(registry.native_capture_start_ack("inbound").is_none());
+        let current = NativeCaptureStartAck::new();
+        registry.insert("inbound", parked_handle(Some(current.clone())));
+        old.observe_native_start(Ok::<(), &str>(())).unwrap();
+        let registered = registry.native_capture_start_ack("inbound").unwrap();
+        assert!(registered.same_owner(&current));
+        assert!(!registered.same_owner(&old));
+        assert!(!registered.is_started());
+        join_handle(old_handle);
+        join_handle(registry.take("inbound").unwrap());
+    }
+
+    #[test]
+    fn bridge_or_non_capture_handle_cannot_supply_native_ack() {
+        let registry = SessionRegistry::new();
+        registry.insert("inbound", parked_handle(None));
+        assert!(registry.native_capture_start_ack("inbound").is_none());
+        join_handle(registry.take("inbound").unwrap());
+    }
+
+    #[test]
+    fn exited_native_producer_is_not_an_active_start_authority() {
+        let registry = SessionRegistry::new();
+        let ack = NativeCaptureStartAck::new();
+        ack.observe_native_start(Ok::<(), &str>(())).unwrap();
+        let (stop_tx, _stop_rx) = std::sync::mpsc::channel();
+        let handle = AudioRouteHandle {
+            stop_tx,
+            join_handle: std::thread::spawn(|| {}),
+            native_capture_start: Some(ack),
+        };
+        while !handle.join_handle.is_finished() { std::thread::yield_now(); }
+        registry.insert("inbound", handle);
+        assert!(registry.native_capture_start_ack("inbound").is_none());
+        join_handle(registry.take("inbound").unwrap());
     }
 }

@@ -168,6 +168,7 @@ pub(crate) fn start_dispatch(
         AudioRouteHandle {
             stop_tx,
             join_handle,
+            native_capture_start: None,
         },
     );
     Ok(store.snapshot())

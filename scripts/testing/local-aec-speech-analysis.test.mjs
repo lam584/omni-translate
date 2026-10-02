@@ -142,7 +142,7 @@ function fixture(t, variant = 'good') {
       channelCount: 2, rendererInstanceId: 'native-renderer', ownerGeneration: 2, renderedFrames: referenceFrame },
     capture: { requestedDeviceId: ENDPOINT, effectiveDeviceId: ENDPOINT, lastError: null, lastErrorCode: null,
       countsFinal: true, sampleRateHz: RATE, channelCount: 2, framesCaptured: physicalTotal + RATE * 2 },
-    sourceMediaStarted: { executionId, physicalDeviceId: ENDPOINT, processId: 171, spawnedByNative: true },
+    sourceMediaStarted: { executionId, physicalDeviceId: ENDPOINT, processId: 171, spawnedByNative: true, startedAtMs: 100 },
     sourceMediaComplete: complete,
     streamEvidence: { physical: physicalEntry, linearReference: linearEntry, events: null, stages: stageReceipts,
       renderSessionId: 1, streamStartCount: 1, streamDrained: true, aborted: false, mediaEndVoicedPhysicalFrames: voicedTail },
@@ -194,6 +194,10 @@ function fixture(t, variant = 'good') {
     injectorSha256: simulation.injectorExecutableSha256, inputWatchdogMs: 180000,
     thresholds: { echoAttenuationDb: 20, sourceGainToleranceDb: 3, sourceCoverage: 0.95 } };
   write('run-freeze.json', Buffer.from(JSON.stringify(freeze) + '\n'));
+  write('local-aec-ready.json', Buffer.from(JSON.stringify({schemaVersion:2,artifactKind:'watch-mode-local-aec-ready',
+    scope:LOCAL_AEC_SPEECH_SCOPE,executionId,physicalDeviceId:ENDPOINT,providerCalls:0,releaseEligible:false,
+    readinessPhase:'native-stream-started',nativeStartAcknowledged:true,readyAtMs:90,
+    capture:{...receipt.capture,countsFinal:false,framesCaptured:0,lastError:null,lastErrorCode:null}})+'\n'));
   const started = receipt.sourceMediaStarted;
   events.unshift({ kind: 'source-media-started', boundStart: started, scope: LOCAL_AEC_SPEECH_SCOPE, observedAtMs: 99999 });
   events.forEach((e, i) => { e.sequence = i; });
@@ -358,4 +362,14 @@ test('sourceMediaStart alias keeps the same native journal authority, no invente
 test('source PCM encoding metadata absent is indeterminate even with matching file hash', (t) => {
   const f = fixture(t); delete f.receipt.sourceMediaComplete.sourcePcmFormat; f.reseal();
   rejected(f.analyze(), /format\/frame metadata/u);
+});
+test('old zero-frame optimistic readiness without native Start ack is not accepted', (t) => {
+  const f = fixture(t); const ready = JSON.parse(fs.readFileSync(path.join(f.root,'local-aec-ready.json'),'utf8'));
+  ready.nativeStartAcknowledged = false; f.write('local-aec-ready.json',Buffer.from(JSON.stringify(ready)));
+  rejected(f.analyze(),/Start-success acknowledgement/u);
+});
+test('source preceding real native Start readiness cannot pass acoustic analysis', (t) => {
+  const f = fixture(t); const ready = JSON.parse(fs.readFileSync(path.join(f.root,'local-aec-ready.json'),'utf8'));
+  ready.readyAtMs=101; f.write('local-aec-ready.json',Buffer.from(JSON.stringify(ready)));
+  rejected(f.analyze(),/source started before/u);
 });

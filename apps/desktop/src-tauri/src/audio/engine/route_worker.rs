@@ -10,6 +10,7 @@ struct RouteWorker {
     input_completion_rx: Option<mpsc::Receiver<RouteInputCompletionRequest>>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
+    native_capture_start: Option<NativeCaptureStartAck>,
     bridge_source_context: Option<BridgeSourceWorkerContext>,
 }
 
@@ -24,6 +25,7 @@ impl RouteWorker {
             self.input_completion_rx,
             self.stt_sender,
             self.init_done,
+            self.native_capture_start,
             self.bridge_source_context,
         )
     }

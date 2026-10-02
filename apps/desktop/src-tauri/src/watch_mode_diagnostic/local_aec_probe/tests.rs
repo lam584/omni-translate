@@ -234,3 +234,68 @@ fn quiet_drain_preserves_the_100ms_freshness_boundary_but_resets_above_it() {
     assert!(!drain.observe(start + Duration::from_millis(2101), &route, true, true).unwrap());
     assert_eq!(drain.resets, 1);
 }
+
+
+fn armed_snapshot() -> crate::audio::contracts::AudioRuntimeSnapshot {
+    let mut snapshot = crate::audio::contracts::AudioRuntimeSnapshot::preview();
+    snapshot.aec_backend = "webrtc-aec3".into();
+    snapshot.aec_failure_detail = None;
+    snapshot.inbound = quiet_route();
+    snapshot.inbound.requested_device_id = "render-exact".into();
+    snapshot.inbound.effective_device_id = "render-exact".into();
+    snapshot.inbound.frames_captured = 0;
+    snapshot.inbound.last_frame_at = None;
+    snapshot
+}
+
+#[test]
+fn optimistic_bound_snapshot_without_native_start_cannot_arm() {
+    let snapshot = armed_snapshot();
+    let ack = NativeCaptureStartAck::new();
+    assert!(!capture_armed(&snapshot, "render-exact", &ack, Some(&ack)).unwrap());
+    // Bridge and non-capture handles have no native Start token.
+    assert!(capture_armed(&snapshot, "render-exact", &ack, None).is_err());
+}
+
+#[test]
+fn failed_native_start_never_publishes_ack() {
+    let ack = NativeCaptureStartAck::new();
+    let failure: Result<(), &str> = Err("IAudioClient Start failed");
+    assert_eq!(ack.observe_native_start(failure), failure);
+    assert!(!ack.is_started());
+    assert!(!capture_armed(&armed_snapshot(), "render-exact", &ack, Some(&ack)).unwrap());
+}
+
+#[test]
+fn old_handle_ack_cannot_release_same_endpoint_new_owner_wait() {
+    let snapshot = armed_snapshot();
+    let old = NativeCaptureStartAck::new();
+    let current = NativeCaptureStartAck::new();
+    old.observe_native_start(Ok::<(), &str>(())).unwrap();
+    assert!(!capture_armed(&snapshot, "render-exact", &current, Some(&current)).unwrap());
+    assert!(capture_armed(&snapshot, "render-exact", &old, Some(&current)).is_err());
+    assert!(capture_armed(&snapshot, "render-exact", &current, Some(&old)).is_err());
+}
+
+#[test]
+fn native_start_success_can_arm_zero_frames_but_cannot_complete_capture_drain() {
+    let mut snapshot = armed_snapshot();
+    let ack = NativeCaptureStartAck::new();
+    let producer = ack.clone();
+    producer.observe_native_start(Ok::<(), &str>(())).unwrap();
+    for state in ["buffering", "capturing"] {
+        snapshot.inbound.capture_state = state.into();
+        assert!(capture_armed(&snapshot, "render-exact", &ack, Some(&ack)).unwrap());
+    }
+    assert_eq!(snapshot.inbound.frames_captured, 0);
+    assert!(snapshot.inbound.last_frame_at.is_none());
+    let mut drain = drain::CaptureDrain::default();
+    let now = Instant::now();
+    assert!(!drain.observe(now, &snapshot.inbound, true, true).unwrap());
+    assert!(!drain.observe(now + Duration::from_secs(3), &snapshot.inbound, true, true).unwrap());
+    snapshot.inbound.effective_device_id = "other-endpoint".into();
+    assert!(capture_armed(&snapshot, "render-exact", &ack, Some(&ack)).is_err());
+    snapshot.inbound.effective_device_id = "render-exact".into();
+    snapshot.aec_failure_detail = Some("AEC3 failed".into());
+    assert!(capture_armed(&snapshot, "render-exact", &ack, Some(&ack)).is_err());
+}

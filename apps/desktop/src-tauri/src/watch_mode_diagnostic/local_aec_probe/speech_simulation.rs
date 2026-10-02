@@ -2,6 +2,7 @@
 use super::*;
 use crate::audio::speech::{DesktopStreamingEvent, NativeDesktopStream};
 use std::cell::{Cell, RefCell};
+use crate::audio::state::NativeCaptureStartAck;
 #[path = "contract.rs"] mod contract;
 #[path = "drain.rs"] mod drain;
 #[path = "evidence.rs"] mod evidence;
@@ -12,6 +13,26 @@ use std::cell::{Cell, RefCell};
 pub(crate) use contract::SpeechSimulationRequest;
 pub(super) fn validate_schema(request: &ProbeRequest) -> Result<(), String> { contract::validate_schema(request) }
 pub(super) const CAPABILITY_ID: &str = "omni-local-aec-speech-simulation/no-provider-startup/v2/20261002";
+
+/// Armed is control-plane readiness, never evidence of captured media/quality.
+/// An optimistic snapshot or an ack from a replaced owner cannot arm this run.
+fn capture_armed(snapshot: &crate::audio::contracts::AudioRuntimeSnapshot,
+    endpoint: &str, expected: &NativeCaptureStartAck, current: Option<&NativeCaptureStartAck>) -> Result<bool, String> {
+    let current = current.ok_or("schema2 native capture owner is no longer active")?;
+    if !expected.same_owner(current) {
+        return Err("schema2 native capture owner changed while arming".into());
+    }
+    let route = &snapshot.inbound;
+    if route.last_error.is_some() || route.last_error_code.is_some()
+        || snapshot.aec_backend != "webrtc-aec3" || snapshot.aec_failure_detail.is_some() {
+        return Err("schema2 requires healthy production AEC3 capture".into());
+    }
+    if !current.is_started() || !route.stream_bound { return Ok(false); }
+    if route.effective_device_id != endpoint || route.requested_device_id != endpoint {
+        return Err("schema2 native capture endpoint mismatch".into());
+    }
+    Ok(matches!(route.capture_state.as_str(), "buffering" | "capturing"))
+}
 
 fn healthy_capture(store: &AudioStateStore, endpoint: &str) -> Result<AudioRouteRuntimeSnapshot, String> {
     let snapshot = store.snapshot();
@@ -88,10 +109,13 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
     }
     let deadline = Instant::now() + Duration::from_millis(sim.deadline_ms);
     AudioRouteSupervisor::new(app.clone(), &store).start("inbound", config, None)?;
+    let expected_owner = store.native_capture_start_ack("inbound")
+        .ok_or("schema2 requires an active native capture Start owner")?;
     loop {
         if Instant::now() >= deadline { return Err("local AEC capture readiness deadline exceeded".into()); }
-        let route = healthy_capture(&store, &request.physical_device_id)?;
-        if route.frames_captured > 0 && route.last_frame_at.is_some() { break; }
+        let current_owner = store.native_capture_start_ack("inbound");
+        if capture_armed(&store.snapshot(), &request.physical_device_id,
+            &expected_owner, current_owner.as_ref())? { break; }
         std::thread::sleep(Duration::from_millis(5));
     }
     let evidence = RefCell::new(evidence::StreamEvidence::new(&request.output_directory)?);
@@ -100,6 +124,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         "artifactKind":"watch-mode-local-aec-ready","executionId":request.execution_id,
         "physicalDeviceId":request.physical_device_id,"scope":"local-aec-speech-simulation",
         "providerCalls":0,"releaseEligible":false,"readyAtMs":ready_at_ms,
+        "readinessPhase":"native-stream-started","nativeStartAcknowledged":true,
         "capture":capture_receipt(&healthy_capture(&store, &request.physical_device_id)?, false)?}))?;
     let media_complete_flag = Cell::new(false);
     let mut events = |event: DesktopStreamingEvent<'_>| {

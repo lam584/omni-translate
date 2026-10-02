@@ -15,6 +15,7 @@ fn run_route_worker(
     input_completion_rx: Option<mpsc::Receiver<RouteInputCompletionRequest>>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
+    native_capture_start: Option<NativeCaptureStartAck>,
     bridge_source_context: Option<BridgeSourceWorkerContext>,
 ) -> Result<(), String> {
     spec.ensure_feedback_backend_available()?;
@@ -57,7 +58,8 @@ fn run_route_worker(
         );
     }
 
-    run_capture_loop(app, store, direction, spec, initialized, stop_rx, stt_sender)
+    let native_capture_start = native_capture_start.ok_or("native capture worker missing Start owner")?;
+    run_capture_loop(app, store, direction, spec, initialized, stop_rx, stt_sender, native_capture_start)
 }
 
 /// Runs the capture loop for an already-initialized WASAPI route. Shared by the
@@ -65,6 +67,21 @@ fn run_route_worker(
 /// single owner of `start_stream` plus the flow-health capture loop.
 fn capture_event_wait_required(next_packet_size: Option<u32>) -> bool {
     next_packet_size.is_none()
+}
+
+fn initialize_capture_echo_diagnostics(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    direction: &str,
+    spec: &RouteSpec,
+    effective_device_id: &str,
+) -> Result<(), String> {
+    if spec.echo_cancel_enabled() {
+        let tap_qpc = if store.aec_diagnostic_tap_enabled() { qpc_now_100ns() } else { None };
+        store.reset_echo_canceller_with_diagnostic("route-start", tap_qpc, 0)?;
+        capture_diagnostics::log_route_start(app, store, direction, effective_device_id)?;
+    }
+    Ok(())
 }
 
 fn run_capture_loop(
@@ -75,6 +92,7 @@ fn run_capture_loop(
     initialized: InitializedCaptureRoute,
     stop_rx: mpsc::Receiver<()>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
+    native_capture_start: NativeCaptureStartAck,
 ) -> Result<(), String> {
     let InitializedCaptureRoute {
         _device,
@@ -102,14 +120,10 @@ fn run_capture_loop(
     );
     emit_audio_snapshot(&app, store)?;
 
-    if spec.echo_cancel_enabled() {
-        let tap_qpc = if store.aec_diagnostic_tap_enabled() { qpc_now_100ns() } else { None };
-        store.reset_echo_canceller_with_diagnostic("route-start", tap_qpc, 0)?;
-        capture_diagnostics::log_route_start(&app, store, direction, &effective_device_id)?;
-    }
+    initialize_capture_echo_diagnostics(&app, store, direction, &spec, &effective_device_id)?;
 
     let mut echo_diagnostics = EchoCancelDiagnostics::new();
-    if let Err(error) = audio_client.start_stream().map_err_str() {
+    if let Err(error) = native_capture_start.observe_native_start(audio_client.start_stream().map_err_str()) {
         if spec.echo_cancel_enabled() {
             // The route-start reset already happened before WASAPI start. Even
             // when start fails, close that reset event stream with one native

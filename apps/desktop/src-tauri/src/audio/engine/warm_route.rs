@@ -9,6 +9,7 @@ enum WarmControl {
         spec: RouteSpec,
         stt_sender: Option<mpsc::Sender<Vec<u8>>>,
         stop_rx: mpsc::Receiver<()>,
+        native_capture_start: NativeCaptureStartAck,
     },
     /// Release the pre-opened device without ever capturing.
     Cancel,
@@ -169,14 +170,17 @@ impl CaptureRouteWarmer {
         };
 
         let (stop_tx, stop_rx) = mpsc::channel();
+        let native_capture_start = NativeCaptureStartAck::new();
         match slot.control_tx.send(WarmControl::Activate {
             spec: spec.clone(),
             stt_sender,
             stop_rx,
+            native_capture_start: native_capture_start.clone(),
         }) {
             Ok(()) => Ok(AudioRouteHandle {
                 stop_tx,
                 join_handle: slot.join_handle,
+                native_capture_start: Some(native_capture_start),
             }),
             // The warm thread exited between the readiness check and the send;
             // recover the sender from the failed message so cold start keeps STT.
@@ -278,6 +282,7 @@ fn warm_route_thread(
             spec: activate_spec,
             stt_sender,
             stop_rx,
+            native_capture_start,
         }) => {
             let store = app.state::<AudioStateStore>();
             if let Err(error) = run_capture_loop(
@@ -288,6 +293,7 @@ fn warm_route_thread(
                 initialized,
                 stop_rx,
                 stt_sender,
+                native_capture_start,
             ) {
                 let (message, error_code, recommended_action) =
                     crate::audio::omni::session_errors::split_error_markers(&error);
@@ -351,7 +357,10 @@ mod warm_route_tests {
             warmer.slots.lock().unwrap().get("inbound").is_none(),
             "activated slot must be removed from the warmer"
         );
-        let _ = result.unwrap().join_handle.join();
+        let handle = result.unwrap();
+        assert!(!handle.native_capture_start.as_ref().unwrap().is_started(),
+            "prewarm readiness and activation alone cannot acknowledge native Start");
+        let _ = handle.join_handle.join();
     }
 
     #[test]

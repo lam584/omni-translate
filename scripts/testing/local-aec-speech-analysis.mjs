@@ -235,6 +235,23 @@ function stimulusCustody(root, receipt, events, linearBytes) {
     inputFiles: [[request.renderPcmPath, sha(original), 24000 * 2 * 180], [sim.sourceWavPath, sha(wav), 64 * 1024 * 1024],
       [sim.injectorExecutable, sha(exe), 256 * 1024 * 1024]] };
 }
+function nativeStartReadiness(root, receipt, endpoint) {
+  const bytes = raw(root, 'local-aec-ready.json', MAX_TEXT); const ready = parse(bytes);
+  check(ready.schemaVersion === 2 && ready.artifactKind === 'watch-mode-local-aec-ready'
+    && ready.scope === LOCAL_AEC_SPEECH_SCOPE && ready.executionId === receipt.executionId
+    && ready.physicalDeviceId === endpoint && ready.providerCalls === 0 && ready.releaseEligible === false
+    && ready.readinessPhase === 'native-stream-started' && ready.nativeStartAcknowledged === true,
+  'current native Start-success acknowledgement missing');
+  const capture = ready.capture;
+  check(capture?.countsFinal === false && capture.effectiveDeviceId === endpoint && capture.requestedDeviceId === endpoint
+    && integer(capture.framesCaptured) && capture.lastError == null && capture.lastErrorCode == null,
+  'native Start readiness capture endpoint/state mismatch');
+  const start = receipt.sourceMediaStarted ?? receipt.sourceMediaStart;
+  check(integer(ready.readyAtMs) && integer(start?.startedAtMs) && start.startedAtMs >= ready.readyAtMs,
+  'source started before native capture Start acknowledged');
+  return { sha256: sha(bytes), readyAtMs: ready.readyAtMs, framesAtArm: capture.framesCaptured,
+    phase: ready.readinessPhase, nativeStartAcknowledged: true, qualityAcceptance: false };
+}
 function sourceTimeline(root, receipt, events, endpoint) {
   const complete = receipt.sourceMediaComplete;
   const start = receipt.sourceMediaStarted ?? receipt.sourceMediaStart
@@ -498,6 +515,8 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
   });
   if (!root || !receipt) return result;
   attempt('workspace-ownership', () => check(root.startsWith(path.resolve(options.analyzer?.workspaceRoot ?? '') + path.sep), 'run directory outside analyzer workspace'));
+  const readiness = root && attempt('native-start-readiness', () => nativeStartReadiness(root, receipt, options.expectedPhysicalDeviceId));
+  if (readiness) result.nativeStartReadiness = readiness;
   const tap = attempt('tap-seal', () => nativeTapSeal(root, receipt.tap));
   if (tap) result.tapEvidence = { complete: true, terminalSha256: tap.terminalSha256 };
   const physicalBytes = attempt('physical-seal', () => sealed(root, receipt.streamEvidence?.physical));
@@ -509,7 +528,7 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
   });
   const source = events && attempt('source-clock-seal', () => sourceTimeline(root, receipt, events, options.expectedPhysicalDeviceId));
   const stimulus = events && linearBytes && attempt('original-stimulus-custody', () => stimulusCustody(root, receipt, events, linearBytes));
-  if (!tap || !physicalBytes || !linearBytes || !events || !source || !stimulus || !executable || result.indeterminate.length) return result;
+  if (!readiness || !tap || !physicalBytes || !linearBytes || !events || !source || !stimulus || !executable || result.indeterminate.length) return result;
   const built = attempt('native-clock-reconstruction', () => reconstruct(root, receipt, options.expectedPhysicalDeviceId, {
     events, physicalBytes, linearBytes, source, diagnostic: tap.rows,
     preBytes: tap.pre, postBytes: tap.post, renderBytes: tap.render,
@@ -562,6 +581,7 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
       }
     }
     // Recheck all raw custody after metric execution; changed evidence cannot certify an older snapshot.
+    check(nativeStartReadiness(root, receipt, options.expectedPhysicalDeviceId).sha256 === readiness.sha256, 'native Start readiness changed during analysis');
     const finalTap = nativeTapSeal(root, receipt.tap);
     check(finalTap.terminalSha256 === tap.terminalSha256, 'tap terminal changed during analysis');
     sealed(root, receipt.streamEvidence.physical); sealed(root, receipt.streamEvidence.linearReference); sealed(root, receipt.streamEvidence.events, true);

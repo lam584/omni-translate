@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import {createLocalSpeechRequest,inspectSpeechOperation,parseLocalSpeechArgs,finalizeSpeechOutcome} from './run-local-aec-speech-simulation.mjs';
+import {createLocalSpeechRequest,inspectSpeechOperation,parseLocalSpeechArgs,finalizeSpeechOutcome,LOCAL_SPEECH_BUDGETS,localSpeechJobDeadline} from './run-local-aec-speech-simulation.mjs';
 import {assembleLocalSpeechFixture} from './local-aec-speech-fixture.mjs';
 import {createSpeechSynthesisPlan} from './generate-local-aec-speech-fixture.mjs';
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
@@ -70,5 +70,16 @@ test('actual Windows PowerShell 5.1 boundary restores builtin hashing under a fo
  const environment=windowsPowerShellEnvironment({...process.env,PSModulePath:'Z:\\nonexistent-ps7-modules'});
  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',"$ErrorActionPreference='Stop';(Get-FileHash -LiteralPath 'package.json' -Algorithm SHA256).Hash"],{cwd:process.cwd(),encoding:'utf8',windowsHide:true,timeout:10000,env:environment});
  assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.trim().toLowerCase(),sha(fs.readFileSync('package.json')));
- const source=fs.readFileSync(new URL('./run-local-aec-speech-simulation.mjs',import.meta.url),'utf8');assert.match(source,/timeout:195000,maxBuffer:4\*1024\*1024,env:windowsPowerShellEnvironment\(\)/u);
+ const source=fs.readFileSync(new URL('./run-local-aec-speech-simulation.mjs',import.meta.url),'utf8');assert.match(source,/timeout:LOCAL_SPEECH_BUDGETS\.outerMs,maxBuffer:4\*1024\*1024,env:windowsPowerShellEnvironment\(\)/u);
+});
+
+test("native input budget stays 180s and cleanup remains within the original 195s outer cap",()=>{
+ const now=Date.UTC(2026,9,2);
+ assert.equal(LOCAL_SPEECH_BUDGETS.inputMs,180000);
+ assert.equal(LOCAL_SPEECH_BUDGETS.outerMs,195000);
+ assert.equal(Date.parse(localSpeechJobDeadline(now))-now,190000);
+ assert.equal(LOCAL_SPEECH_BUDGETS.outerMs-LOCAL_SPEECH_BUDGETS.ownedJobMs,5000);
+ assert.equal(request().speechSimulation.deadlineMs,180000);
+ assert.equal(Object.isFrozen(LOCAL_SPEECH_BUDGETS),true);
+ for(const invalid of [-1,0.5,NaN,Infinity,8640000000000000])assert.throws(()=>localSpeechJobDeadline(invalid),/launch time/u);
 });

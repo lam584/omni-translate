@@ -654,13 +654,26 @@ mod tests {
         stream.stage.prefix_remaining=0;
         stream.submitted_frames=boundary*(before_stage as u64+1)+if before_stage==1 {3840} else {0};
         stream.queue.submitted_source_frames=boundary*(before_stage as u64+1);
-        stream.queue.accepted_source_frames=(stream.queue.submitted_source_frames+stream.queue.buffered_frames() as u64)/2;
+        stream.queue.accepted_source_frames=(stream.queue.submitted_source_frames+stream.queue.buffered_frames() as u64+1)/2;
         stream.stage.reference_frames=boundary;
         stream.stage.physical_frames=boundary+if before_stage==1 {3840} else {0};
         stream.stage.end_submit_frame=stream.submitted_frames;
         // The real boundary crosses padding=0 while the client keeps running.
         device.borrow_mut().padding=0;
         (stream,device,owner)
+    }
+    #[test]
+    fn boundary_fixture_custody_counts_the_retained_resampler_tail_sample() {
+        for previous_stage in 0..2 {
+            let (mut stream,_device,_owner)=stream_at_active_stage_boundary(previous_stage);
+            assert!(stream.queue.previous.is_some());
+            assert_eq!(stream.queue.accepted_source_frames*2,
+                stream.queue.submitted_source_frames+stream.queue.buffered_frames() as u64+1);
+            stream.queue.end().unwrap();
+            assert!(stream.queue.previous.is_none());
+            assert_eq!(stream.queue.accepted_source_frames*2,
+                stream.queue.submitted_source_frames+stream.queue.buffered_frames() as u64);
+        }
     }
     #[test]
     fn former_single_prefix_step_reproduces_boundary_underrun_with_queued_source() {

@@ -264,6 +264,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         let stopped = pump_timing::measure(&timing, pump_timing::Part::SourceCleanup, || injector.stop_and_join());
         report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
         report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
+        report["nativePumpDecisions"] = json!(stream.pump_diagnostic_receipt());
         let operation = match (outcome, stopped) {
             (Err(error), Err(cleanup)) => Err(format!("{error}; source injector cleanup: {cleanup}")),
             (Err(error), _) | (_, Err(error)) => Err(error),

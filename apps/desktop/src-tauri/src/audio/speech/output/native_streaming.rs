@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::audio::playback_ownership::{DesktopPlaybackOwnership, DesktopPlaybackPermit};
 
+#[path = "native_streaming/pump_diagnostic.rs"] mod pump_diagnostic;
+
 const STARTUP_FRAMES: usize = 48_000 * 800 / 1_000;
 const STARTUP_MAX_WAIT: Duration = Duration::from_millis(1_000);
 const MAX_BUFFERED_FRAMES: usize = 48_000 * 5;
@@ -177,6 +179,7 @@ pub(crate) struct NativeDesktopStream {
     stage: ScenarioStage,
     deferred: DeferredRenderFrames,
     underrun: RenderUnderrunTracker,
+    pump_diagnostic: Option<pump_diagnostic::PumpDiagnostic>,
 }
 
 impl NativeDesktopStream {
@@ -205,7 +208,7 @@ impl NativeDesktopStream {
             permit, cue_id: cue_id.into(), renderer_instance_id: format!("desktop-process-{}", std::process::id()),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: Some(first_audio_at),
             started: false, terminal: false, submitted_frames: 0, scenario, scenario_phase_frames: SCENARIO_PHASE_FRAMES, stage: ScenarioStage::default(),
-            deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default() };
+            deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(), pump_diagnostic: None };
         events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
             reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
                 session_id: stream.session_id, endpoint_id: &stream.endpoint_id,
@@ -228,11 +231,32 @@ impl NativeDesktopStream {
             || !(20_000..=60_000).contains(&phase_duration_ms) || phase_duration_ms % 10 != 0 {
             return Err("local AEC profile requires exclusive opt-in, unopened PCM and 20-60s aligned phases".into());
         }
+        self.pump_diagnostic = Some(pump_diagnostic::PumpDiagnostic::new());
         self.scenario = aec_live_scenario::ordered_speech_simulation_assignments();
         self.scenario_phase_frames = u64::from(phase_duration_ms) * 48;
         self.start_stage(events)
     }
 
+    pub(crate) fn pump_diagnostic_receipt(&self) -> Option<serde_json::Value> {
+        if !self.terminal { return None; }
+        self.pump_diagnostic.as_ref().map(|diagnostic| {
+            let mut receipt=diagnostic.receipt();
+            receipt["renderSessionId"]=serde_json::json!(self.session_id);
+            receipt["ownerGeneration"]=serde_json::json!(self.permit.generation());
+            receipt["endpointId"]=serde_json::json!(self.endpoint_id);
+            receipt["rendererInstanceId"]=serde_json::json!(self.renderer_instance_id);
+            receipt
+        })
+    }
+    fn observe_pump(&mut self, qpc: Option<u64>, buffer: u32, padding: Option<u32>,
+        frames: usize, decision: pump_diagnostic::Decision) {
+        if let Some(diagnostic)=self.pump_diagnostic.as_mut() {
+            diagnostic.record(pump_diagnostic::Observation { sequence:0, padding_qpc_100ns:qpc,
+                buffer_frames:buffer, padding_frames:padding, reference_buffered_frames:self.queue.buffered_frames(),
+                pending_prefix_frames:self.stage.prefix_remaining, submitted_frames:self.submitted_frames,
+                requested_frames:frames, started:self.started, ended:self.queue.ended, stage_index:self.stage.index, decision });
+        }
+    }
     pub(crate) fn can_accept(&self, source_frames: usize) -> bool { self.queue.can_accept(source_frames) }
     pub(crate) fn push_pcm(&mut self, samples: &[i16], sample_rate_hz: u32) -> Result<(), String> {
         self.permit.ensure_active()?;
@@ -295,26 +319,34 @@ impl NativeDesktopStream {
         if self.terminal { return Err("poll after native desktop terminal".into()); }
         let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
         self.permit.ensure_active()?;
+        let buffer_frames = prepared.buffer_frames();
         if !self.started && !self.queue.should_start(self.first_audio_at.map(|t| t.elapsed()).unwrap_or_default()) {
+            let qpc = self.pump_diagnostic.as_ref().and_then(|_| crate::audio::engine::aec_timing::qpc_now_100ns());
+            self.observe_pump(qpc, buffer_frames, None, 0, pump_diagnostic::Decision::StartupBuffering);
             return Ok(None);
         }
         let padding = prepared.padding()?;
+        let padding_qpc = self.pump_diagnostic.as_ref().and_then(|_| crate::audio::engine::aec_timing::qpc_now_100ns());
         let played = self.submitted_frames.saturating_sub(padding as u64);
         let mut deliberate_stage_transition = false;
         // Phase transitions are audible/drained physical boundaries, not a
         // fresh client, receipt or rewind of the cumulative submit position.
         if !self.scenario.is_empty() && self.stage.index < 2
             && self.stage.reference_frames >= self.scenario_phase_frames {
-            if played < self.stage.end_submit_frame { return Ok(None); }
+            if played < self.stage.end_submit_frame {
+                self.observe_pump(padding_qpc, buffer_frames, Some(padding), 0, pump_diagnostic::Decision::StageDraining);
+                return Ok(None);
+            }
+            self.observe_pump(padding_qpc, buffer_frames, Some(padding), 0, pump_diagnostic::Decision::StageTransition);
             self.stage_event("completed", events)?;
             self.stage.index += 1;
             self.start_stage(events)?;
             deliberate_stage_transition = true;
         }
-        let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
-        let available = prepared.buffer_frames().saturating_sub(padding) as usize;
+        let available = buffer_frames.saturating_sub(padding) as usize;
         if !self.queue.ended && !deliberate_stage_transition
             && self.underrun.observe(self.started, self.submitted_frames as usize, padding) {
+            self.observe_pump(padding_qpc, buffer_frames, Some(padding), 0, pump_diagnostic::Decision::Underrun);
             events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
                 reason: crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"), observed_at: Instant::now(),
             }))?;
@@ -324,6 +356,8 @@ impl NativeDesktopStream {
         let frames = if prefix { self.stage.prefix_remaining.min(BLOCK_FRAMES) }
             else { self.queue.buffered_frames().min(BLOCK_FRAMES) };
         if frames > 0 && available >= frames && (prefix || frames == BLOCK_FRAMES || self.queue.ended || startup_timed_out) {
+            self.observe_pump(padding_qpc, buffer_frames, Some(padding), frames, pump_diagnostic::Decision::WriteRequested);
+            let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
             let reference = if prefix { Vec::new() } else { self.queue.take_reference(frames, startup_timed_out) };
             let physical = if prefix { vec![0.0; frames * 2] } else if let Some(assignment) = self.scenario.get(self.stage.index) {
                 reference.iter().map(|s| assignment.phase.physical_sample(*s)).collect::<Vec<_>>()
@@ -342,11 +376,16 @@ impl NativeDesktopStream {
             let observed_at = Instant::now();
             let submitted_qpc_100ns = crate::audio::engine::aec_timing::qpc_now_100ns();
             let endpoint_padding_frames = prepared.padding()?;
+            let post_write_padding_qpc = self.pump_diagnostic.as_ref().and_then(|_| crate::audio::engine::aec_timing::qpc_now_100ns());
             if endpoint_padding_frames as u64 > self.submitted_frames { return Err("native desktop padding exceeds submit clock".into()); }
-            let prefill_frames = (BLOCK_FRAMES * 2).min(prepared.buffer_frames() as usize);
-            let another_block_fits = prepared.buffer_frames().saturating_sub(endpoint_padding_frames) as usize >= BLOCK_FRAMES;
+            let prefill_frames = (BLOCK_FRAMES * 2).min(buffer_frames as usize);
+            let another_block_fits = buffer_frames.saturating_sub(endpoint_padding_frames) as usize >= BLOCK_FRAMES;
             let short_ready = self.queue.buffered_frames() == 0 && (self.queue.ended || startup_timed_out);
-            if !self.started && (endpoint_padding_frames as usize >= prefill_frames || !another_block_fits || short_ready) {
+            let start_requested = !self.started && (endpoint_padding_frames as usize >= prefill_frames || !another_block_fits || short_ready);
+            self.observe_pump(post_write_padding_qpc, buffer_frames, Some(endpoint_padding_frames), frames,
+                if start_requested { pump_diagnostic::Decision::StartRequested } else { pump_diagnostic::Decision::WriteAccepted });
+            if start_requested {
+                let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
                 self.permit.submit(|| prepared.start())?;
                 let mut render = |event: SpeakerRenderEvent<'_>| events(DesktopStreamingEvent::Render(event));
                 publish_render_stream_started_and_flush(&mut self.started, self.session_id, &self.endpoint_id,
@@ -375,7 +414,13 @@ impl NativeDesktopStream {
             }
             return Ok(None);
         }
+        let decision = if self.queue.ended && self.queue.buffered_frames() == 0 {
+            if padding == 0 { pump_diagnostic::Decision::PhysicalDrained } else { pump_diagnostic::Decision::PhysicalDraining }
+        } else if frames > 0 && available < frames { pump_diagnostic::Decision::DeviceFull }
+        else { pump_diagnostic::Decision::AwaitingReferenceBlock };
+        self.observe_pump(padding_qpc, buffer_frames, Some(padding), frames, decision);
         if self.queue.ended && self.queue.buffered_frames() == 0 && padding == 0 {
+            let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
             if self.queue.submitted_source_frames != self.queue.accepted_source_frames * 2 {
                 return Err("native desktop receipt frame count does not match admitted PCM".into());
             }
@@ -503,7 +548,7 @@ mod tests {
             renderer_instance_id: "offline-renderer".into(), endpoint_id: "offline-endpoint".into(),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: None,
             started: false, terminal: false, submitted_frames: 0, scenario: Vec::new(), scenario_phase_frames: SCENARIO_PHASE_FRAMES,
-            stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(),
+            stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(), pump_diagnostic: None,
         }, device)
     }
     #[test]
@@ -543,6 +588,63 @@ mod tests {
         assert_eq!(device.borrow().writes.iter().flatten().copied().collect::<Vec<_>>(), references);
         assert!(stream.poll(&mut |_| Ok(())).is_err());
     }
+
+    #[test]
+    fn opt_in_pump_observation_matches_padding_and_keeps_fault_before_failed_callback() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream, device)=fake_stream(&owner);
+        assert!(stream.pump_diagnostic_receipt().is_none());
+        stream.pump_diagnostic=Some(pump_diagnostic::PumpDiagnostic::new());
+        stream.push_pcm(&vec![10_000;19_200],24_000).unwrap();
+        stream.poll(&mut |_|Ok(())).unwrap();
+        stream.poll(&mut |_|Ok(())).unwrap();
+        let receipt=stream.pump_diagnostic.as_ref().unwrap().receipt();
+        let rows=receipt["recentObservations"].as_array().unwrap();
+        assert_eq!(rows[0]["paddingFrames"],0); assert_eq!(rows[1]["paddingFrames"],480);
+        assert_eq!(rows[1]["decision"],"write-accepted");
+        assert_eq!(rows[2]["paddingFrames"],480); assert_eq!(rows[3]["paddingFrames"],960);
+        assert_eq!(rows[3]["decision"],"start-requested");
+        assert_eq!(rows[4]["decision"],"device-full"); assert_eq!(rows[4]["paddingFrames"],960);
+        assert_eq!(rows[4]["bufferFrames"],960); assert!(rows[4]["referenceBufferedFrames"].as_u64().unwrap()>480);
+        assert!(stream.pump_diagnostic_receipt().is_none());
+        device.borrow_mut().padding=0;
+        let error=stream.poll(&mut |event| {
+            if matches!(event,DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason:crate::audio::state::EchoRenderBoundary::DeviceFault(_),.. })) {Err("keep failing".into())} else {Ok(())}
+        }).unwrap_err();
+        assert_eq!(error,"keep failing");
+        let receipt=stream.pump_diagnostic.as_ref().unwrap().receipt(); let last=receipt["recentObservations"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["decision"],"underrun"); assert_eq!(last["paddingFrames"],0);
+        assert!(last["referenceBufferedFrames"].as_u64().unwrap()>480);
+        assert!(!receipt["qualityAcceptance"].as_bool().unwrap()); assert_eq!(device.borrow().writes.len(),2);
+        stream.abort(&mut |_|Ok(())).unwrap();
+        assert!(stream.pump_diagnostic_receipt().is_some());
+    }
+    #[test]
+    fn drained_stage_padding_survives_a_rejected_boundary_callback() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.pump_diagnostic=Some(pump_diagnostic::PumpDiagnostic::new());
+        stream.scenario=aec_live_scenario::ordered_speech_simulation_assignments();
+        stream.started=true; stream.submitted_frames=480;
+        stream.stage.reference_frames=stream.scenario_phase_frames; stream.stage.end_submit_frame=480;
+        device.borrow_mut().padding=0;
+        let error=stream.poll(&mut |event| {
+            if matches!(event,DesktopStreamingEvent::Render(SpeakerRenderEvent::AecLiveScenarioStage {status:"completed",..})) {
+                Err("boundary rejected".into())
+            } else {Ok(())}
+        }).unwrap_err();
+        assert_eq!(error,"boundary rejected");
+        let receipt=stream.pump_diagnostic.as_ref().unwrap().receipt();
+        let row=receipt["recentObservations"].as_array().unwrap().last().unwrap();
+        assert_eq!(row["decision"],"stage-transition"); assert_eq!(row["paddingFrames"],0);
+        assert_eq!(row["stageIndex"],0); assert_eq!(device.borrow().writes.len(),0);
+    }
+    #[test]
+    fn regular_pump_keeps_diagnostic_off_without_changing_submissions() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream, device)=fake_stream(&owner);
+        stream.push_pcm(&vec![100;19_200],24_000).unwrap();stream.poll(&mut |_|Ok(())).unwrap();
+        assert!(stream.pump_diagnostic_receipt().is_none());assert_eq!(device.borrow().writes.len(),2);
+    }
+
     #[test]
     fn startup_prefills_two_real_blocks_before_stream_started_callback() {
         let owner = DesktopPlaybackOwnership::default();

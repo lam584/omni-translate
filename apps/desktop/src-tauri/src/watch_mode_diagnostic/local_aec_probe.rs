@@ -11,6 +11,8 @@ use tauri::Manager;
 use crate::audio::{contracts::AudioRouteRuntimeSnapshot, engine::AudioRouteSupervisor,
     speech::{play_to_speaker, SpeakerPlaybackReceipt, SpeakerRenderEvent}, state::{AudioStateStore, EchoRenderBoundary}};
 
+mod speech_simulation;
+
 const REQUEST_ENV: &str = "OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST";
 const TAP_ENV: &str = "OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY";
 const MAX_PCM_BYTES: u64 = 16_000 * 2 * 180;
@@ -33,6 +35,8 @@ struct ProbeRequest {
     render_pcm_path: PathBuf,
     render_pcm_sha256: String,
     physical_device_id: String,
+    #[serde(default)]
+    speech_simulation: Option<speech_simulation::SpeechSimulationRequest>,
 }
 
 pub(crate) fn enabled() -> bool {
@@ -110,7 +114,7 @@ fn validate_request(request: &ProbeRequest, tap_directory: &std::path::Path) -> 
     let id = request.execution_id.strip_prefix("local-aec-")
         .ok_or("local AEC execution ID must use local-aec-<uuid>")?;
     uuid::Uuid::parse_str(id).map_err(|error| error.to_string())?;
-    if request.schema_version != 1 || !request.output_directory.is_absolute()
+    if !matches!(request.schema_version, 1 | 2) || !request.output_directory.is_absolute()
         || !request.render_pcm_path.is_absolute()
         || request.output_directory.file_name().and_then(|name| name.to_str()) != Some(&request.execution_id)
         || !exact_render_endpoint(&request.physical_device_id)
@@ -119,6 +123,7 @@ fn validate_request(request: &ProbeRequest, tap_directory: &std::path::Path) -> 
     {
         return Err("invalid local AEC request identity, paths, device, or PCM hash".to_string());
     }
+    speech_simulation::validate_schema(request)?;
     let output = fs::canonicalize(&request.output_directory).map_err(|error| error.to_string())?;
     let tap = fs::canonicalize(tap_directory).map_err(|error| error.to_string())?;
     if output != tap { return Err("local AEC output must match the explicitly enabled tap directory".to_string()); }
@@ -201,6 +206,7 @@ fn joined_capture_snapshot(store: &AudioStateStore, joined: bool) -> AudioRouteR
 }
 
 fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut Value) -> Result<(), String> {
+    if request.schema_version == 2 { return speech_simulation::run(app, request, report); }
     let store = app.state::<AudioStateStore>();
     if !store.aec_diagnostic_tap_enabled() { return Err("AEC diagnostic tap is not accepting events".into()); }
     let samples = read_pcm(request)?;
@@ -293,6 +299,13 @@ fn execute(app: &tauri::AppHandle, ready: bool) -> Result<bool, String> {
         let bytes = read_bounded(Path::new(&request_path), MAX_REQUEST_BYTES)?;
         let request: ProbeRequest = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         report["executionId"] = json!(request.execution_id);
+        report["schemaVersion"] = json!(request.schema_version);
+        if request.schema_version == 2 {
+            report["scope"] = json!("local-aec-speech-simulation");
+            report["stimulusPreambleFrames"] = json!(0);
+            report["stimulusSampleRateHz"] = json!(24_000);
+            report["speechSimulationCapabilityId"] = json!(speech_simulation::CAPABILITY_ID);
+        }
         report["sourcePcmSha256"] = json!(request.render_pcm_sha256);
         let tap = tap_directory.as_deref().ok_or("AEC tap directory is required")?;
         validate_request(&request, tap)?;
@@ -408,7 +421,7 @@ mod tests {
         fs::write(&pcm,bytes).unwrap();
         let mut request = ProbeRequest {schema_version:1, execution_id:root.file_name().unwrap().to_str().unwrap().to_string(),
             output_directory:root.clone(),render_pcm_path:pcm,render_pcm_sha256:format!("{:x}",Sha256::digest(bytes)),
-            physical_device_id:"{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}".to_string()};
+            physical_device_id:"{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}".to_string(),speech_simulation:None};
         validate_request(&request,&root).unwrap();
         let samples = read_pcm(&request).unwrap();
         assert_eq!(samples.len(),16_002);
@@ -552,7 +565,7 @@ mod tests {
         let request = ProbeRequest {
             schema_version: 1, execution_id: "local-aec-12345678-1234-1234-1234-123456789abc".into(),
             output_directory: PathBuf::from("C:/unused"), render_pcm_path: PathBuf::from("C:/unused/input.pcm"),
-            render_pcm_sha256: "0".repeat(64), physical_device_id: endpoint.into(),
+            render_pcm_sha256: "0".repeat(64), physical_device_id: endpoint.into(), speech_simulation: None,
         };
         let config = production_config(&request);
         assert_eq!(config["providers"], json!([]));

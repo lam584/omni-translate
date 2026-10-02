@@ -1,0 +1,55 @@
+# Native schema2 contract: self-spawn injector (2026-10-02)
+
+Frozen minimal request; reject unknown fields. Existing exclusive OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST points to request JSON; OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY equals outputDirectory. No paid/live scenario env.
+
+{
+  "schemaVersion": 2,
+  "executionId": "local-aec-<uuid>",
+  "outputDirectory": "<absolute directory, basename=executionId, same as TAP>",
+  "physicalDeviceId": "<real render endpoint>",
+  "renderPcmPath": "<merged NEW API Chinese s16le/24000Hz/mono PCM absolute path>",
+  "renderPcmSha256": "<lowercase SHA256>",
+  "speechSimulation": {
+    "injectorExecutable": "<absolute omni-watch-media-injector.exe>",
+    "injectorExecutableSha256": "<lowercase SHA256>",
+    "sourceWavPath": "<absolute original 125.815s English WAV>",
+    "sourceWavSha256": "<lowercase SHA256>",
+    "chunkFrames": 2400,
+    "chunkIntervalMs": 100,
+    "stageDurationMs": 40000,
+    "deadlineMs": 180000,
+    "tailStartFrame": 480000
+  }
+}
+
+## Ownership and readiness
+
+Main creates the API ledger, 6 NEW API Chinese fixtures and a single merged 24k mono s16le file; pad final source to 2400-frame alignment and provide last-section source-frame offset as tailStartFrame (2400 aligned). Main hash-pins every input/binary and launches ONLY native with existing JobObject custody. Native makes zero Provider calls, never reads saved Provider config, never does local TTS.
+
+Native starts real production AEC3 capture and checks same endpoint/frames, then writes local-aec-ready.json (observation only, NOT launcher handshake). Native holds read-only, no-write/no-delete file handles on verified source WAV and executable and directly spawns exact injector as a child, with credential-free env and no shell/breakaway. Existing parent JobObject owns descendants. Native collects exit status/stdout receipt/stderr; native alone writes media-complete.marker after successful hash/identity/endpoint/QPC receipt validation. Main MUST NOT pre-create ready/start/complete markers or source receipt, or independently launch another injector.
+
+Native continuously pumps NativeDesktopStream. First 2 stages each stageDurationMs real reference frames; third uses all remaining original PCM. At tailStartFrame native waits for verified injector completion, submitting explicit recorded zero-PCM deltas on SAME stream/client during the wait (separately counted physical/reference silence, not repeated Chinese). Final section then plays. At least 48000 voiced physical frames AFTER validated media completion required. No paid/live env or weaker exclusive guard.
+
+## Outputs
+
+- local-aec-ready.json (schemaVersion=2, executionId, physicalDeviceId, scope, readyAtMs, real capture snapshot)
+- local-aec-source-media-receipt.json (actual injector stdout bytes)
+- local-aec-source-media-stderr.log
+- local-aec-source-media-48k-mono.f32le and its injector source-clock sidecar
+- media-complete.marker (native JSON executionId/sourceMediaReceiptSha256)
+- local-aec-probe-result.json (schemaVersion=2, artifactKind=watch-mode-local-aec-probe, scope=local-aec-speech-simulation, providerCalls=0, releaseEligible=false, recognitionSenderAttached=false)
+- local-aec-stream-events.jsonl, local-aec-physical-48k-stereo.f32le, local-aec-linear-reference-48k-stereo.f32le; existing AEC tap/closed-loop sidecars remain
+
+All original Chinese PCM consumed once (no truncation/replay). stageDurationMs range20000..60000,10ms-aligned; deadlineMs30000..180000 and >=original duration+10000ms; original PCM<=180s,>=3*stageDurationMs,2400-frame aligned and non-silent phase regions. tailStartFrame OPTIONAL, >=stageDurationMs*48 and >=24000 original frames remain. Enable it for final API section after125.815s English. Capture stays open until native stream padding drain AND 2 seconds fresh advancing silent capture; activity resets, deadlines only FAIL. This is local speech simulation, NOT real translation LLM lifecycle/release acceptance. API fixture generation usage is accounted separately by main, not hidden as translation Provider calls.
+
+## Frozen result sourceInjector object
+
+Always present after valid PCM load, also on runtime failure: {spawnedByNative:true, spawned:boolean, processId:number|null, injectorExecutable:path, injectorExecutableSha256:hash, sourceWavPath:path, sourceWavSha256:hash, receiptPath:path, stderrPath:path, sourcePcmPath:path, startedAtMs:number|null, exitCode:number|null, receiptSha256:hash|null, receipt:actualInjectorJson|null, sourcePcmSha256:hash|null, sourcePcmBytes:number|null, cleanupError:string|null, providerCalls:0}. The root also retains sourceMediaStarted/sourceMediaComplete for lifecycle timing. On prevalidation failure sourceInjector can be absent; never synthesize a success receipt. Deadline MAX180000ms.
+
+## Analyzer clock binding
+
+Native seals existing injector file aec-source-playback-clock.jsonl (actual IAudioClock, schemaVersion1). sourceMediaComplete.sourceClockMetadataPath and sourceMediaComplete.sourceClockSha256 bind exact original bytes; sourceMediaComplete.sourceClockEnd contains original terminal clock record and proves clockPosition/frequency*48000 >= full original source PCM frames, submittedFrames exactly full original source span, paddingFrames=0. No wall clock used as acoustic origin; native preserves existing <=1ms drift limit and rejects missing/uncrossed clock evidence. Raw injector receipt remains unmodified and exact hash-bound. sourceMediaStart is the same native-bound executionId/physicalDeviceId/processId/startedAtMs/spawnedByNative object; sealed journal also has source-media-started.boundStart. sourceInjector supplements sourceClockMetadataPath/sourceClockMetadataSha256; no paid provider events are emitted.
+
+Source PCM correction from injector actual implementation: mono F32LE, not s16le. sourceMediaComplete.sourcePcmFormat=f32le/sourcePcmSampleRateHz=48000/sourcePcmChannelCount=1/sourcePcmFrames. Source frame count is receipt.renderedFrames + receipt.postrollSilenceFrames (CLI default postroll0), byteCount=frames*4; clock endpoint uses this COMPLETE span. Existing sourcePCM byte hash binds the exact device-source fixture; no decoding substitutions.
+
+Launcher compatibility: sourceMediaComplete also copies passed/endpointId/processId from the actual nested receipt (same values, NOT independent authority); sourceClock/source PCM fields remain sealed at sourceMediaComplete root.

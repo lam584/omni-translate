@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
+import { discoverRustSources } from './rust-source-discovery.mjs';
 import ts from 'typescript';
 
 const root = process.cwd();
@@ -144,39 +145,6 @@ function typescriptSyntaxFacts(path, text) {
   return { imports, invokeCalls, tauriProbeCalls, modelKeywordChecks };
 }
 
-function rustOwnerCandidates(path) {
-  const directory = dirname(path);
-  if (basename(path) === 'mod.rs') {
-    const parent = dirname(directory);
-    return [join(parent, 'mod.rs'), `${parent}.rs`];
-  }
-  return [join(directory, 'mod.rs'), `${directory}.rs`];
-}
-
-function rustSourceIsWired(path) {
-  const normalized = relative(root, path).replace(/\\/g, '/');
-  const file = basename(path);
-  if (file === 'main.rs' || file === 'lib.rs' || file === 'build.rs' || normalized.includes('/bin/')) {
-    return true;
-  }
-
-  const moduleName = file === 'mod.rs' ? basename(dirname(path)) : basename(path, extname(path));
-  const crateEntrypoints = rustRoots.flatMap((directory) => [
-    join(root, directory, 'main.rs'),
-    join(root, directory, 'lib.rs'),
-  ]);
-  return [...rustOwnerCandidates(path), ...crateEntrypoints].some((owner) => {
-    try {
-      const ownerText = readFileSync(owner, 'utf8');
-      const modulePattern = new RegExp(`(?:^|\\n)\\s*(?:pub(?:\\([^)]*\\))?\\s+)?mod\\s+${moduleName}\\s*;`);
-      const includePattern = new RegExp(`include!\\(\\s*["'][^"']*${file.replace('.', '\\.')}["']\\s*\\)`);
-      return modulePattern.test(ownerText) || includePattern.test(ownerText);
-    } catch {
-      return false;
-    }
-  });
-}
-
 function functionSpans(path) {
   const lines = readFileSync(path, 'utf8').split(/\r?\n/);
   const spans = [];
@@ -209,6 +177,15 @@ const rustRoots = [
   'crates/omni-bridge-protocol/src',
   'crates/omni-logging/src',
 ];
+const rustEntrypoints = rustRoots.flatMap((directory) => {
+  const files = walk(join(root, directory), (path) => path.endsWith('.rs'));
+  return files.filter((path) => {
+    const source = relative(join(root, directory), path).replace(/\\/g, '/');
+    return ['main.rs', 'lib.rs', 'build.rs'].includes(source)
+      || /^bin\/(?:[^/]+\.rs|[^/]+\/main\.rs)$/.test(source);
+  });
+});
+const wiredRustSources = discoverRustSources({ entrypoints: rustEntrypoints });
 for (const directory of rustRoots) {
   for (const path of walk(join(root, directory), (path) => /\.(?:rs|inc)$/.test(path))) {
     const count = productionLines(path);
@@ -218,7 +195,7 @@ for (const directory of rustRoots) {
         violations.push(`Rust function >300 lines: ${relative(root, path)}::${span.name} (${span.lines})`);
       }
     }
-    if (path.endsWith('.rs') && !rustSourceIsWired(path)) {
+    if (path.endsWith('.rs') && !wiredRustSources.has(path)) {
       violations.push(`Unwired Rust source: ${relative(root, path)}`);
     }
     const rel = relative(root, path).replace(/\\/g, '/');

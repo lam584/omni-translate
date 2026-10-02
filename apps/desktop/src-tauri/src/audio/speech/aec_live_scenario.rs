@@ -41,7 +41,7 @@ impl AecLiveScenarioPhase {
         }
     }
 
-    fn physical_sample(self, sample: f32) -> f32 {
+    pub(super) fn physical_sample(self, sample: f32) -> f32 {
         if self != Self::Nonlinear {
             return sample;
         }
@@ -57,6 +57,13 @@ impl AecLiveScenarioPhase {
 pub(super) struct AecLiveScenarioAssignment {
     pub(super) ordinal: u64,
     pub(super) phase: AecLiveScenarioPhase,
+}
+
+/// The same ordered profile for a Provider-free, explicitly opted-in local stream.
+pub(super) fn ordered_speech_simulation_assignments() -> Vec<AecLiveScenarioAssignment> {
+    (1..=3).map(|ordinal| AecLiveScenarioAssignment {
+        ordinal, phase: AecLiveScenarioPhase::for_ordinal(ordinal),
+    }).collect()
 }
 
 #[derive(Default)]

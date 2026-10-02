@@ -173,6 +173,7 @@ pub(crate) struct NativeDesktopStream {
     terminal: bool,
     submitted_frames: u64,
     scenario: Vec<aec_live_scenario::AecLiveScenarioAssignment>,
+    scenario_phase_frames: u64,
     stage: ScenarioStage,
     deferred: DeferredRenderFrames,
     underrun: RenderUnderrunTracker,
@@ -203,7 +204,7 @@ impl NativeDesktopStream {
         let mut stream = Self { endpoint_id: prepared.endpoint_id.clone(), prepared: Some(Box::new(prepared)),
             permit, cue_id: cue_id.into(), renderer_instance_id: format!("desktop-process-{}", std::process::id()),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: Some(first_audio_at),
-            started: false, terminal: false, submitted_frames: 0, scenario, stage: ScenarioStage::default(),
+            started: false, terminal: false, submitted_frames: 0, scenario, scenario_phase_frames: SCENARIO_PHASE_FRAMES, stage: ScenarioStage::default(),
             deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default() };
         events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
             reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
@@ -214,6 +215,22 @@ impl NativeDesktopStream {
         events(DesktopStreamingEvent::Activity(DesktopStreamActivity::Opened))?;
         if !stream.scenario.is_empty() { stream.start_stage(events)?; }
         Ok(stream)
+    }
+
+    /// Explicit local diagnostic profile. It cannot enable normal/paid startup or
+    /// bypass Provider guards; the caller uses the exclusive local request entry.
+    /// Configure before the first delta, on the same client and owner permit.
+    pub(crate) fn configure_local_aec_speech_simulation<F>(&mut self, phase_duration_ms: u32,
+        events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        if !crate::watch_mode_diagnostic::local_aec_probe::enabled()
+            || self.started || self.terminal || self.queue.ended || self.queue.accepted_source_frames != 0 || !self.scenario.is_empty()
+            || !(20_000..=60_000).contains(&phase_duration_ms) || phase_duration_ms % 10 != 0 {
+            return Err("local AEC profile requires exclusive opt-in, unopened PCM and 20-60s aligned phases".into());
+        }
+        self.scenario = aec_live_scenario::ordered_speech_simulation_assignments();
+        self.scenario_phase_frames = u64::from(phase_duration_ms) * 48;
+        self.start_stage(events)
     }
 
     pub(crate) fn can_accept(&self, source_frames: usize) -> bool { self.queue.can_accept(source_frames) }
@@ -273,7 +290,7 @@ impl NativeDesktopStream {
         // Phase transitions are audible/drained physical boundaries, not a
         // fresh client, receipt or rewind of the cumulative submit position.
         if !self.scenario.is_empty() && self.stage.index < 2
-            && self.stage.reference_frames >= SCENARIO_PHASE_FRAMES {
+            && self.stage.reference_frames >= self.scenario_phase_frames {
             if played < self.stage.end_submit_frame { return Ok(None); }
             self.stage_event("completed", events)?;
             self.stage.index += 1;
@@ -294,11 +311,8 @@ impl NativeDesktopStream {
             else { self.queue.buffered_frames().min(BLOCK_FRAMES) };
         if frames > 0 && available >= frames && (prefix || frames == BLOCK_FRAMES || self.queue.ended || startup_timed_out) {
             let reference = if prefix { Vec::new() } else { self.queue.take_reference(frames, startup_timed_out) };
-            let physical = if prefix { vec![0.0; frames * 2] } else if !self.scenario.is_empty() && self.stage.index == 2 {
-                reference.iter().map(|s| {
-                    let driven = s.clamp(-1.0, 1.0) * 2.4;
-                    ((driven / (1.0 + driven.abs())) * 1.35).clamp(-0.92, 0.92)
-                }).collect::<Vec<_>>()
+            let physical = if prefix { vec![0.0; frames * 2] } else if let Some(assignment) = self.scenario.get(self.stage.index) {
+                reference.iter().map(|s| assignment.phase.physical_sample(*s)).collect::<Vec<_>>()
             } else { reference.clone() };
             let bytes = f32_samples_to_le_bytes(&physical);
             self.permit.submit(|| prepared.write(frames, &bytes))?;
@@ -471,7 +485,7 @@ mod tests {
             permit: owner.acquire("cue-offline", "native-stream-offline").unwrap(), cue_id: "cue-offline".into(),
             renderer_instance_id: "offline-renderer".into(), endpoint_id: "offline-endpoint".into(),
             session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: None,
-            started: false, terminal: false, submitted_frames: 0, scenario: Vec::new(),
+            started: false, terminal: false, submitted_frames: 0, scenario: Vec::new(), scenario_phase_frames: SCENARIO_PHASE_FRAMES,
             stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(),
         }, device)
     }
@@ -579,6 +593,71 @@ mod tests {
         assert_eq!(completed[0].3,0); assert_eq!(completed[1].3,0); assert!(completed[2].3>0);
         assert_eq!(completed.iter().map(|s|s.1).sum::<u64>(),144_000);
         assert_eq!(completed.iter().map(|s|s.2).sum::<u64>(),155_520);
+    }
+
+    #[test]
+    fn local_twenty_second_phases_use_production_pump_and_transform_in_one_client() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.scenario=aec_live_scenario::ordered_speech_simulation_assignments();
+        stream.scenario_phase_frames=48_000*20;
+        let source=vec![10_000_i16;24_000*60];
+        let mut cursor=0; let mut ended=false; let mut phases=Vec::new();
+        let mut reference=Vec::new(); let mut physical=Vec::new(); let mut nonempty=0;
+        let mut callback=|event:DesktopStreamingEvent<'_>| {
+            match event {
+                DesktopStreamingEvent::Tap(tap)=>{
+                    reference.extend_from_slice(tap.reference_samples); physical.extend_from_slice(tap.physical_samples);
+                    if !tap.reference_samples.is_empty() { nonempty+=1; }
+                }
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::AecLiveScenarioStage {status:"completed",ordinal,
+                    delay_ms,reference_frames,physical_frames,changed_samples,..})=>{
+                    phases.push((ordinal,delay_ms,reference_frames,physical_frames,changed_samples));
+                }
+                _=>{}
+            } Ok(())
+        };
+        stream.start_stage(&mut callback).unwrap();
+        let receipt=loop {
+            if !ended && stream.can_accept(2400) {
+                stream.push_pcm(&source[cursor..cursor+2400],24_000).unwrap(); cursor+=2400;
+                if cursor==source.len() { stream.end(&mut callback).unwrap(); ended=true; }
+            }
+            device.borrow_mut().padding=0;
+            if let Some(receipt)=stream.poll(&mut callback).unwrap(){break receipt;}
+        };
+        drop(callback);
+        assert_eq!(cursor,source.len()); assert_eq!(device.borrow().starts,1); assert_eq!(device.borrow().stops,1);
+        assert_eq!(receipt.rendered_frames,48_000*60);
+        assert_eq!(reference,speaker_pcm_48k_stereo(&source,24_000,1,100));
+        assert_eq!(physical.len()/2,48_000*60+3840+7680);
+        assert_eq!(phases.len(),3); assert_eq!(nonempty,6000);
+        for (index,(ordinal,delay,reference_frames,physical_frames,changed)) in phases.iter().enumerate() {
+            assert_eq!(*ordinal,index as u64+1); assert_eq!(*delay,index as u32*80);
+            assert_eq!(*reference_frames,48_000*20); assert_eq!(*physical_frames,*reference_frames+u64::from(*delay)*48);
+            if index<2 {assert_eq!(*changed,0);} else {assert_eq!(*changed,*reference_frames*2);}
+        }
+        let second_start=48_000*20*2;
+        assert!(physical[second_start..second_start+3840*2].iter().all(|s|*s==0.0));
+        let third_start=48_000*40*2+3840*2;
+        assert!(physical[third_start..third_start+7680*2].iter().all(|s|*s==0.0));
+        let reference_third=reference[48_000*40*2];
+        assert_eq!(physical[third_start+7680*2],aec_live_scenario::AecLiveScenarioPhase::Nonlinear.physical_sample(reference_third));
+        assert_ne!(physical[third_start+7680*2],reference_third);
+    }
+
+    #[test]
+    fn local_profile_entry_preserves_exclusive_guard_and_rejects_short_or_late_configuration() {
+        crate::watch_mode_diagnostic::local_aec_probe::test_provider_entry_opt_ins(
+            "audio::speech::native_streaming::tests::local_profile_entry_preserves_exclusive_guard_and_rejects_short_or_late_configuration",
+            |enabled| {
+                let owner=DesktopPlaybackOwnership::default(); let (mut stream,_)=fake_stream(&owner);
+                assert!(stream.configure_local_aec_speech_simulation(800,&mut |_|Ok(())).is_err());
+                let configured=stream.configure_local_aec_speech_simulation(20_000,&mut |_|Ok(()));
+                assert_eq!(configured.is_ok(),enabled);
+                if enabled { assert_eq!(stream.scenario_phase_frames,960_000); assert_eq!(stream.scenario.len(),3); }
+                stream.push_pcm(&[10_000],24_000).unwrap();
+                assert!(stream.configure_local_aec_speech_simulation(20_000,&mut |_|Ok(())).is_err());
+            });
     }
 
 }

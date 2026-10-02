@@ -29,6 +29,13 @@ export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(['scripts/testing/ru
   'apps/desktop/src-tauri/src/audio/engine/workers.rs',
   'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain.rs',
   'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_tests.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_observation.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/failure_scope.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/failure_scope_tests.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/injector.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/injector_collection_tests.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/owned_collection.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_failure_tests.rs',
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/SCHEMA2-CONTRACT.md',
   'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/tests.rs',
   'apps/desktop/src-tauri/src/audio/playback_ownership.rs',
@@ -111,6 +118,9 @@ export function inspectSpeechOperation(probe, request) {
  check(probe.scope==='local-aec-speech-simulation','not speech simulation scope');
  check(probe.providerCalls===0&&probe.recognitionSenderAttached===false&&probe.releaseEligible===false,'no-provider diagnostic boundary');
  check(probe.status==='completed','native operation failed');
+ // Pre-cleanup failure evidence cannot authorize completion, even with forged success.
+ check(probe.captureDrainFailureObservation===undefined||probe.captureDrainFailureObservation===null,
+  'retained capture drain failure observation');
  check(probe.capture?.effectiveDeviceId===request.physicalDeviceId&&probe.render?.effectiveDeviceId===request.physicalDeviceId,'actual endpoint identity');
  check(probe.capture?.countsFinal===true&&probe.capture?.framesCaptured>0&&!probe.capture?.lastError&&!probe.capture?.lastErrorCode,'final joined capture');
  check(validCaptureDrain(probe.captureDrain,probe.capture?.framesCaptured),'capture did not stay open through versioned native drain');

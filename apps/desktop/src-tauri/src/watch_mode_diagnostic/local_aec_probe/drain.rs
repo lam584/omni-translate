@@ -25,6 +25,8 @@ pub(super) struct CaptureDrain {
     native_receipt: Option<NativeHealthReceipt>,
     capture_owner_id: Option<u64>,
     failure: Option<String>,
+    last_rejection: Option<observation::DrainRejection>,
+    latest_consumer_gap: Option<Duration>,
     pub(super) resets: u64,
 }
 #[derive(Clone, Copy, serde::Serialize)]
@@ -73,6 +75,10 @@ struct CaptureDrainReceipt<'a> {
     deadline_is_failure_only: bool,
     native_health: &'a Option<NativeHealthReceipt>,
 }
+#[path = "drain_observation.rs"]
+mod observation;
+pub(super) use observation::FailureContext;
+
 fn ceil_millis(duration: Duration) -> u64 { duration.as_nanos().div_ceil(1_000_000) as u64 }
 impl CaptureDrain {
     fn reset_idle(&mut self) {
@@ -93,14 +99,20 @@ impl CaptureDrain {
     fn observe_owned_inner(&mut self, clock: impl FnOnce() -> Instant, route: &AudioRouteRuntimeSnapshot,
         media_complete: bool, stream_drained: bool, expected: &NativeCaptureStartAck,
         current: Option<&NativeCaptureStartAck>) -> Result<bool, String> {
+        use observation::DrainRejection as Rejection;
         // StopRequested/Paused controls cannot be bypassed by the in-flight
         // fast path while the native producer hasn't reached terminal yet.
         if route.last_error.is_some() || route.last_error_code.is_some() || !route.stream_bound
             || !matches!(route.capture_state.as_str(), "capturing" | "buffering") {
+            self.last_rejection = Some(Rejection::RouteClosedOrFailed);
             return Err("local AEC capture closed, paused, stopping or failed before drain".into());
         }
-        let current = current.ok_or("local AEC native capture owner is no longer current")?;
+        let current = current.ok_or_else(|| {
+            self.last_rejection = Some(Rejection::OwnerMissing);
+            "local AEC native capture owner is no longer current"
+        })?;
         if !expected.same_owner(current) {
+            self.last_rejection = Some(Rejection::OwnerReplaced);
             return Err("local AEC native capture owner changed during drain".into());
         }
         let health = current.health();
@@ -108,12 +120,14 @@ impl CaptureDrain {
         // real publication must not look future-dated and restart quiet.
         let now = clock();
         if health.terminal || health.fault.is_some() {
+            self.last_rejection = Some(Rejection::NativeTerminalOrFault);
             return Err(format!("local AEC native capture terminal/fault during drain: {:?}", health.fault));
         }
         let segment_changed = route.segment_count != self.previous_segments
             || route.frames_captured < self.previous_frames;
         if segment_changed { self.reset_idle(); }
         let consumer_gap = self.last_observation.map(|old| now.saturating_duration_since(old));
+        self.latest_consumer_gap = consumer_gap;
         let activity = (health.raw_activity_generation, health.progress_epoch,
             health.quiescence_epoch, health.aec_reset_generation);
         if self.native_activity.is_some_and(|old| old != activity) {
@@ -142,6 +156,7 @@ impl CaptureDrain {
                 self.maximum_consumer_gap = self.maximum_consumer_gap.max(consumer_gap.unwrap_or_default());
             }
             self.last_observation = Some(now);
+            self.last_rejection = Some(Rejection::NativeWorkPending);
             return Ok(false);
         }
         let previous_quiet_since = self.quiet_since;
@@ -155,6 +170,7 @@ impl CaptureDrain {
             && health.captured_frames == health.dispatch_completed_frames
             && health.dispatch_completed_frames == route.frames_captured;
         if !drained_native {
+            self.last_rejection = Some(Rejection::NativeNotDrained);
             if self.quiet_since.take().is_some() { self.resets += 1; }
             self.reset_idle(); self.previous_query = health.successful_queries;
             return Ok(false);
@@ -181,11 +197,12 @@ impl CaptureDrain {
                 && health.residual_bytes == 0 && route.vad_state == "silence"
                 && route.active_segment_id.is_none() && route.last_frame_at.is_some()
                 && route.last_energy_db.is_finite() && route.last_energy_db <= -60.0;
-            if !quiet { self.reset_idle(); self.previous_query = health.successful_queries; return Ok(false); }
+            if !quiet { self.reset_idle(); self.previous_query = health.successful_queries;
+                self.last_rejection = Some(Rejection::IdleNotQuiet); return Ok(false); }
             // Re-reading one frozen snapshot is not a new successful poll.
             let new_query = health.successful_queries > self.previous_query;
             self.previous_query = health.successful_queries;
-            if !new_query { return Ok(false); }
+            if !new_query { self.last_rejection = Some(Rejection::NoNewNativeQuery); return Ok(false); }
             let since = *self.idle_since.get_or_insert_with(|| {
                 self.idle_epoch = Some(health.empty_epoch);
                 self.idle_start_query = health.successful_queries;
@@ -196,6 +213,7 @@ impl CaptureDrain {
             if continuous { self.maximum_consumer_gap = self.maximum_consumer_gap.max(consumer_gap.unwrap_or_default()); }
             if now.saturating_duration_since(since) < Duration::from_secs(2)
                 || health.empty_since.is_none_or(|at| now.saturating_duration_since(at) < Duration::from_secs(2)) {
+                self.last_rejection = Some(Rejection::QuietWindowIncomplete);
                 return Ok(false);
             }
             self.completion_mode = Some(CompletionMode::NativeEmptyPolls);
@@ -215,6 +233,7 @@ impl CaptureDrain {
             empty_epoch: health.empty_epoch, progress_epoch: health.progress_epoch,
             quiescence_epoch: health.quiescence_epoch, aec_reset_generation: health.aec_reset_generation,
         });
+        self.last_rejection = None;
         Ok(true)
     }
     pub(super) fn observe(&mut self, now: Instant, route: &AudioRouteRuntimeSnapshot,
@@ -270,3 +289,7 @@ impl CaptureDrain {
 #[cfg(test)]
 #[path = "drain_tests.rs"]
 mod idle_tests;
+
+#[cfg(test)]
+#[path = "drain_failure_tests.rs"]
+mod failure_tests;

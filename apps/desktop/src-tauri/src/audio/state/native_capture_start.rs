@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 #[path = "native_capture_start/health.rs"]
 mod health;
-pub(crate) use health::{NativeCapturePacket, NativeCaptureQuery, NativeCaptureWork};
+pub(crate) use health::{NativeCaptureHealthSnapshot, NativeCapturePacket, NativeCaptureQuery, NativeCaptureWork};
 use health::NativeCaptureHealth;
 
 /// The Start acknowledgement and coherent health belong to this activation,

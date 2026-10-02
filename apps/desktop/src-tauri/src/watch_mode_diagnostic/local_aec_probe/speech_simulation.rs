@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use crate::audio::state::NativeCaptureStartAck;
 #[path = "contract.rs"] mod contract;
 #[path = "drain.rs"] mod drain;
+#[path = "failure_scope.rs"] mod failure_scope;
 #[path = "evidence.rs"] mod evidence;
 #[path = "async_evidence_writer.rs"] mod async_evidence_writer;
 #[path = "injector.rs"] mod injector;
@@ -122,13 +123,20 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
     AudioRouteSupervisor::new(app.clone(), &store).start("inbound", config, None)?;
     let expected_owner = store.native_capture_start_ack("inbound")
         .ok_or("schema2 requires an active native capture Start owner")?;
-    loop {
+    let mut drain = drain::CaptureDrain::default();
+    let armed = guarded("capture readiness", || { loop {
         if Instant::now() >= deadline { return Err("local AEC capture readiness deadline exceeded".into()); }
         let current_owner = store.native_capture_start_ack("inbound");
         if capture_armed(&store.snapshot(), &request.physical_device_id,
             &expected_owner, current_owner.as_ref())? { break; }
         std::thread::sleep(Duration::from_millis(5));
+    } Ok(()) });
+    if let Err(error) = armed {
+        report["captureDrainFailureObservation"] = failure_scope::observe(&store,&drain,&expected_owner,
+            failure_scope::FailureState { media_complete:false,stream_drained:false,failure:&error,source_evidence_failure:None });
+        return Err(error);
     }
+    let prepared = guarded("capture evidence setup", || {
     let evidence = RefCell::new(evidence::StreamEvidence::new(&request.output_directory)?);
     let ready_at_ms = crate::shared::time::now_unix_millis();
     exclusive_json(&request.output_directory.join(contract::READY_FILE), &json!({"schemaVersion":2,
@@ -137,6 +145,13 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         "providerCalls":0,"releaseEligible":false,"readyAtMs":ready_at_ms,
         "readinessPhase":"native-stream-started","nativeStartAcknowledged":true,
         "capture":capture_receipt(&healthy_capture(&store, &request.physical_device_id)?, false)?}))?;
+    Ok(evidence)
+    });
+    let evidence = match prepared { Ok(evidence) => evidence, Err(error) => {
+        report["captureDrainFailureObservation"] = failure_scope::observe(&store,&drain,&expected_owner,
+            failure_scope::FailureState { media_complete:false,stream_drained:false,failure:&error,source_evidence_failure:None });
+        return Err(error);
+    }};
     let media_complete_flag = Cell::new(false);
     let timing = RefCell::new(pump_timing::PumpTiming::new());
     let mmcss_events = RefCell::new(Vec::<Value>::new());
@@ -153,8 +168,15 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         pump_timing::measure(&timing, part, || observe_event(&store, &request.physical_device_id,
             &evidence, media_complete_flag.get(), event))
     };
+    // Keep setup resources OUTSIDE the panic/error guard. Initializer failure
+    // must be observed while capture/child are live, before their Drop cleanup.
+    let mut injector_owner = None;
+    let mut stream_owner = None;
+    let mut source_evidence_failure = None;
+    let mut stream_drained = false;
     let operation = guarded("speech stream", || {
-        let mut injector = injector::InjectorChild::spawn(request)?;
+        injector_owner = Some(injector::InjectorChild::spawn(request)?);
+        let injector = injector_owner.as_mut().ok_or("missing owned source injector")?;
         let start = &injector.start;
         report["sourceInjector"]["spawned"] = json!(true);
         report["sourceInjector"]["processId"] = json!(start.process_id);
@@ -165,10 +187,10 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         evidence.borrow_mut().record(json!({"kind":"source-media-started","boundStart":report["sourceMediaStart"]}))?;
         store.update_speech(|s| { s.dispatch_state = "playing".into(); s.output_target = "speaker".into(); });
         let started = Instant::now();
-        let mut stream = NativeDesktopStream::open(Some(&request.physical_device_id), store.desktop_playback_ownership(),
-            &request.execution_id, started, &mut events)?;
-        let mut source_evidence_failure = None;
-        let outcome = (|| -> Result<(), String> {
+        stream_owner = Some(NativeDesktopStream::open(Some(&request.physical_device_id), store.desktop_playback_ownership(),
+            &request.execution_id, started, &mut events)?);
+        let stream = stream_owner.as_mut().ok_or("missing owned native stream")?;
+        let outcome = guarded("speech playback/drain", || {
             stream.configure_local_aec_speech_simulation(sim.stage_duration_ms, &mut events)?;
             // Device initialization is not part of the running PCM producer clock.
             let cadence_origin = Instant::now();
@@ -179,7 +201,6 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
             let mut stream_receipt = None;
             let mut waiting_silence_frames = 0_usize;
             let mut accepted_delta_count = 0_u64;
-            let mut drain = drain::CaptureDrain::default();
             let silence = vec![0_i16; sim.chunk_frames];
             loop {
                 timing.borrow_mut().loop_started();
@@ -244,6 +265,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                     stream_receipt = pump_timing::measure(&timing, pump_timing::Part::NativePump,
                         || stream.poll(&mut events))?;
                 }
+                stream_drained = stream_receipt.is_some();
                 let route = healthy_capture(&store, &request.physical_device_id)?;
                 if pump_timing::measure(&timing, pump_timing::Part::DrainCheck,
                     || {
@@ -281,30 +303,43 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                 }
             }
             Ok(())
-        })();
-        let mut stream_abort_error = None;
-        if outcome.is_err() {
-            let aborted = pump_timing::measure(&timing, pump_timing::Part::Abort, || stream.abort(&mut events));
-            stream_abort_error = aborted.err();
-            report["streamAbortError"] = json!(stream_abort_error);
-        }
-        let outcome = match (outcome, stream_abort_error) {
-            (Err(error), Some(cleanup)) => Err(format!("{error}; native desktop cleanup: {cleanup}")),
-            (result, _) => result,
-        };
-        let stopped = pump_timing::measure(&timing, pump_timing::Part::SourceCleanup, || injector.stop_and_join());
-        report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
-        report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
+        });
+        outcome
+    });
+    // All setup/pump guards have returned while resources remain owned here.
+    // Capture ONCE before any abort/source cleanup; never resample after panic.
+    let before_cleanup = failure_scope::observe(&store,&drain,&expected_owner,
+        failure_scope::FailureState { media_complete:media_complete_flag.get(),stream_drained,
+            failure:operation.as_ref().err().or(source_evidence_failure.as_ref())
+                .map(String::as_str).unwrap_or("failure discovered during cleanup; native state observed before cleanup"),
+            source_evidence_failure:source_evidence_failure.as_deref() });
+    report["sourceCollectionStateBeforeCleanup"] = json!(injector_owner.as_ref().map(|i| i.collection_state()));
+    if operation.is_err() || source_evidence_failure.is_some() {
+        report["captureDrainFailureObservation"] = before_cleanup.clone();
+    }
+    let (aborted,joined) = failure_scope::cleanup_independently(
+        || { if operation.is_err() { if let Some(stream)=stream_owner.as_mut() {
+            return pump_timing::measure(&timing,pump_timing::Part::Abort,||stream.abort(&mut events));
+        }} Ok(()) },
+        || pump_timing::measure(&timing,pump_timing::Part::SourceCleanup,||Ok(
+            injector_owner.as_mut().map(|i|i.stop_and_join_collected())
+                .unwrap_or(injector::JoinedSource {media:None,cleanup_error:None}))),
+    );
+    report["streamAbortError"] = json!(aborted.as_ref().err());
+    let (stopped,late) = failure_scope::retain_late_collection(report,joined);
+    if let Some(error)=late {source_evidence_failure.get_or_insert(error);}
+    report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
+    report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
+    if let Some(stream)=stream_owner.as_ref() {
         report["nativePumpDecisions"] = json!(stream.pump_diagnostic_receipt());
         report["mmcssAudio"] = json!(stream.scheduling_receipt());
         report["mmcssAudioIdentity"] = stream.scheduling_identity();
-        let operation = match (outcome, stopped) {
-            (Err(error), Err(cleanup)) => Err(format!("{error}; source injector cleanup: {cleanup}")),
-            (Err(error), _) | (_, Err(error)) => Err(error),
-            _ => Ok(()),
-        };
-        media_collection::finish_collection(operation, source_evidence_failure)
-    });
+    }
+    if aborted.is_err() || stopped.is_err() || source_evidence_failure.is_some() {
+        report["captureDrainFailureObservation"] = before_cleanup.clone();
+    }
+    let operation=failure_scope::combine_errors(operation,aborted,stopped);
+    let operation=media_collection::finish_collection(operation,source_evidence_failure);
     // No JSON serialization or disk writes in the measured pump. Timings are
     // diagnostic-only and cannot authorize drain/clock/acoustic acceptance.
     report["pumpTiming"] = timing.borrow().receipt();
@@ -312,7 +347,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
     let sealed = evidence.borrow_mut().finish();
     match sealed {
         Ok(value) => { report["streamEvidence"] = value; }
-        Err(error) => { report["streamEvidenceSealError"] = json!(error); return Err(error); }
+        Err(error) => { report["captureDrainFailureObservation"] = before_cleanup; report["streamEvidenceSealError"] = json!(error); return Err(error); }
     }
     operation
 }

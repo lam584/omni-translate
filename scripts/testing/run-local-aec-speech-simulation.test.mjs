@@ -426,6 +426,8 @@ const idleHealthFrozenSources = [
  'apps/desktop/src-tauri/src/audio/engine/workers.rs',
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain.rs',
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_tests.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_observation.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_failure_tests.rs',
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/SCHEMA2-CONTRACT.md',
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/tests.rs',
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
@@ -457,3 +459,51 @@ for(const file of [idleHealthFrozenSources[2],idleHealthFrozenSources[4],idleHea
   const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
   assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
  });
+
+
+const failureObservation=()=>({schemaVersion:1,artifactKind:'local-aec-capture-drain-failure-observation',
+ diagnosticOnly:true,accepted:false,capturedBeforeForcedCleanup:true,failure:'native drain deadline exceeded',
+ sourceEvidenceFailure:'source clock drift',ownerContinuity:true,mediaComplete:true,streamDrained:false,
+ expectedOwner:{ownerId:1,started:true,terminal:false,workPending:true,residualBytes:8},
+ currentOwner:{ownerId:1,started:true,terminal:false,workPending:true,residualBytes:8},
+ drain:{lastRejection:'native-work-pending',activityResets:2},route:{framesCaptured:480,captureState:'buffering'}});
+for(const [name,value] of [
+ ['typed pre-cleanup failure',failureObservation()],
+ ['forged accepted observation',{...failureObservation(),accepted:true,diagnosticOnly:false,failure:null}],
+ ['empty object',{}],['false',false],['zero',0],['empty string',''],['array',[]],
+])test('any non-null drain failure observation rejects forged completion: '+name,()=>{
+ for(const p of [probe(),idleProbe()]){
+  p.captureDrainFailureObservation=value;
+  const operation=inspectSpeechOperation(p,request());
+  assert.equal(operation.passed,false);
+  assert.ok(operation.failures.includes('retained capture drain failure observation'));
+  assert.equal(finalizeSpeechOutcome(operation,{passed:true},acceptedQuality()).overallPassed,false);
+ }
+});
+test('absent or null failure observation preserves valid completion compatibility',()=>{
+ for(const p of [probe(),idleProbe()]){
+  assert.equal(inspectSpeechOperation(p,request()).passed,true);
+  p.captureDrainFailureObservation=null;
+  assert.equal(inspectSpeechOperation(p,request()).passed,true);
+ }
+});
+test('retained failure snapshot blocks analysis despite forged successful receipt and healthy custody',t=>{
+ const p=probe();p.captureDrainFailureObservation=failureObservation();
+ const f=retainedRun(t,p),result=collectLocalSpeechRunEvidence(f.root,f.request,launch());
+ assert.equal(result.launcher.passed,true);assert.equal(result.custodyValidation.passed,true);
+ assert.equal(result.operation.passed,false);assert.equal(result.readyForAnalysis,false);
+ assert.equal(result.overallPassed,false);
+ assert.deepEqual(result.nativeReceipt.captureDrainFailureObservation,p.captureDrainFailureObservation);
+ assert.deepEqual(fs.readFileSync(path.join(f.root,'local-aec-probe-result.json')),f.original);
+ assert.ok(result.failures.some(f=>f.area==='native-operation'&&/capture drain failure observation/u.test(f.detail)));
+ const sealed=JSON.parse(fs.readFileSync(path.join(f.root,'local-speech-evidence-collection.json'),'utf8'));
+ assert.equal(sealed.readyForAnalysis,false);assert.equal(sealed.overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality(),result).overallPassed,false);
+});
+for(const file of [
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_observation.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_failure_tests.rs',
+])test('failure observation freeze rejects tampered '+file,t=>{
+ const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+});

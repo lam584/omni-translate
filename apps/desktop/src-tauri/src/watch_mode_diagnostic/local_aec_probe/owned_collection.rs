@@ -1,6 +1,11 @@
 //! One owned, one-shot disk collector. Live polling never joins unfinished work.
 use std::thread::JoinHandle;
 
+/// A scalar custody observation; a finished worker is not consumed by inspection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum CollectionState { NotStarted, Pending, ReadyUnconsumed, Consumed, Failed }
+
 pub(super) struct OwnedCollection<T> {
     started: bool,
     worker: Option<JoinHandle<Result<T, String>>>,
@@ -9,6 +14,16 @@ pub(super) struct OwnedCollection<T> {
 
 impl<T: Send + 'static> OwnedCollection<T> {
     pub(super) fn new() -> Self { Self { started: false, worker: None, failure: None } }
+
+    // No waits, joins or I/O on the renderer pump. A ready worker's result
+    // (including a possible error/panic) becomes known only when resolved.
+    pub(super) fn state(&self) -> CollectionState {
+        if self.failure.is_some() { CollectionState::Failed }
+        else if let Some(worker) = &self.worker {
+            if worker.is_finished() { CollectionState::ReadyUnconsumed } else { CollectionState::Pending }
+        } else if self.started { CollectionState::Consumed }
+        else { CollectionState::NotStarted }
+    }
 
     pub(super) fn start(&mut self, collect: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<(), String> {
         if self.started { return Err("source media collection already started".into()); }
@@ -51,16 +66,21 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel();
         let (polled_tx, polled_rx) = mpsc::channel();
         let mut task = OwnedCollection::new();
+        assert_eq!(task.state(), CollectionState::NotStarted);
         task.start(move || { started_tx.send(()).unwrap(); release_rx.recv().unwrap(); Ok(7) }).unwrap();
         started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let pump = std::thread::spawn(move || { let result = task.poll(); polled_tx.send(result).unwrap(); task });
+        let pump = std::thread::spawn(move || {
+            let state = task.state(); let result = task.poll();
+            polled_tx.send((state, result)).unwrap(); task
+        });
         let poll = polled_rx.recv_timeout(Duration::from_secs(2));
         // Always release before asserting, so a regressed blocking join fails
         // deterministically without leaving a worker or test process stranded.
         release_tx.send(()).unwrap();
         let mut task = pump.join().unwrap();
-        assert_eq!(poll.unwrap(), Ok(None));
+        assert_eq!(poll.unwrap(), (CollectionState::Pending, Ok(None)));
         assert_eq!(task.resolve().unwrap(), Some(7));
+        assert_eq!(task.state(), CollectionState::Consumed);
         assert_eq!(task.poll().unwrap(), None);
         assert_eq!(task.finish().unwrap(), None);
     }
@@ -82,6 +102,7 @@ mod tests {
             let mut task: OwnedCollection<()> = OwnedCollection::new();
             task.start(move || { if panic { panic!("collector failure"); } Err("collection I/O failed".into()) }).unwrap();
             let error = task.resolve().unwrap_err();
+            assert_eq!(task.state(), CollectionState::Failed);
             assert_eq!(task.poll().unwrap_err(), error);
             assert_eq!(task.finish().unwrap_err(), error);
         }
@@ -102,4 +123,30 @@ mod tests {
         let mut task = cleanup.join().unwrap();
         assert_eq!(task.poll().unwrap_err(), "retained failure");
     }
+    #[test]
+    fn ready_unconsumed_inspection_never_consumes_the_exact_result() {
+        let mut task = OwnedCollection::new();
+        task.start(|| Ok(42_u64)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while task.state() == CollectionState::Pending {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(task.state(), CollectionState::ReadyUnconsumed);
+        assert_eq!(serde_json::to_value(task.state()).unwrap(), "ready-unconsumed");
+        assert_eq!(task.state(), CollectionState::ReadyUnconsumed);
+        assert_eq!(task.poll().unwrap(), Some(42));
+        assert_eq!(task.state(), CollectionState::Consumed);
+        assert_eq!(task.finish().unwrap(), None);
+    }
+
+    #[test]
+    fn bounded_collection_state_serializes_without_worker_or_error_payloads() {
+        for (state, expected) in [
+            (CollectionState::NotStarted, "not-started"), (CollectionState::Pending, "pending"),
+            (CollectionState::ReadyUnconsumed, "ready-unconsumed"),
+            (CollectionState::Consumed, "consumed"), (CollectionState::Failed, "failed"),
+        ] { assert_eq!(serde_json::to_value(state).unwrap(), expected); }
+    }
+
 }

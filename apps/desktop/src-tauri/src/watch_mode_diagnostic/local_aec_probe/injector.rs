@@ -4,6 +4,7 @@ use super::contract::MediaStarted;
 use super::media_collection::{CollectedMedia, collect_media_complete};
 use std::process::{Child, Command, Stdio};
 use super::owned_collection::OwnedCollection;
+pub(super) use super::owned_collection::CollectionState;
 
 const RECEIPT_FILE: &str = "local-aec-source-media-receipt.json";
 const STDERR_FILE: &str = "local-aec-source-media-stderr.log";
@@ -31,6 +32,12 @@ fn pinned_input(path: &Path, expected_hash: &str, limit: u64, magic: &[u8]) -> R
     Ok(file)
 }
 
+/// Cleanup custody and typed source evidence are independent outcomes.
+pub(super) struct JoinedSource {
+    pub(super) media: Option<CollectedMedia>,
+    pub(super) cleanup_error: Option<String>,
+}
+
 pub(super) struct InjectorChild {
     child: Child,
     _executable: fs::File,
@@ -40,6 +47,8 @@ pub(super) struct InjectorChild {
     source_pcm_path: PathBuf,
     exited: bool,
     collection: OwnedCollection<CollectedMedia>,
+    cleanup_failure: Option<String>,
+    source_failure: Option<String>,
 }
 impl InjectorChild {
     pub(super) fn spawn(request: &ProbeRequest) -> Result<Self, String> {
@@ -66,7 +75,7 @@ impl InjectorChild {
         let child = command.spawn().map_err(|e| e.to_string())?;
         let start = MediaStarted { execution_id: request.execution_id.clone(), physical_device_id: request.physical_device_id.clone(),
             process_id: child.id(), started_at_ms };
-        Ok(Self { child, _executable: executable, _source: source, start, receipt_path, source_pcm_path, exited: false, collection: OwnedCollection::new() })
+        Ok(Self { child, _executable: executable, _source: source, start, receipt_path, source_pcm_path, exited: false, collection: OwnedCollection::new(), cleanup_failure: None, source_failure: None })
     }
     pub(super) fn poll_complete(&mut self, request: &ProbeRequest) -> Result<Option<CollectedMedia>, String> {
         if !self.exited {
@@ -81,7 +90,11 @@ impl InjectorChild {
         }
         self.collection.poll()
     }
-    pub(super) fn stop_and_join(&mut self) -> Result<(), String> {
+    pub(super) fn collection_state(&self) -> CollectionState { self.collection.state() }
+
+    /// Cleanup-only: retain unconsumed typed source evidence after abort/drain.
+    /// A typed evidence rejection is returned, not relabeled as collection I/O.
+    pub(super) fn stop_and_join_collected(&mut self) -> JoinedSource {
         let stopped = (|| {
             if !self.exited {
                 if self.child.try_wait().map_err(|e| e.to_string())?.is_none() {
@@ -92,26 +105,41 @@ impl InjectorChild {
             }
             Ok(())
         })();
-        // Pinned executable/source handles remain owned until both the child
-        // and all collection work have actually stopped. Rendering is drained
-        // or aborted before this cleanup, never while poll is pumping audio.
-        let collected = finish_collector(&mut self.collection);
-        match (stopped, collected) {
-            (Err(child), Err(collection)) => Err(format!("{child}; source collector cleanup: {collection}")),
-            (Err(error), _) | (_, Err(error)) => Err(error),
-            _ => Ok(()),
-        }
+        // Pinned handles remain owned until child and collection have stopped.
+        // Even a child-stop error must not detach a pending collector.
+        finish_collector(&mut self.collection, stopped, &mut self.cleanup_failure, &mut self.source_failure)
+    }
+
+    pub(super) fn stop_and_join(&mut self) -> Result<(), String> {
+        let joined = self.stop_and_join_collected();
+        legacy_collection_result(joined, self.source_failure.clone())
     }
 }
 impl Drop for InjectorChild {
     fn drop(&mut self) { let _ = self.stop_and_join(); }
 }
 
-// A typed clock rejection is a result, not a worker I/O error. Abort/deadline
-// cleanup must retain it even when the live pump never consumed the result.
-fn finish_collector(collection: &mut OwnedCollection<CollectedMedia>) -> Result<(), String> {
-    let result = collection.finish()?;
-    super::media_collection::finish_collection(Ok(()), result.and_then(|media| media.evidence_failure))
+// Resolve exactly once without modifying or discarding a typed result. Child
+// and collector cleanup errors remain separate from source evidence rejection.
+fn finish_collector(collection: &mut OwnedCollection<CollectedMedia>, stopped: Result<(), String>,
+    retained_cleanup: &mut Option<String>, retained_source: &mut Option<String>) -> JoinedSource {
+    let (media, collector_error) = match collection.finish() {
+        Ok(media) => (media, None), Err(error) => (None, Some(error)),
+    };
+    let cleanup_error = match (stopped, collector_error) {
+        (Err(child), Some(collection)) => Some(format!("{child}; source collector cleanup: {collection}")),
+        (Err(child), None) => Some(child), (Ok(()), error) => error,
+    };
+    if let Some(error) = cleanup_error { retained_cleanup.get_or_insert(error); }
+    if let Some(error) = media.as_ref().and_then(|media| media.evidence_failure.as_ref()) {
+        retained_source.get_or_insert_with(|| error.clone());
+    }
+    JoinedSource { media, cleanup_error: retained_cleanup.clone() }
+}
+fn legacy_collection_result(joined: JoinedSource, retained_source: Option<String>) -> Result<(), String> {
+    let evidence = joined.media.and_then(|media| media.evidence_failure).or(retained_source);
+    let cleanup = joined.cleanup_error.map_or(Ok(()), Err);
+    super::media_collection::finish_collection(cleanup, evidence)
 }
 
 fn collect_completed_media(request: &ProbeRequest, start: &MediaStarted, receipt_path: &Path,

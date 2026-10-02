@@ -9,6 +9,7 @@ use crate::audio::state::NativeCaptureStartAck;
 #[path = "async_evidence_writer.rs"] mod async_evidence_writer;
 #[path = "injector.rs"] mod injector;
 #[path = "owned_collection.rs"] mod owned_collection;
+#[path = "pump_timing.rs"] mod pump_timing;
 #[path = "media_collection.rs"] mod media_collection;
 #[cfg(test)]
 #[path = "tests.rs"] mod tests;
@@ -130,9 +131,16 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         "readinessPhase":"native-stream-started","nativeStartAcknowledged":true,
         "capture":capture_receipt(&healthy_capture(&store, &request.physical_device_id)?, false)?}))?;
     let media_complete_flag = Cell::new(false);
+    let timing = RefCell::new(pump_timing::PumpTiming::new());
     let mut events = |event: DesktopStreamingEvent<'_>| {
         if Instant::now() >= deadline { return Err("local AEC speech simulation deadline exceeded".into()); }
-        observe_event(&store, &request.physical_device_id, &evidence, media_complete_flag.get(), event)
+        let part = match &event {
+            DesktopStreamingEvent::Render(SpeakerRenderEvent::Frame { .. }) => pump_timing::Part::ReferenceCallback,
+            DesktopStreamingEvent::Tap(_) => pump_timing::Part::PhysicalCallback,
+            _ => pump_timing::Part::LifecycleCallback,
+        };
+        pump_timing::measure(&timing, part, || observe_event(&store, &request.physical_device_id,
+            &evidence, media_complete_flag.get(), event))
     };
     let operation = guarded("speech stream", || {
         let mut injector = injector::InjectorChild::spawn(request)?;
@@ -161,11 +169,14 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
             let mut drain = drain::CaptureDrain::default();
             let silence = vec![0_i16; sim.chunk_frames];
             loop {
+                timing.borrow_mut().loop_started();
                 let now = Instant::now();
                 if now >= deadline { return Err("local AEC media/output/capture quiescence deadline exceeded".into()); }
-                let route = healthy_capture(&store, &request.physical_device_id)?;
+                let route = pump_timing::measure(&timing, pump_timing::Part::HealthyCapture,
+                    || healthy_capture(&store, &request.physical_device_id))?;
                 if !media_complete_flag.get() {
-                    if let Some(collected) = injector.poll_complete(request)? {
+                    if let Some(collected) = pump_timing::measure(&timing, pump_timing::Part::MediaPoll,
+                        || injector.poll_complete(request))? {
                         if let Some(error) = collected.evidence_failure {
                             source_evidence_failure.get_or_insert(error);
                             report["sourceEvidenceValidationPassed"] = json!(false);
@@ -187,6 +198,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                     }
                 }
                 if !ended && now >= next_delta && stream.can_accept(sim.chunk_frames) {
+                    pump_timing::measure(&timing, pump_timing::Part::DeltaAdmission, || {
                     let waiting = sim.tail_start_frame.is_some_and(|tail| cursor >= tail) && !media_complete_flag.get();
                     if cursor < samples.len() || waiting {
                         let source = if waiting { silence.as_slice() } else { &samples[cursor..cursor+sim.chunk_frames] };
@@ -206,9 +218,15 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                         stream.end(&mut events)?; ended = true;
                         report["audioDoneAtMs"] = json!(crate::shared::time::now_unix_millis());
                     }
+                    Ok(())
+                    })?;
                 }
-                if stream_receipt.is_none() { stream_receipt = stream.poll(&mut events)?; }
-                if drain.observe(now, &route, media_complete_flag.get(), stream_receipt.is_some())? {
+                if stream_receipt.is_none() {
+                    stream_receipt = pump_timing::measure(&timing, pump_timing::Part::NativePump,
+                        || stream.poll(&mut events))?;
+                }
+                if pump_timing::measure(&timing, pump_timing::Part::DrainCheck,
+                    || drain.observe(now, &route, media_complete_flag.get(), stream_receipt.is_some()))? {
                     let receipt = stream_receipt.as_ref().ok_or("missing drained render receipt")?;
                     let simulated_frames = samples.len() + waiting_silence_frames;
                     evidence.borrow().validate(sim.stage_duration_ms, simulated_frames)?;
@@ -224,12 +242,17 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                     report["capture"] = capture_receipt(&route, false)?;
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                pump_timing::measure(&timing, pump_timing::Part::RequestedSleep, || {
+                    std::thread::sleep(Duration::from_millis(2)); Ok(())
+                })?;
             }
             Ok(())
         })();
-        if outcome.is_err() { let aborted = stream.abort(&mut events); report["streamAbortError"] = json!(aborted.err()); }
-        let stopped = injector.stop_and_join();
+        if outcome.is_err() {
+            let aborted = pump_timing::measure(&timing, pump_timing::Part::Abort, || stream.abort(&mut events));
+            report["streamAbortError"] = json!(aborted.err());
+        }
+        let stopped = pump_timing::measure(&timing, pump_timing::Part::SourceCleanup, || injector.stop_and_join());
         report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
         report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
         let operation = match (outcome, stopped) {
@@ -239,6 +262,9 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         };
         media_collection::finish_collection(operation, source_evidence_failure)
     });
+    // No JSON serialization or disk writes in the measured pump. Timings are
+    // diagnostic-only and cannot authorize drain/clock/acoustic acceptance.
+    report["pumpTiming"] = timing.borrow().receipt();
     let sealed = evidence.borrow_mut().finish();
     match sealed {
         Ok(value) => { report["streamEvidence"] = value; }

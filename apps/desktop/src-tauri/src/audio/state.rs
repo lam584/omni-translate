@@ -45,7 +45,7 @@ mod omni_sessions;
 mod omni_session_lifecycle;
 mod session_registry;
 mod native_capture_start;
-pub(crate) use native_capture_start::NativeCaptureStartAck;
+pub(crate) use native_capture_start::{NativeCaptureStartAck, NativeCaptureProducerGuard, NativeCapturePacket, NativeCaptureQuery, NativeCaptureWork};
 mod metrics;
 mod route_state;
 mod subtitle_store;

@@ -22,7 +22,14 @@ const probe=()=>({schemaVersion:2,executionId,scope:'local-aec-speech-simulation
   {schemaVersion:1,taskName:'Audio',ownerThreadId:41,registrationAttempted:true,registrationSucceeded:true,taskIndex:0,registrationErrorCode:null,cleanupAttempted:true,revertAttempted:true,revertSucceeded:true,revertThreadId:41,revertErrorCode:null,restoreFailureKind:null,cleanupPath:'explicit',state:'restored'}
  ],
  mmcssAudioIdentity:{renderSessionId:101,ownerGeneration:1,endpointId:endpoint,rendererInstanceId:'renderer-inst-1'},
- captureDrain:{captureRemainedOpen:true,continuousQuietMs:2000,quietStartFrame:100,quietEndFrame:96100},
+ captureDrain:{schemaVersion:2,completionMode:'pcm-frames',captureRemainedOpen:true,captureStateAtDrain:'buffering',continuousQuietMs:2000,
+  quietStartFrame:100,quietEndFrame:96100,minimumQuietCaptureFrames:96000,ownerContinuity:true,captureOwnerId:1,
+  nativeStartAcknowledged:true,quietEnergyCeilingDb:-60,deadlineIsFailureOnly:true,
+  nativeHealth:{successfulQueryStart:2,successfulQueryEnd:102,emptyPollCount:0,maximumProducerPollGapMs:20,
+   maximumConsumerObservationGapMs:20,capturedFrames:96100,aecCompletedFrames:96100,dispatchCompletedFrames:96100,
+   residualBytes:0,workPending:false,terminal:false,fault:null,latestQuery:{kind:'empty'},rawActivityGeneration:0,lastRawActivityAgeMs:null,emptyEpoch:1,progressEpoch:0,quiescenceEpoch:0,aecResetGeneration:0,
+   latestPacket:{frames:480,deviceFrameIndex:95620,qpc100ns:123,silent:false,dataDiscontinuity:false,
+    timestampError:false,rawEnergyDb:-90}}},
  streamEvidence:{streamStartCount:1,streamDrained:true,aborted:false,mediaEndVoicedPhysicalFrames:96000},sourceMediaComplete:{passed:true,endpointId:endpoint,mediaPlaybackComplete:true,
  sourceEvidenceValidationPassed:true,sourceEvidenceValidationError:null,exitCode:0,
  receipt:{passed:true,mediaPlaybackComplete:true,naturalRenderDrained:true,sourceClockValidationPassed:true,
@@ -337,3 +344,116 @@ test('raw streamAbortError blocks forged healthy summaries even after successful
  const p=probe();p.streamAbortError='injected endpoint stop/reset cleanup failure';
  assert.equal(inspectSpeechOperation(p,request()).passed,false);
 });
+
+// RED: no additional PCM exists after the endpoint naturally becomes empty.
+test('versioned real native Empty receipt permits natural drain without extra PCM',()=>{
+ const p=probe();
+ p.captureDrain={schemaVersion:2,completionMode:'native-empty-polls',captureRemainedOpen:true,
+  ownerContinuity:true,captureOwnerId:1,nativeStartAcknowledged:true,captureStateAtDrain:'buffering',continuousQuietMs:2000,
+  quietStartFrame:480,quietEndFrame:480,minimumQuietCaptureFrames:null,quietEnergyCeilingDb:-60,deadlineIsFailureOnly:true,
+  nativeHealth:{successfulQueryStart:2,successfulQueryEnd:102,emptyPollCount:101,
+   maximumProducerPollGapMs:20,maximumConsumerObservationGapMs:20,capturedFrames:480,
+   aecCompletedFrames:480,dispatchCompletedFrames:480,residualBytes:0,workPending:false,terminal:false,fault:null,
+   latestQuery:{kind:'empty'},rawActivityGeneration:0,lastRawActivityAgeMs:null,emptyEpoch:1,progressEpoch:0,quiescenceEpoch:0,aecResetGeneration:0,
+   latestPacket:{frames:480,deviceFrameIndex:0,qpc100ns:123,silent:false,dataDiscontinuity:false,timestampError:false,rawEnergyDb:-90}}};
+ assert.equal(inspectSpeechOperation(p,request()).passed,true);
+});
+
+const idleProbe=()=>{
+ const p=probe();p.captureDrain.completionMode='native-empty-polls';
+ p.captureDrain.minimumQuietCaptureFrames=null;p.captureDrain.quietStartFrame=96100;
+ p.captureDrain.nativeHealth.successfulQueryStart=2;p.captureDrain.nativeHealth.emptyPollCount=101;return p;
+};
+for(const [name,change] of [
+ ['legacy unversioned receipt',p=>{delete p.captureDrain.schemaVersion;}],
+ ['old receipt version',p=>{p.captureDrain.schemaVersion=1;}],
+ ['unknown mode',p=>{p.captureDrain.completionMode='elapsed-time';}],
+ ['same endpoint different owner',p=>{p.captureDrain.ownerContinuity=false;}],
+ ['no actual native capture',p=>{p.captureDrain.nativeHealth.capturedFrames=0;}],
+ ['AEC not completed',p=>{p.captureDrain.nativeHealth.aecCompletedFrames=0;}],
+ ['dispatch not completed',p=>{p.captureDrain.nativeHealth.dispatchCompletedFrames=0;}],
+ ['residual partial frame',p=>{p.captureDrain.nativeHealth.residualBytes=8;}],
+ ['Pending not Empty',p=>{p.captureDrain.nativeHealth.latestQuery={kind:'pending',frames:480};}],
+ ['None did not query native',p=>{p.captureDrain.nativeHealth.latestQuery={kind:'unavailable'};}],
+ ['frozen repeated snapshot',p=>{p.captureDrain.nativeHealth.successfulQueryEnd=2;}],
+ ['producer gap',p=>{p.captureDrain.nativeHealth.maximumProducerPollGapMs=101;}],
+ ['consumer blind gap',p=>{p.captureDrain.nativeHealth.maximumConsumerObservationGapMs=101;}],
+ ['stopped capture',p=>{p.captureDrain.nativeHealth.terminal=true;}],
+ ['stop requested but producer not terminal',p=>{p.captureDrain.captureStateAtDrain='stopping';}],
+ ['paused but producer not terminal',p=>{p.captureDrain.captureStateAtDrain='paused';}],
+ ['query error',p=>{p.captureDrain.nativeHealth.fault='native query error';}],
+ ['recent preAEC raw activity',p=>{p.captureDrain.nativeHealth.rawActivityGeneration=1;p.captureDrain.nativeHealth.lastRawActivityAgeMs=1999;}],
+ ['missing typed raw activity age',p=>{delete p.captureDrain.nativeHealth.lastRawActivityAgeMs;}],
+ ['media ended but renderer not drained',p=>{p.streamEvidence.streamDrained=false;}],
+ ['prior source-clock rejection',p=>{p.sourceMediaComplete.receipt.sourceClockValidationPassed=false;
+  p.sourceMediaComplete.sourceEvidenceValidationPassed=false;}],
+ ['prior native failure',p=>{p.primaryError='earlier failure';}],
+ ['retained outer source rejection',p=>{p.sourceEvidenceValidationPassed=false;p.sourceEvidenceValidationError='clock failed';}],
+])test('versioned native idle rejects '+name,()=>{
+ const p=idleProbe();change(p);assert.equal(inspectSpeechOperation(p,request()).passed,false);
+});
+test('native idle success remains operation-only and cannot authorize acoustic quality',()=>{
+ const operation=inspectSpeechOperation(idleProbe(),request());assert.equal(operation.passed,true);
+ assert.equal(finalizeSpeechOutcome(operation,{passed:true},{passed:false}).overallPassed,false);
+});
+
+test('fresh old Empty cannot authorize completion while actual capture work is in flight',()=>{
+ const p=idleProbe();p.captureDrain.nativeHealth.workPending=true;
+ assert.equal(inspectSpeechOperation(p,request()).passed,false);
+});
+
+for(const [name,change] of [
+ ['Pending packet',p=>{p.captureDrain.nativeHealth.latestQuery={kind:'pending',frames:480};}],
+ ['partial residual',p=>{p.captureDrain.nativeHealth.residualBytes=8;p.captureDrain.nativeHealth.capturedFrames+=1;}],
+ ['missing actual query kind',p=>{delete p.captureDrain.nativeHealth.latestQuery;}],
+ ['zero successful queries',p=>{p.captureDrain.nativeHealth.successfulQueryEnd=0;}],
+])test('review F1 PCM branch rejects '+name,()=>{
+ const p=probe();change(p);assert.equal(inspectSpeechOperation(p,request()).passed,false);
+});
+
+test('review F2 missing typed AEC-reset generation cannot pass either mode',()=>{
+ for(const p of [probe(),idleProbe()]){delete p.captureDrain.nativeHealth.aecResetGeneration;
+  assert.equal(inspectSpeechOperation(p,request()).passed,false);}
+});
+
+
+const frozenRunner = await import('./run-local-aec-speech-simulation.mjs');
+const idleHealthFrozenSources = [
+ 'apps/desktop/src-tauri/src/audio/state.rs',
+ 'apps/desktop/src-tauri/src/audio/state/native_capture_start.rs',
+ 'apps/desktop/src-tauri/src/audio/state/native_capture_start/health.rs',
+ 'apps/desktop/src-tauri/src/audio/state/native_capture_start/tests.rs',
+ 'apps/desktop/src-tauri/src/audio/engine/workers.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_tests.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/SCHEMA2-CONTRACT.md',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/tests.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
+];
+test('native idle freeze includes every owner-health and drain source/test',()=>{
+ for(const file of idleHealthFrozenSources)assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES?.includes(file),file);
+});
+function frozenSourceFixture(t){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'aec-idle-freeze-'));
+ t.after(()=>{assert.equal(fs.realpathSync.native(root),path.resolve(root));
+  assert.ok(root.startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(root,{recursive:true,force:true});});
+ for(const file of frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES){const target=path.join(root,file);
+  fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'frozen fixture '+file,'utf8');}
+ return {root,hashes:frozenRunner.collectLocalSpeechSourceHashes(root)};
+}
+test('native idle freeze accepts intact complete source identity',t=>{
+ const {root,hashes}=frozenSourceFixture(t);assert.doesNotThrow(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes));
+});
+test('native idle freeze rejects missing owner-health hash',t=>{
+ const {root,hashes}=frozenSourceFixture(t);delete hashes[idleHealthFrozenSources[2]];
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/missing frozen run source/);
+});
+test('native idle freeze rejects missing health file',t=>{
+ const {root,hashes}=frozenSourceFixture(t);fs.unlinkSync(path.join(root,idleHealthFrozenSources[2]));
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/ENOENT/);
+});
+for(const file of [idleHealthFrozenSources[2],idleHealthFrozenSources[4],idleHealthFrozenSources[5]])
+ test('native idle freeze rejects tampered '+file,t=>{
+  const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
+  assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+ });

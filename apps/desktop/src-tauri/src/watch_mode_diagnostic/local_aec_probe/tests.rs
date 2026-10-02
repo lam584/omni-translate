@@ -263,7 +263,7 @@ fn failed_native_start_never_publishes_ack() {
     let failure: Result<(), &str> = Err("IAudioClient Start failed");
     assert_eq!(ack.observe_native_start(failure), failure);
     assert!(!ack.is_started());
-    assert!(!capture_armed(&armed_snapshot(), "render-exact", &ack, Some(&ack)).unwrap());
+    assert!(capture_armed(&armed_snapshot(), "render-exact", &ack, Some(&ack)).is_err());
 }
 
 #[test]
@@ -298,4 +298,12 @@ fn native_start_success_can_arm_zero_frames_but_cannot_complete_capture_drain() 
     snapshot.inbound.effective_device_id = "render-exact".into();
     snapshot.aec_failure_detail = Some("AEC3 failed".into());
     assert!(capture_armed(&snapshot, "render-exact", &ack, Some(&ack)).is_err());
+}
+
+#[test]
+fn terminal_native_start_owner_cannot_arm_even_with_optimistic_bound_snapshot() {
+    let ack=NativeCaptureStartAck::new();ack.observe_native_start(Ok::<(), &str>(())).unwrap();
+    let mut producer=ack.producer_guard();producer.stopping();producer.finish(&Ok(()));
+    assert!(ack.is_started()); // historical acknowledgement, NOT liveness
+    assert!(capture_armed(&armed_snapshot(),"render-exact",&ack,Some(&ack)).is_err());
 }

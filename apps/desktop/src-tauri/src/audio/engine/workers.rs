@@ -66,7 +66,32 @@ fn run_route_worker(
 /// cold-start worker and the pre-warmed route activation path so there is a
 /// single owner of `start_stream` plus the flow-health capture loop.
 fn capture_event_wait_required(next_packet_size: Option<u32>) -> bool {
-    next_packet_size.is_none()
+    next_packet_size.is_none_or(|frames| frames == 0)
+}
+
+// Timeout is only a wake to do another real packet query, never health.
+fn capture_event_wait_result(result: Result<(), wasapi::WasapiError>) -> Result<(), String> {
+    match result {
+        Ok(()) | Err(wasapi::WasapiError::EventTimeout) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn capture_stop_requested(stop_rx: &mpsc::Receiver<()>) -> Result<bool, String> {
+    match stop_rx.try_recv() {
+        Ok(()) => Ok(true),
+        Err(mpsc::TryRecvError::Empty) => Ok(false),
+        Err(mpsc::TryRecvError::Disconnected) => Err("native capture stop owner disconnected".into()),
+    }
+}
+
+/// Accept stop on the producer before any later native work or publication.
+fn accept_native_capture_stop(
+    stop_rx: &mpsc::Receiver<()>, guard: &crate::audio::state::NativeCaptureProducerGuard,
+) -> Result<bool, String> {
+    let requested = capture_stop_requested(stop_rx)?;
+    if requested { guard.stopping(); }
+    Ok(requested)
 }
 
 fn initialize_capture_echo_diagnostics(
@@ -84,6 +109,27 @@ fn initialize_capture_echo_diagnostics(
     Ok(())
 }
 
+
+/// Only called after AEC/dispatch returned. A wait never publishes health.
+fn query_native_capture_and_wait(
+    capture_client: &wasapi::AudioCaptureClient, event_handle: &wasapi::Handle,
+    stop_rx: &mpsc::Receiver<()>, guard: &crate::audio::state::NativeCaptureProducerGuard,
+    mut work: crate::audio::state::NativeCaptureWork, residual_bytes: usize,
+) -> Result<bool, String> {
+    // Drain already available packets rather than leaving a backlog until the next event.
+    let next_packet_size = capture_client.get_next_packet_size().map_err_str()?;
+    // Stop may have been requested during AEC/dispatch/query: never publish after accepting it.
+    if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
+    work.residual_bytes = residual_bytes;
+    guard.publish_query(Instant::now(),
+        crate::audio::state::NativeCaptureQuery::from_packet_size(next_packet_size), work);
+    if capture_event_wait_required(next_packet_size) {
+        // Preserve 100ms freshness with scheduling margin. Timeout is not progress.
+        capture_event_wait_result(event_handle.wait_for_event(20))?;
+    }
+    Ok(false)
+}
+
 fn run_capture_loop(
     app: AppHandle,
     store: &AudioStateStore,
@@ -94,6 +140,7 @@ fn run_capture_loop(
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     native_capture_start: NativeCaptureStartAck,
 ) -> Result<(), String> {
+    let mut producer_guard = native_capture_start.producer_guard();
     let InitializedCaptureRoute {
         _device,
         effective_device_id,
@@ -144,9 +191,7 @@ fn run_capture_loop(
     let mut last_delay_diagnostic_at: Option<Instant> = None;
     let capture_result = (|| -> Result<(), String> {
       loop {
-        if stop_rx.try_recv().is_ok() {
-            break;
-        }
+        if accept_native_capture_stop(&stop_rx, &producer_guard)? { break; }
 
         if processor.frames_captured == 0
             && capture_started_at.elapsed() >= Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS)
@@ -172,11 +217,18 @@ fn run_capture_loop(
 
         let chunk_len = desired_format.get_blockalign() as usize * CHUNK_FRAMES;
         let queued_bytes_before_read = sample_queue.len();
+        producer_guard.begin_work(queued_bytes_before_read);
         let buffer_info = capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err_str()?;
+        let captured_frames = (sample_queue.len() - queued_bytes_before_read)
+            / desired_format.get_blockalign() as usize;
+        let completed_work = producer_guard.record_buffer_packet(
+            captured_frames, &buffer_info, sample_queue.len(),
+            || calculate_chunk_db(&sample_queue.make_contiguous()[queued_bytes_before_read..]),
+        );
         let mut capture_clock_metadata = None;
-        if spec.echo_cancel_enabled()
+        if captured_frames > 0 && spec.echo_cancel_enabled()
             && (sample_queue.len() >= chunk_len
                 || buffer_info.flags.data_discontinuity
                 || buffer_info.flags.timestamp_error)
@@ -265,6 +317,7 @@ fn run_capture_loop(
                     observed_qpc_100ns,
                     render_clock.discontinuity_count,
                 )?;
+                producer_guard.record_aec_reset();
                 diag_log_detail(
                     &app,
                     "audio",
@@ -314,6 +367,8 @@ fn run_capture_loop(
             .into_iter()
             .enumerate()
         {
+            let raw_energy_db = calculate_chunk_db(&chunk);
+            producer_guard.record_raw_activity(raw_energy_db);
             let (chunk, aec_provenance) = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
                 let delay_samples = current_aec_delay_samples.saturating_sub(
@@ -332,12 +387,13 @@ fn run_capture_loop(
                     delay_samples,
                     capture_metadata,
                 )?;
+                producer_guard.complete_aec(CHUNK_FRAMES as u64);
                 // AEC3 output is the capture stream; playback never deletes a block.
                 let playback_active = store.inbound_speaker_playback_active();
                 store.record_aec3_capture_chunk(playback_active);
                 let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
                 echo_diagnostics.record(
-                    calculate_chunk_db(&chunk),
+                    raw_energy_db,
                     calculate_chunk_db(&cleaned_bytes),
                     playback_active,
                 );
@@ -357,29 +413,20 @@ fn run_capture_loop(
                 sample_queue.len(),
                 aec_provenance,
             )?;
+            producer_guard.complete_dispatch(CHUNK_FRAMES as u64);
         }
 
-        // GetBuffer returns one packet. Drain packets already available for this
-        // wake before waiting for another event, otherwise scheduler pressure can
-        // leave a backlog until WASAPI reports DATA_DISCONTINUITY.
-        let next_packet_size = capture_client.get_next_packet_size().map_err_str()?;
-        if capture_event_wait_required(next_packet_size) {
-            let _ = event_handle.wait_for_event(500);
-        }
+        if query_native_capture_and_wait(
+            &capture_client, &event_handle, &stop_rx, &producer_guard, completed_work, sample_queue.len(),
+        )? { break; }
       }
       Ok(())
     })();
 
-    // Every path after a successful WASAPI start converges here. The capture
-    // worker remains the sole reset owner, attempts exactly one stream stop,
-    // then snapshots the real native counters after no further reset can occur.
-    let stop_result = audio_client.stop_stream().map_err_str();
-    if spec.echo_cancel_enabled() {
-        echo_diagnostics.log_final(&app, store, direction);
-    }
-
-    capture_result?;
-    stop_result
+    producer_guard.finish_capture(capture_result,
+        || audio_client.stop_stream().map_err_str(),
+        || { if spec.echo_cancel_enabled() { echo_diagnostics.log_final(&app, store, direction); } },
+    )
 }
 
 pub(crate) fn process_loopback_route_start_error(
@@ -856,10 +903,45 @@ mod placeholder_cue_tests {
 
     #[test]
     fn capture_backlog_is_drained_before_waiting_for_another_event() {
-        let queued_packet_sizes = [Some(960), Some(480), None];
+        let queued_packet_sizes = [Some(960), Some(480), Some(0), None];
         let wait_decisions = queued_packet_sizes.map(super::capture_event_wait_required);
 
-        assert_eq!(wait_decisions, [false, false, true]);
+        assert_eq!(wait_decisions, [false, false, true, true]);
+    }
+
+    #[test]
+    fn capture_wait_timeout_is_not_a_query_and_other_wait_failures_propagate() {
+        assert!(super::capture_event_wait_result(Err(wasapi::WasapiError::EventTimeout)).is_ok());
+        assert!(super::capture_event_wait_result(Err(wasapi::WasapiError::UnexpectedWaitResult(7))).is_err());
+    }
+
+    #[test]
+    fn accepted_native_stop_marks_owner_terminal_before_another_publication() {
+        let owner = crate::audio::state::NativeCaptureStartAck::new();
+        owner.observe_native_start(Ok::<(), String>(())).unwrap();
+        let guard = owner.producer_guard();
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(!super::accept_native_capture_stop(&rx, &guard).unwrap());
+        assert!(!owner.health().terminal);
+        tx.send(()).unwrap();
+        assert!(super::accept_native_capture_stop(&rx, &guard).unwrap());
+        assert!(owner.health().terminal);
+        guard.publish_query(std::time::Instant::now(), crate::audio::state::NativeCaptureQuery::Empty,
+            crate::audio::state::NativeCaptureWork::default());
+        assert!(owner.health().terminal);
+        assert_eq!(owner.health().successful_queries, 0);
+        drop(tx);
+        assert!(super::accept_native_capture_stop(&rx, &guard).is_err());
+    }
+
+    #[test]
+    fn capture_stop_request_and_owner_drop_are_not_live_idle() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(!super::capture_stop_requested(&rx).unwrap());
+        tx.send(()).unwrap();
+        assert!(super::capture_stop_requested(&rx).unwrap());
+        drop(tx);
+        assert!(super::capture_stop_requested(&rx).is_err());
     }
 
     #[test]

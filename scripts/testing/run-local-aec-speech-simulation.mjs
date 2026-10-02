@@ -17,6 +17,41 @@ export function localSpeechJobDeadline(nowMs) {
  if(!Number.isSafeInteger(nowMs)||nowMs<0||nowMs>8640000000000000-LOCAL_SPEECH_BUDGETS.ownedJobMs)throw Error("invalid local speech launch time");
  return new Date(nowMs+LOCAL_SPEECH_BUDGETS.ownedJobMs).toISOString();
 }
+export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/run-local-aec-speech-simulation.test.mjs',
+  'scripts/testing/local-aec-mmcss-receipt.mjs','scripts/testing/local-aec-mmcss-receipt.test.mjs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio_tests.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_lifecycle_tests.rs',
+  'apps/desktop/src-tauri/src/audio/state.rs',
+  'apps/desktop/src-tauri/src/audio/state/native_capture_start.rs',
+  'apps/desktop/src-tauri/src/audio/state/native_capture_start/health.rs',
+  'apps/desktop/src-tauri/src/audio/state/native_capture_start/tests.rs',
+  'apps/desktop/src-tauri/src/audio/engine/workers.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_tests.rs',
+ 'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/SCHEMA2-CONTRACT.md',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/tests.rs',
+  'apps/desktop/src-tauri/src/audio/playback_ownership.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
+  'apps/desktop/src-tauri/src/audio/omni/protocol/native_desktop_stream.rs',
+  'scripts/testing/local-aec-speech-analysis.mjs',
+  'scripts/testing/local-aec-speech-provenance.mjs','scripts/testing/generate-local-aec-speech-fixture.mjs','scripts/testing/fixtures/wav-fixture-utils.mjs',
+  'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
+  'scripts/testing/run-watch-mode-local-aec-probe.mjs','scripts/testing/run-watch-mode-live-production-coordinator.mjs',AEC_PROBE_JOB_HELPER]);
+
+export function collectLocalSpeechSourceHashes(root) {
+ return Object.fromEntries(LOCAL_SPEECH_FROZEN_SOURCE_FILES.map(file=>[file,sha(bytes(path.join(root,file),2*1024*1024))]));
+}
+export function verifyLocalSpeechSourceHashes(root, hashes) {
+ for(const file of LOCAL_SPEECH_FROZEN_SOURCE_FILES){
+  if(!hashes||!Object.hasOwn(hashes,file)||!/^[a-f0-9]{64}$/u.test(hashes[file]))throw Error('missing frozen run source: '+file);
+  if(sha(bytes(path.join(root,file),2*1024*1024))!==hashes[file])throw Error('frozen run source changed: '+file);
+ }
+ for(const [file,digest] of Object.entries(hashes)){
+  if(!LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file)||sha(bytes(path.join(root,file),2*1024*1024))!==digest)throw Error('frozen run source changed: '+file);
+ }
+}
 const exactEndpoint = value => /^\{0\.0\.0\.00000000\}\.\{[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\}$/iu.test(value);
 function bytes(file, limit) {
  const resolved=fs.realpathSync.native(file),stat=fs.lstatSync(file);
@@ -35,6 +70,40 @@ export function createLocalSpeechRequest({executionId,outputDirectory,physicalDe
   injectorExecutable,injectorExecutableSha256,sourceWavPath,sourceWavSha256,chunkFrames:2400,chunkIntervalMs:100,
   stageDurationMs:40000,deadlineMs:LOCAL_SPEECH_BUDGETS.inputMs,tailStartFrame}};
 }
+// Versioned native operation evidence only; NOT acoustic/source-clock quality.
+function validCaptureDrain(drain, finalCapture) {
+ const safe=n=>Number.isSafeInteger(n)&&n>=0;
+ const health=drain?.nativeHealth,packet=health?.latestPacket;
+ const coherent=drain?.schemaVersion===2&&drain.ownerContinuity===true
+  &&safe(drain.captureOwnerId)&&drain.captureOwnerId>0&&drain.nativeStartAcknowledged===true
+  &&drain.captureRemainedOpen===true&&['capturing','buffering'].includes(drain.captureStateAtDrain)&&drain.continuousQuietMs===2000
+  &&drain.quietEnergyCeilingDb===-60&&drain.deadlineIsFailureOnly===true
+  &&[drain.quietStartFrame,drain.quietEndFrame,health?.capturedFrames,health?.aecCompletedFrames,
+   health?.dispatchCompletedFrames,health?.residualBytes,health?.successfulQueryStart,
+   health?.successfulQueryEnd,health?.emptyPollCount,health?.rawActivityGeneration,
+   health?.emptyEpoch,health?.progressEpoch,health?.quiescenceEpoch,health?.aecResetGeneration].every(safe)
+  &&drain.quietEndFrame>=drain.quietStartFrame&&health.capturedFrames>0
+  &&health.capturedFrames===health.aecCompletedFrames&&health.aecCompletedFrames===health.dispatchCompletedFrames
+  &&health.residualBytes===0&&health.latestQuery?.kind==='empty'
+  &&health.successfulQueryStart>0&&health.successfulQueryEnd>=health.successfulQueryStart+20
+  &&health.dispatchCompletedFrames===drain.quietEndFrame&&finalCapture>=health.capturedFrames
+  &&(health.lastRawActivityAgeMs===null ? health.rawActivityGeneration===0
+   : safe(health.lastRawActivityAgeMs)&&health.lastRawActivityAgeMs>=2000)
+  &&health.workPending===false&&health.terminal===false&&health.fault===null&&safe(health.maximumProducerPollGapMs)
+  &&health.maximumProducerPollGapMs>0&&health.maximumProducerPollGapMs<=100&&safe(health.maximumConsumerObservationGapMs)
+  &&health.maximumConsumerObservationGapMs>0&&health.maximumConsumerObservationGapMs<=100
+  &&safe(packet?.frames)&&packet.frames>0&&safe(packet.deviceFrameIndex)&&safe(packet.qpc100ns)
+  &&Number.isFinite(packet.rawEnergyDb)&&['silent','dataDiscontinuity','timestampError'].every(k=>typeof packet[k]==='boolean');
+ if(!coherent)return false;
+ if(drain.completionMode==='pcm-frames')return drain.minimumQuietCaptureFrames===96000
+  &&drain.quietEndFrame-drain.quietStartFrame>=96000;
+ if(drain.completionMode!=='native-empty-polls')return false;
+ return drain.minimumQuietCaptureFrames===null&&drain.quietStartFrame===drain.quietEndFrame
+  &&health.latestQuery?.kind==='empty'&&health.capturedFrames===health.aecCompletedFrames&&health.residualBytes===0
+  &&health.successfulQueryStart>0&&health.successfulQueryEnd>health.successfulQueryStart
+  &&health.emptyPollCount===health.successfulQueryEnd-health.successfulQueryStart+1
+  &&health.emptyPollCount>=21&&health.maximumProducerPollGapMs>0;
+}
 export function inspectSpeechOperation(probe, request) {
  const failures=[];
  const check=(ok,message)=>{if(!ok)failures.push(message);};
@@ -44,8 +113,7 @@ export function inspectSpeechOperation(probe, request) {
  check(probe.status==='completed','native operation failed');
  check(probe.capture?.effectiveDeviceId===request.physicalDeviceId&&probe.render?.effectiveDeviceId===request.physicalDeviceId,'actual endpoint identity');
  check(probe.capture?.countsFinal===true&&probe.capture?.framesCaptured>0&&!probe.capture?.lastError&&!probe.capture?.lastErrorCode,'final joined capture');
- check(probe.captureDrain?.captureRemainedOpen===true&&probe.captureDrain?.continuousQuietMs===2000
-  &&probe.captureDrain?.quietEndFrame-probe.captureDrain?.quietStartFrame>=96000,'capture did not stay open through drain');
+ check(validCaptureDrain(probe.captureDrain,probe.capture?.framesCaptured),'capture did not stay open through versioned native drain');
  check(probe.streamEvidence?.streamStartCount===1&&probe.streamEvidence?.streamDrained===true&&probe.streamEvidence?.aborted===false,'not one completed continuous stream');
  check(probe.streamEvidence?.mediaEndVoicedPhysicalFrames>=48000,'missing actually voiced media-end tail');
  check(probe.sourceMediaComplete?.passed===true&&probe.sourceMediaComplete?.endpointId===request.physicalDeviceId,'source media authority');
@@ -58,6 +126,7 @@ export function inspectSpeechOperation(probe, request) {
   &&receipt?.sourceClockValidationPassed===true&&receipt?.sourceClockValidationError===null
   &&receipt?.detail===null&&receipt?.diagnosticOnly===false,
  'source clock evidence rejected or failed injector receipt');
+ check(probe.sourceEvidenceValidationPassed!==false&&!probe.sourceEvidenceValidationError,'retained source evidence rejection');
  check(!probe.failure&&!probe.primaryError&&!probe.cleanupError&&!probe.tapError&&!probe.streamEvidenceSealError&&!probe.sourceInjectorCleanupError&&!probe.streamAbortError,'native failure/custody/seal error');
  const mmcssVal=validateProbeMmcssAudio(probe,request);if(!mmcssVal.valid){for(const f of mmcssVal.failures)failures.push(f);}
  return {passed:failures.length===0,failures,scope:'local-aec-speech-simulation',releaseEligible:false};
@@ -141,20 +210,7 @@ export async function runLocalAecSpeechSimulation(options){
  const compiledCommit=execFileSync(desktop,['--build-commit'],{encoding:'utf8',windowsHide:true,timeout:10000}).trim();
  if(compiledCommit!==buildCommit)throw Error('desktop compiled build commit differs from frozen source');
  if(execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim())throw Error('local speech run requires a clean frozen source commit');
- const sourceFiles=['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/run-local-aec-speech-simulation.test.mjs',
-  'scripts/testing/local-aec-mmcss-receipt.mjs','scripts/testing/local-aec-mmcss-receipt.test.mjs',
-  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio.rs',
-  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio_tests.rs',
-  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_lifecycle_tests.rs',
-  'apps/desktop/src-tauri/src/audio/playback_ownership.rs',
-  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming.rs',
-  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
-  'apps/desktop/src-tauri/src/audio/omni/protocol/native_desktop_stream.rs',
-  'scripts/testing/local-aec-speech-analysis.mjs',
-  'scripts/testing/local-aec-speech-provenance.mjs','scripts/testing/generate-local-aec-speech-fixture.mjs','scripts/testing/fixtures/wav-fixture-utils.mjs',
-  'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
-  'scripts/testing/run-watch-mode-local-aec-probe.mjs','scripts/testing/run-watch-mode-live-production-coordinator.mjs',AEC_PROBE_JOB_HELPER];
- const sourceHashes=Object.fromEntries(sourceFiles.map(file=>[file,sha(bytes(path.join(repoRoot,file),2*1024*1024))]));
+ const sourceHashes=collectLocalSpeechSourceHashes(repoRoot);
  const executionId=`local-aec-speech-${crypto.randomUUID()}`,outputRoot=path.resolve(repoRoot,options.outputRoot);
  const evidenceRoot=path.resolve(repoRoot,'artifacts/testing/aec-iteration');
  if(!outputRoot.startsWith(evidenceRoot+path.sep))throw Error('local speech output must stay in independent AEC evidence root');
@@ -185,7 +241,7 @@ export async function runLocalAecSpeechSimulation(options){
    analyzer:{workspaceRoot:repoRoot,releaseExecutablePath:analyzer,releaseExecutableSha256:options.analyzerSha256,noBuild:true}});
   write(path.join(outputDirectory,'local-speech-quality.json'),outcome.quality);
   outcome.tap={...outcome.quality.tapEvidence,passed:outcome.quality.tapEvidence?.complete===true,verification:'schema2-native-clock-and-PCM-seal'};
-  for(const [file,digest] of Object.entries(sourceHashes))if(sha(bytes(path.join(repoRoot,file),2*1024*1024))!==digest)throw Error('frozen run source changed');
+  verifyLocalSpeechSourceHashes(repoRoot,sourceHashes);
   if(sha(bytes(desktop,200*1024*1024))!==options.desktopSha256||sha(bytes(injector,100*1024*1024))!==options.injectorSha256
    ||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('frozen run executable changed');
   verifyApiSpeechProvenance({fixture,renderBytes:bytes(renderPath,24000*2*180),synthesisDirectory:options.synthesisDirectory,

@@ -32,7 +32,11 @@ fn capture_armed(snapshot: &crate::audio::contracts::AudioRuntimeSnapshot,
         || snapshot.aec_backend != "webrtc-aec3" || snapshot.aec_failure_detail.is_some() {
         return Err("schema2 requires healthy production AEC3 capture".into());
     }
-    if !current.is_started() || !route.stream_bound { return Ok(false); }
+    let health = current.health();
+    if health.terminal || health.fault.is_some() {
+        return Err("schema2 native capture owner terminated while arming".into());
+    }
+    if !health.started || !route.stream_bound { return Ok(false); }
     if route.effective_device_id != endpoint || route.requested_device_id != endpoint {
         return Err("schema2 native capture endpoint mismatch".into());
     }
@@ -181,7 +185,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                 timing.borrow_mut().loop_started();
                 let now = Instant::now();
                 if now >= deadline { return Err("local AEC media/output/capture quiescence deadline exceeded".into()); }
-                let route = pump_timing::measure(&timing, pump_timing::Part::HealthyCapture,
+                pump_timing::measure(&timing, pump_timing::Part::HealthyCapture,
                     || healthy_capture(&store, &request.physical_device_id))?;
                 if !media_complete_flag.get() {
                     if let Some(collected) = pump_timing::measure(&timing, pump_timing::Part::MediaPoll,
@@ -240,8 +244,13 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                     stream_receipt = pump_timing::measure(&timing, pump_timing::Part::NativePump,
                         || stream.poll(&mut events))?;
                 }
+                let route = healthy_capture(&store, &request.physical_device_id)?;
                 if pump_timing::measure(&timing, pump_timing::Part::DrainCheck,
-                    || drain.observe(now, &route, media_complete_flag.get(), stream_receipt.is_some()))? {
+                    || {
+                        let current_owner = store.native_capture_start_ack("inbound");
+                        drain.observe_owned(Instant::now, &route, media_complete_flag.get(),
+                            stream_receipt.is_some(), &expected_owner, current_owner.as_ref())
+                    })? {
                     let receipt = stream_receipt.as_ref().ok_or("missing drained render receipt")?;
                     let simulated_frames = samples.len() + waiting_silence_frames;
                     evidence.borrow().validate(sim.stage_duration_ms, simulated_frames)?;

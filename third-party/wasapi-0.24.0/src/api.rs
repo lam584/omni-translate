@@ -68,6 +68,10 @@ use crate::{
 
 pub(crate) type WasapiRes<T> = Result<T, WasapiError>;
 
+#[path = "event_deadline.rs"]
+mod event_deadline;
+pub use event_deadline::{HighResolutionEventWait, HighResolutionEventWake};
+
 /// Initializes COM for use by the calling thread for the multi-threaded apartment (MTA).
 pub fn initialize_mta() -> HRESULT {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }

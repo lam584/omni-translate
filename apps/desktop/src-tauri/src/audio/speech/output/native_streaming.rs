@@ -143,7 +143,7 @@ struct ScenarioStage {
 // Injectable only at the device boundary: tests exercise the production pump,
 // startup policy, submit clock, tap ordering and receipt rules without hardware.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DesktopRenderWake { NotStarted, Signaled, TimedOut }
+pub(crate) enum DesktopRenderWake { NotStarted, Signaled, TimedOut, DeadlineSignaled }
 
 // A bounded OS wait: round up and never convert to Win32 INFINITE.
 fn render_wait_timeout_ms(timeout: Duration) -> Result<u32, String> {
@@ -151,11 +151,12 @@ fn render_wait_timeout_ms(timeout: Duration) -> Result<u32, String> {
     if millis >= u128::from(u32::MAX) { return Err("native desktop event wait must be finite".into()); }
     Ok(millis as u32)
 }
-fn render_wake_result(result: Result<(), wasapi::WasapiError>) -> Result<DesktopRenderWake, String> {
+fn render_wake_result(result: Result<wasapi::HighResolutionEventWake, wasapi::WasapiError>) -> Result<DesktopRenderWake, String> {
     match result {
-        Ok(()) => Ok(DesktopRenderWake::Signaled),
-        Err(wasapi::WasapiError::EventTimeout) => Ok(DesktopRenderWake::TimedOut),
-        Err(error) => Err(format!("native desktop event wait: {error}")),
+        Ok(wasapi::HighResolutionEventWake::EventSignaled) => Ok(DesktopRenderWake::Signaled),
+        Ok(wasapi::HighResolutionEventWake::DeadlineSignaled) => Ok(DesktopRenderWake::DeadlineSignaled),
+        Ok(wasapi::HighResolutionEventWake::SafetyTimedOut) => Ok(DesktopRenderWake::TimedOut),
+        Err(error) => Err(format!("native desktop event/deadline wait: {error}")),
     }
 }
 
@@ -172,6 +173,7 @@ trait StreamingEndpoint {
 struct EventStreamingEndpoint {
     prepared: endpoint_recovery::PreparedSpeakerRender,
     event_handle: wasapi::Handle,
+    deadline_wait: wasapi::HighResolutionEventWait,
 }
 impl StreamingEndpoint for EventStreamingEndpoint {
     fn buffer_frames(&self) -> u32 { self.prepared.buffer_frames }
@@ -183,7 +185,7 @@ impl StreamingEndpoint for EventStreamingEndpoint {
     fn stop(&self) -> Result<(), String> { self.prepared.audio_client.stop_stream().map_err(|e| e.to_string()) }
     fn reset(&self) -> Result<(), String> { self.prepared.audio_client.reset_stream().map_err(|e| e.to_string()) }
     fn wait(&self, timeout: Duration) -> Result<DesktopRenderWake, String> {
-        render_wake_result(self.event_handle.wait_for_event(render_wait_timeout_ms(timeout)?))
+        render_wake_result(self.deadline_wait.wait_for_event(&self.event_handle, render_wait_timeout_ms(timeout)?))
     }
 }
 
@@ -226,11 +228,14 @@ impl NativeDesktopStream {
             let render_client = audio_client.get_audiorenderclient().map_err(|e| e.to_string())?;
             let buffer_frames = audio_client.get_buffer_size().map_err(|e| e.to_string())?;
             if buffer_frames == 0 { return Err("native desktop endpoint has a zero-frame buffer".into()); }
+            // A local one-shot high-resolution deadline keeps the same finite
+            // wait budget; it does not alter global timer resolution or buffers.
+            let deadline_wait = wasapi::HighResolutionEventWait::new().map_err(|e| e.to_string())?;
             // Register last: no fallible operation may drop an already-bound
             // event before its client during construction failure.
             let event_handle = audio_client.set_get_eventhandle().map_err(|e| e.to_string())?;
             Ok(EventStreamingEndpoint { prepared: endpoint_recovery::PreparedSpeakerRender { endpoint_id, audio_client, render_client,
-                buffer_frames, _com_apartment: com_apartment }, event_handle })
+                buffer_frames, _com_apartment: com_apartment }, event_handle, deadline_wait })
         })?;
         let scenario = active_aec_live_scenario_assignments(cue_id)?;
         let mut stream = Self { endpoint_id: prepared.prepared.endpoint_id.clone(), prepared: Some(Box::new(prepared)),
@@ -618,8 +623,10 @@ mod tests {
     }
     #[test]
     fn event_timeout_is_not_a_device_failure_or_physical_completion() {
-        assert_eq!(render_wake_result(Ok(())),Ok(DesktopRenderWake::Signaled));
-        assert_eq!(render_wake_result(Err(wasapi::WasapiError::EventTimeout)),Ok(DesktopRenderWake::TimedOut));
+        assert_eq!(render_wake_result(Ok(wasapi::HighResolutionEventWake::EventSignaled)),Ok(DesktopRenderWake::Signaled));
+        assert_eq!(render_wake_result(Ok(wasapi::HighResolutionEventWake::DeadlineSignaled)),Ok(DesktopRenderWake::DeadlineSignaled));
+        assert_eq!(render_wake_result(Ok(wasapi::HighResolutionEventWake::SafetyTimedOut)),Ok(DesktopRenderWake::TimedOut));
+        assert!(render_wake_result(Err(wasapi::WasapiError::EventTimeout)).is_err());
         assert!(render_wake_result(Err(wasapi::WasapiError::ClientNotInit)).is_err());
         let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
         assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Ok(DesktopRenderWake::NotStarted));
@@ -628,6 +635,11 @@ mod tests {
         let submitted=stream.submitted_frames;
         assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Ok(DesktopRenderWake::TimedOut));
         assert_eq!(stream.submitted_frames,submitted); assert!(!stream.terminal);
+        for wake in [DesktopRenderWake::Signaled, DesktopRenderWake::DeadlineSignaled] {
+            device.borrow_mut().wakes.push_back((Ok(wake), 0));
+            assert_eq!(stream.wait_for_device(Duration::from_millis(2)), Ok(wake));
+            assert_eq!(stream.submitted_frames, submitted); assert!(!stream.terminal);
+        }
         device.borrow_mut().wakes.push_back((Err("device wait failed".into()),0));
         assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Err("device wait failed".into()));
         stream.abort(&mut |_|Ok(())).unwrap();

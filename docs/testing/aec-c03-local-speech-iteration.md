@@ -247,3 +247,34 @@ only WAIT_TIMEOUT maps to `timedOut`. Historical receipts are not rewritten.
 This change adds no scheduling priority, timer-resolution change, buffer,
 timeout, PCM drop, clock tolerance or acoustic acceptance. The next frozen
 full-material vm171 run is a discriminator, not a guaranteed acoustic pass.
+
+
+## Local high-resolution deadline candidate
+
+Frozen v2 run `local-aec-speech-5a8333b8-2184-4bdc-8e92-edc6794511f9`
+failed after 83.847 seconds in the third phase. The final native wait returned
+raw WAIT_TIMEOUT after 25.874 ms for a 2 ms request; 40319 reference frames
+(~840 ms) were still pending. Last device-full to fault was 25.8757 ms. Entry
+into all phases is not phase quality acceptance. Media, open-tail, final cue
+and acoustic quality checks remain incomplete; original failed files stay sealed.
+The retained ordinary timeout distribution also exceeds the requested interval
+(median 4.549 ms, 95th percentile 9.390 ms), but cannot separate readiness and
+dispatch latency. This justifies a narrow precision candidate, not a proven cause.
+
+The incremental endpoint now owns one unnamed local high-resolution waitable
+timer. A single nonalertable wait-any prioritizes the existing WASAPI event at
+index zero, with the one-shot relative 2 ms deadline at index one and the SAME
+finite 2 ms outer safety timeout. No global timer resolution or thread priority
+is changed. Timer arm/cancel/wait failures stay errors; there is no silent
+legacy fallback, extra device buffer, sleep, dropped PCM or underrun exemption.
+The timer is created before the audio event is bound, keeping binding last;
+clients/event/deadline are released before the playback permit.
+
+Schema v3 separates `deadlineSignaled` (timer object) from `signaled` (audio
+event) and `timedOut` (raw wait timeout), with the explicit wait mechanism.
+Schema v2 retains its historical event-only meaning; v1 remains insufficient.
+All result-bound span/maximum/counter and residual-witness checks still apply.
+A timer wake only permits another unchanged padding/pump check. It is neither
+physical audio evidence nor a hard dispatch guarantee. Deterministic device-free
+facade tests and the declared vendor/consumer/provenance gates must pass before
+a separately frozen full-original vm171 run can evaluate this candidate.

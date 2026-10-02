@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {isMain, repoRoot} from '../lib/testing-common.mjs';
 // Reviewed upstream archive and exact event-only patch identity.
-export const WASAPI_EVENT_MANIFEST_SHA256 = '5d45a38c6352099f267fe9c29ab0f45c92d109b8988e60d3173317b97d76912f';
+export const WASAPI_EVENT_MANIFEST_SHA256 = 'c254641a900ab4f1226adccecc0d3d1cd898b245a6729891db705dd9e72622d6';
 const UPSTREAM_CRATE_CHECKSUM = 'ee144c215d8d31e94c1a599fbaf540ca82a7017e4f1786816b179f334fac751d';
 const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const check=(ok,message)=>{if(!ok)throw Error(`wasapi event provenance: ${message}`);};

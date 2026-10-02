@@ -108,13 +108,13 @@
     {
       "path": "src/api.rs",
       "upstreamSha256": "3029e6b6e31d0002961c0058502a42b8a9213eeb533f43b48a3a0f9a549ab24b",
-      "patchedSha256": "67b77bb104950917e92ca24388736bf3f8bb74d3dd3f54f2526772eebe9ebb30",
+      "patchedSha256": "4444a7aa1a28edaaae63fa599ddc1357d1993807ecbd76ad63a3be1482f1ce2b",
       "modified": true
     },
     {
       "path": "src/errors.rs",
       "upstreamSha256": "3c823f0b6f938bc20a4d3a44cb3574d42a10502fbf1dde79350b01bfbf58f0a1",
-      "patchedSha256": "610d31f26d4ad40ee9492370a6aa80c0d8aa10a2f9f2a4c599fb4dd159a837ac",
+      "patchedSha256": "e70d1f5206ccd1694218df5a52474edca113c0ebff5ad21748a208d4470db58f",
       "modified": true
     },
     {
@@ -142,6 +142,18 @@
       "sha256": "d533c422f938df7aec58406b19bc05b76f0a617741dad8e684599ee5b544b797",
       "patchedSha256": "d533c422f938df7aec58406b19bc05b76f0a617741dad8e684599ee5b544b797",
       "purpose": "Seven device-free raw classification and registration RAII policy unit tests."
+    },
+    {
+      "path": "src/event_deadline.rs",
+      "sha256": "8197712515680449c76f3067baa1e4fcd8688c9d670650ec7f19c71215013ac4",
+      "patchedSha256": "8197712515680449c76f3067baa1e4fcd8688c9d670650ec7f19c71215013ac4",
+      "purpose": "Renderer-owned high-resolution one-shot deadline with finite event-first wait-any, immediate wait error capture, cancellation and non-Send/non-Sync RAII."
+    },
+    {
+      "path": "src/event_deadline_tests.rs",
+      "sha256": "9922da1c0e7a6c937b880f44c30024dd4d96696e545c790bf5bcbc479ad9588e",
+      "patchedSha256": "9922da1c0e7a6c937b880f44c30024dd4d96696e545c790bf5bcbc479ad9588e",
+      "purpose": "Sixteen device-free facade tests of priority, raw wake distinction, lifecycle, overlap, finite units, error preservation, stale signals and trait assertions."
     }
   ],
   "intent": [
@@ -149,7 +161,8 @@
     "Match raw WAIT_OBJECT_0/WAIT_TIMEOUT/WAIT_FAILED distinctly. Only WAIT_TIMEOUT is EventTimeout; preserve immediate thread Win32 error on WAIT_FAILED and raw unexpected result codes.",
     "The pinned windows-core 0.62.2 uses windows-result 0.4.1, whose Error::from_thread is the renamed Error::from_win32 and reads GetLastError. No SetLastError workaround is introduced.",
     "Library-only offline validation: remove 12 explicit example tables and the rand/simplelog/sysinfo dev-dependency tables. Package/lib/production dependency bytes and upstream library tests remain unchanged. All 12 published example source files remain unchanged.",
-    "Root workspace/member/patch/lock integration belongs to the main agent and is not part of this vendoring change."
+    "Root workspace/member/patch/lock integration belongs to the main agent and is not part of this vendoring change.",
+    "Add an isolated per-renderer high-resolution one-shot timer, event-first finite wait-any, structured cancellation errors and deterministic facade tests. No global timer, priority, buffer or PCM changes."
   ],
   "excludedUpstreamFiles": [
     "Cargo.lock",
@@ -285,6 +298,18 @@
       "intent": "Library-only offline validation: omit unused example dev-dependency; retain all library tests and production dependencies.",
       "beforeUtf8": "[dev-dependencies.sysinfo]\nversion = \"0.38\"\n",
       "afterUtf8": ""
+    },
+    {
+      "file": "src/api.rs",
+      "intent": "Declare and reexport only the isolated renderer-owned high-resolution event/deadline helper.",
+      "beforeUtf8": "pub(crate) type WasapiRes<T> = Result<T, WasapiError>;\r\n",
+      "afterUtf8": "pub(crate) type WasapiRes<T> = Result<T, WasapiError>;\r\n\r\n#[path = \"event_deadline.rs\"]\r\nmod event_deadline;\r\npub use event_deadline::{HighResolutionEventWait, HighResolutionEventWake};\r\n"
+    },
+    {
+      "file": "src/errors.rs",
+      "intent": "Add finite/busy/unusable deadline errors and structured cancellation failure retaining the primary wait error.",
+      "beforeUtf8": "    UnexpectedWaitResult(u32),\r\n",
+      "afterUtf8": "    UnexpectedWaitResult(u32),\r\n    #[error(\"Event deadline wait must be finite, got {0} milliseconds\")]\r\n    InvalidEventWaitTimeout(u32),\r\n    #[error(\"Event deadline already has an active wait\")]\r\n    EventDeadlineBusy,\r\n    #[error(\"Event deadline cannot be reused after an arm or cancellation failure\")]\r\n    EventDeadlineUnusable,\r\n    #[error(\"Event deadline cancellation failed: {cancel}; primary wait error: {primary:?}\")]\r\n    EventDeadlineCancel {\r\n        #[source]\r\n        primary: Option<Box<WasapiError>>,\r\n        cancel: windows_core::Error,\r\n    },\r\n"
     }
   ],
   "validation": {
@@ -293,8 +318,8 @@
     "hardwareOrAudioApisExecuted": false,
     "networkUsed": false,
     "unitTestsExecuted": false,
-    "unitTestCount": 7,
-    "remaining": "Main agent must run offline workspace resolution and --lib tests; policy tests do not assert a real kernel handle close."
+    "unitTestCount": 23,
+    "remaining": "Main agent must run offline library compilation and tests. Seven event policy tests plus sixteen deadline facade/trait tests do not call native timers/audio or assert machine timing; real scheduling improvement remains unproven."
   },
   "metadataHashPolicy": "VENDOR-PROVENANCE.json is implicitly the metadata artifact, excluded from its own files/addedFiles hashes; freeze its full SHA256 in the external verifier test constant."
 }

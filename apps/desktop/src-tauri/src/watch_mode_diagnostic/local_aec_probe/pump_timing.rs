@@ -26,7 +26,7 @@ enum Outcome { Completed, Rejected, Unwound }
 // Derived only from this operation's returned native result, not aggregate counters.
 #[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-enum NativeRenderWake { NotStarted, Signaled, TimedOut }
+enum NativeRenderWake { NotStarted, Signaled, TimedOut, DeadlineSignaled }
 impl From<crate::audio::speech::DesktopRenderWake> for NativeRenderWake {
     fn from(wake: crate::audio::speech::DesktopRenderWake) -> Self {
         use crate::audio::speech::DesktopRenderWake;
@@ -34,6 +34,7 @@ impl From<crate::audio::speech::DesktopRenderWake> for NativeRenderWake {
             DesktopRenderWake::NotStarted => Self::NotStarted,
             DesktopRenderWake::Signaled => Self::Signaled,
             DesktopRenderWake::TimedOut => Self::TimedOut,
+            DesktopRenderWake::DeadlineSignaled => Self::DeadlineSignaled,
         }
     }
 }
@@ -71,14 +72,14 @@ pub(super) struct PumpTiming {
     active: u64,
     evicted: u64,
     totals: [Totals; PART_COUNT],
-    native_render_wakes: [u64; 3],
+    native_render_wakes: [u64; 4],
     spans: VecDeque<Span>,
 }
 impl PumpTiming {
     pub(super) fn new() -> Self {
         Self { origin: Instant::now(), previous_loop: None, completed: 0,
             active: 0, evicted: 0, totals: std::array::from_fn(|_| Totals::default()),
-            spans: VecDeque::with_capacity(RETAINED_SPANS), native_render_wakes: [0; 3] }
+            spans: VecDeque::with_capacity(RETAINED_SPANS), native_render_wakes: [0; 4] }
     }
     pub(super) fn loop_started(&mut self) {
         let now = Instant::now();
@@ -115,15 +116,16 @@ impl PumpTiming {
     }
     // Serialize only AFTER the stream has drained/aborted and owned cleanup.
     pub(super) fn receipt(&self) -> Value {
-        json!({"schemaVersion":2,"artifactKind":"local-aec-pump-timing-diagnostic",
+        json!({"schemaVersion":3,"artifactKind":"local-aec-pump-timing-diagnostic",
             "wakeIdentityPolicy":"returned-native-result/v1",
+            "nativeRenderWaitMechanism":"event-or-local-high-resolution-deadline/v1",
             "diagnosticOnly":true,"qualityAcceptance":false,"releaseEligible":false,
             "monotonicDurationUnit":"microseconds","qpcUnit":"100ns",
             "requestedSleepMs":2,"nativeRenderWaitTimeoutMs":2,"retainedSpanLimit":RETAINED_SPANS,
             "completedSpanCount":self.completed,"activeSpanCount":self.active,
             "evictedOldDiagnosticSpans":self.evicted,"nestedSpansMayOverlap":true,
             "sumAcrossPartsIsNotLoopDuration":true,
-            "nativeRenderWakeTotals":{"notStarted":self.native_render_wakes[0],"signaled":self.native_render_wakes[1],"timedOut":self.native_render_wakes[2]},
+            "nativeRenderWakeTotals":{"notStarted":self.native_render_wakes[0],"signaled":self.native_render_wakes[1],"timedOut":self.native_render_wakes[2],"deadlineSignaled":self.native_render_wakes[3]},
             "parts":PARTS.iter().zip(&self.totals).map(|(part,total)|json!({"part":part,"totals":total})).collect::<Vec<_>>(),
             "recentSpans":self.spans})
     }
@@ -220,14 +222,14 @@ mod tests {
         let timing = RefCell::new(PumpTiming::new());
         // Successful wakes (including timeout/not-started) are not rejections.
         use crate::audio::speech::DesktopRenderWake;
-        for wake in [DesktopRenderWake::NotStarted, DesktopRenderWake::Signaled, DesktopRenderWake::TimedOut] {
+        for wake in [DesktopRenderWake::NotStarted, DesktopRenderWake::Signaled, DesktopRenderWake::TimedOut, DesktopRenderWake::DeadlineSignaled] {
             assert_eq!(measure_native_render_wait(&timing, || Ok(wake)), Ok(wake));
         }
         let result = measure_native_render_wait(&timing,
             || Err("permit cancelled".into()));
         assert_eq!(result, Err("permit cancelled".into()));
         let timing = timing.borrow();
-        assert_eq!(timing.totals[Part::NativeRenderWait as usize].count, 4);
+        assert_eq!(timing.totals[Part::NativeRenderWait as usize].count, 5);
         assert_eq!(timing.totals[Part::NativeRenderWait as usize].rejected, 1);
         assert_eq!(timing.totals[Part::RequestedSleep as usize].count, 0);
         let receipt = timing.receipt();
@@ -238,18 +240,19 @@ mod tests {
             assert_eq!(parts[index]["part"], serde_json::to_value(part).unwrap());
         }
         assert_eq!(parts[Part::NativeRenderWait as usize]["part"], "nativeRenderWait");
-        assert_eq!(receipt["schemaVersion"], 2);
+        assert_eq!(receipt["schemaVersion"], 3);
         assert_eq!(receipt["wakeIdentityPolicy"], "returned-native-result/v1");
+        assert_eq!(receipt["nativeRenderWaitMechanism"], "event-or-local-high-resolution-deadline/v1");
         assert_eq!(receipt["nativeRenderWaitTimeoutMs"], 2);
-        for (index, wake) in ["notStarted", "signaled", "timedOut"].iter().enumerate() {
+        for (index, wake) in ["notStarted", "signaled", "timedOut", "deadlineSignaled"].iter().enumerate() {
             assert_eq!(receipt["recentSpans"][index]["nativeRenderWake"], *wake);
             assert_eq!(receipt["recentSpans"][index]["outcome"], "completed");
         }
-        assert_eq!(receipt["recentSpans"][3]["nativeRenderWake"], Value::Null);
+        assert_eq!(receipt["recentSpans"][4]["nativeRenderWake"], Value::Null);
         let maximum = &receipt["parts"][Part::NativeRenderWait as usize]["totals"]["maximumSpan"];
         let sequence = maximum["sequence"].as_u64().unwrap() as usize;
         assert_eq!(maximum, &receipt["recentSpans"][sequence]);
-        assert_eq!(receipt["nativeRenderWakeTotals"],json!({"notStarted":1,"signaled":1,"timedOut":1}));
+        assert_eq!(receipt["nativeRenderWakeTotals"],json!({"notStarted":1,"signaled":1,"timedOut":1,"deadlineSignaled":1}));
         assert_eq!(receipt["activeSpanCount"], 0);
     }
     #[test]
@@ -273,7 +276,7 @@ mod tests {
         assert_eq!(timing.spans[2].native_render_wake, None);
         assert_eq!(timing.spans[3].outcome, Outcome::Unwound);
         assert_eq!(timing.spans[3].native_render_wake, None);
-        assert_eq!(timing.native_render_wakes, [0, 1, 0]);
+        assert_eq!(timing.native_render_wakes, [0, 1, 0, 0]);
     }
     #[test]
     fn evicted_maximum_keeps_its_own_wake_not_the_latest_aggregate() {
@@ -284,7 +287,7 @@ mod tests {
             timing.record(Part::NativeRenderWait, origin, origin + Duration::from_micros(duration),
                 Some(100), Some(100 + duration * 10), Outcome::Completed, Some(wake));
         }
-        assert_eq!(timing.native_render_wakes, [0, 1, 1023]);
+        assert_eq!(timing.native_render_wakes, [0, 1, 1023, 0]);
         assert_eq!(timing.evicted, 512);
         assert!(timing.spans.iter().all(|span| span.native_render_wake == Some(NativeRenderWake::TimedOut)));
         let maximum = timing.totals[Part::NativeRenderWait as usize].maximum_span.as_ref().unwrap();

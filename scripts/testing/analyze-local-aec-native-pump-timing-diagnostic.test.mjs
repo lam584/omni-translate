@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import fs from 'node:fs';
 import { analyzeLocalAecNativePumpTimingDiagnostic as analyze, NATIVE_PUMP_TIMING_PARTS as PARTS, NATIVE_RENDER_WAKES as WAKES } from './analyze-local-aec-native-pump-timing-diagnostic.mjs';
 
-function fixture(entries = []) {
+function fixture(entries = [], version = 3) {
   const parts = PARTS.map(part => ({part, totals: {count: 0, rejected: 0, unwound: 0,
     invalidQpc: 0, totalMicros: 0, maximumMicros: 0, maximumSpan: null}}));
-  const wakeTotals = {notStarted: 0, signaled: 0, timedOut: 0};
+  const wakeTotals = Object.fromEntries((version === 2 ? WAKES.filter(k => k !== 'deadlineSignaled') : WAKES).map(k => [k, 0]));
   const spans = entries.map(([part, durationMicros, outcome = 'completed', valid = true, explicitWake = undefined], sequence) => {
     let nativeRenderWake = null;
     if (part === 'nativeRenderWait' && outcome === 'completed') {
@@ -30,7 +30,7 @@ function fixture(entries = []) {
     }
     return value;
   });
-  return {schemaVersion: 2, wakeIdentityPolicy: 'returned-native-result/v1',
+  return {schemaVersion: version, ...(version === 3 ? {nativeRenderWaitMechanism: 'event-or-local-high-resolution-deadline/v1'} : {}), wakeIdentityPolicy: 'returned-native-result/v1',
     artifactKind: 'local-aec-pump-timing-diagnostic',
     nativeRenderWakeTotals: wakeTotals,
     diagnosticOnly: true, qualityAcceptance: false, releaseEligible: false,
@@ -45,7 +45,7 @@ test('native event wait is never ordinary sleep, even on rejection', () => {
   const value = fixture([['nativeRenderWait', 2000], ['nativeRenderWait', 50, 'rejected'],
     ['requestedSleep', 2100], ['nativeRenderWait', 10, 'unwound', false]]);
   const before = structuredClone(value), result = analyze(value);
-  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.schemaVersion, 3);
   assert.equal(result.nativeRenderWait.count, 3);
   assert.equal(result.nativeRenderWait.rejected, 1);
   assert.equal(result.nativeRenderWait.unwound, 1);
@@ -61,6 +61,37 @@ test('native event wait is never ordinary sleep, even on rejection', () => {
   assert.equal(result.nativeClockAccuracyEstablished, false);
   assert.equal(result.deviceCalls, 0); assert.equal(result.providerCalls, 0);
   assert.deepEqual(value, before);
+});
+
+test('local timer signal is typed separately from native event and raw WAIT_TIMEOUT', () => {
+  const value = fixture([['nativeRenderWait', 2000, 'completed', true, 'deadlineSignaled'],
+    ['nativeRenderWait', 3000, 'completed', true, 'timedOut']]);
+  const result = analyze(value);
+  assert.equal(result.nativeRenderWakeTotals.deadlineSignaled, 1);
+  assert.equal(result.nativeRenderWakeTotals.timedOut, 1);
+  assert.equal(result.nativeRenderWakeTotals.signaled, 0);
+  assert.equal(result.nativeRenderWaitMechanism, 'event-or-local-high-resolution-deadline/v1');
+  for (const corrupt of [v => { delete v.nativeRenderWaitMechanism; },
+    v => { v.nativeRenderWaitMechanism = 'event-only'; },
+    v => { delete v.nativeRenderWakeTotals.deadlineSignaled; }]) {
+    const invalid = structuredClone(value); corrupt(invalid);
+    assert.throws(() => analyze(invalid), /native pump timing/u);
+  }
+});
+
+test('sealed v2 event-only evidence remains diagnostic without inventing timer wakes', () => {
+  const value = fixture([['nativeRenderWait', 2000, 'completed', true, 'timedOut']], 2);
+  const original = structuredClone(value), result = analyze(value);
+  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.nativeRenderWaitMechanism, 'native-event-only/v1');
+  assert.equal(result.nativeRenderWakeTotals.deadlineSignaled, undefined);
+  assert.deepEqual(value, original);
+  for (const corrupt of [v => { v.nativeRenderWakeTotals.deadlineSignaled = 0; },
+    v => { v.nativeRenderWaitMechanism = 'event-or-local-high-resolution-deadline/v1'; },
+    v => { v.recentSpans[0].nativeRenderWake = 'deadlineSignaled'; }]) {
+    const invalid = structuredClone(value); corrupt(invalid);
+    assert.throws(() => analyze(invalid), /native pump timing/u);
+  }
 });
 
 test('zero-count and bounded evicted receipts remain diagnostic', () => {

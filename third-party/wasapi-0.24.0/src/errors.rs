@@ -26,6 +26,18 @@ pub enum WasapiError {
     EventTimeout,
     #[error("Unexpected handle wait result: {0:#010x}")]
     UnexpectedWaitResult(u32),
+    #[error("Event deadline wait must be finite, got {0} milliseconds")]
+    InvalidEventWaitTimeout(u32),
+    #[error("Event deadline already has an active wait")]
+    EventDeadlineBusy,
+    #[error("Event deadline cannot be reused after an arm or cancellation failure")]
+    EventDeadlineUnusable,
+    #[error("Event deadline cancellation failed: {cancel}; primary wait error: {primary:?}")]
+    EventDeadlineCancel {
+        #[source]
+        primary: Option<Box<WasapiError>>,
+        cancel: windows_core::Error,
+    },
     #[error("Cant use automatic format conversion in exclusive mode")]
     AutomaticFormatConversionInExclusiveMode,
     #[error("Cant use Loopback with exclusive mode")]

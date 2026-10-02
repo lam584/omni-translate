@@ -9,11 +9,11 @@ export const NATIVE_PUMP_TIMING_PARTS = Object.freeze([
   'requestedSleep', 'nativeRenderWait', 'abort', 'sourceCleanup',
 ]);
 const PARTS = new Set(NATIVE_PUMP_TIMING_PARTS);
-export const NATIVE_RENDER_WAKES = Object.freeze(['notStarted', 'signaled', 'timedOut']);
-const WAKES = new Set(NATIVE_RENDER_WAKES);
+const EVENT_ONLY_WAKES = Object.freeze(['notStarted', 'signaled', 'timedOut']);
+export const NATIVE_RENDER_WAKES = Object.freeze([...EVENT_ONLY_WAKES, 'deadlineSignaled']);
 const integer = n => Number.isSafeInteger(n) && n >= 0;
 const check = (ok, message) => { if (!ok) throw Error(`native pump timing: ${message}`); };
-function span(value, completed) {
+function span(value, completed, wakes) {
   check(value && PARTS.has(value.part), 'unknown span part');
   for (const key of ['sequence', 'startElapsedMicros', 'endElapsedMicros', 'durationMicros']) {
     check(integer(value[key]), `invalid span ${key}`);
@@ -33,14 +33,21 @@ function span(value, completed) {
     && value.startQpc100ns > 0 && value.endQpc100ns >= value.startQpc100ns;
   check(value.qpcValid === valid, 'inconsistent QPC validity');
   if (value.part === 'nativeRenderWait' && value.outcome === 'completed') {
-    check(WAKES.has(value.nativeRenderWake), 'invalid nativeRenderWake for completed nativeRenderWait');
+    check(wakes.has(value.nativeRenderWake), 'invalid nativeRenderWake for completed nativeRenderWait');
   } else {
     check(value.nativeRenderWake === null, 'non-null nativeRenderWake on non-wait or incomplete span');
   }
 }
 export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
-  check(timing?.schemaVersion === 2 && timing.artifactKind === 'local-aec-pump-timing-diagnostic', 'unsupported receipt');
+  check([2, 3].includes(timing?.schemaVersion) && timing.artifactKind === 'local-aec-pump-timing-diagnostic', 'unsupported receipt');
   check(timing.wakeIdentityPolicy === 'returned-native-result/v1', 'unsupported wake identity policy');
+  const wakeNames = timing.schemaVersion === 2 ? EVENT_ONLY_WAKES : NATIVE_RENDER_WAKES;
+  const wakeKinds = new Set(wakeNames);
+  if (timing.schemaVersion === 3) {
+    check(timing.nativeRenderWaitMechanism === 'event-or-local-high-resolution-deadline/v1', 'unsupported wait mechanism');
+  } else {
+    check(timing.nativeRenderWaitMechanism === undefined, 'v2 cannot claim a timer mechanism');
+  }
   check(timing.diagnosticOnly === true && timing.qualityAcceptance === false
     && timing.releaseEligible === false, 'diagnostic boundary missing');
   check(timing.monotonicDurationUnit === 'microseconds' && timing.qpcUnit === '100ns', 'unsupported units');
@@ -67,25 +74,25 @@ export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
     if (total.count === 0) {
       check(total.maximumSpan === null && total.totalMicros === 0 && total.maximumMicros === 0, 'nonempty zero-count totals');
     } else {
-      span(total.maximumSpan, completed);
+      span(total.maximumSpan, completed, wakeKinds);
       check(total.maximumSpan.part === entry.part && total.maximumSpan.durationMicros === total.maximumMicros, 'inconsistent maximum span');
     }
     byPart.set(entry.part, total);
     count += total.count;
   }
   const wakes = timing.nativeRenderWakeTotals;
-  check(wakes && ['notStarted', 'signaled', 'timedOut'].every(key => integer(wakes[key])), 'invalid wake totals');
+  check(wakes && Object.keys(wakes).length === wakeNames.length && wakeNames.every(key => integer(wakes[key])), 'invalid wake totals');
   const waitTotals = byPart.get('nativeRenderWait');
-  check(wakes.notStarted + wakes.signaled + wakes.timedOut === waitTotals.count - waitTotals.rejected - waitTotals.unwound, 'wake total mismatch');
+  check(wakeNames.reduce((sum, key) => sum + wakes[key], 0) === waitTotals.count - waitTotals.rejected - waitTotals.unwound, 'wake total mismatch');
   check(Number.isSafeInteger(count) && count === completed, 'completed total mismatch');
   check(Array.isArray(timing.recentSpans) && timing.recentSpans.length === Math.min(completed, 512), 'invalid retained spans');
   check(timing.evictedOldDiagnosticSpans === completed - timing.recentSpans.length, 'eviction mismatch');
   const retained = new Map();
   const retainedBySequence = new Map();
-  const retainedWakes = {notStarted: 0, signaled: 0, timedOut: 0};
+  const retainedWakes = Object.fromEntries(wakeNames.map(kind => [kind, 0]));
   let latestRetainedNativeWaitSpan = null;
   for (const [index, value] of timing.recentSpans.entries()) {
-    span(value, completed);
+    span(value, completed, wakeKinds);
     check(value.sequence === timing.evictedOldDiagnosticSpans + index, 'noncontiguous retained sequence');
     retainedBySequence.set(value.sequence, value);
     const total = byPart.get(value.part);
@@ -104,7 +111,7 @@ export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
       }
     }
   }
-  for (const kind of ['notStarted', 'signaled', 'timedOut']) {
+  for (const kind of wakeNames) {
     check(timing.evictedOldDiagnosticSpans === 0
       ? retainedWakes[kind] === wakes[kind]
       : retainedWakes[kind] <= wakes[kind], `retained wake ${kind} mismatch`);
@@ -136,7 +143,7 @@ export function analyzeLocalAecNativePumpTimingDiagnostic(timing) {
   // Preserve classification, including rejected waits. A timeout is a completed
   // wait, not a rejection or ordinary sleep; no scheduling/quality thresholds.
   return {
-    schemaVersion: 2, artifactKind: 'local-aec-native-pump-timing-analysis-diagnostic',
+    schemaVersion: timing.schemaVersion, nativeRenderWaitMechanism: timing.nativeRenderWaitMechanism ?? 'native-event-only/v1', artifactKind: 'local-aec-native-pump-timing-analysis-diagnostic',
     diagnosticOnly: true, qualityAcceptance: false, aecQualityAcceptance: false,
     releaseEligible: false, overallPassed: false, providerCalls: 0, deviceCalls: 0,
     nativeClockAccuracyEstablished: false, sumAcrossPartsIsNotLoopDuration: true,

@@ -23,3 +23,27 @@ test('rejects unsafe paths, identity change and undeclared upstream mutation',()
   }
 });
 test('frozen real vendor, manifest and workspace lock agree',()=>assert.equal(verifyRepo().passed,true));
+
+test('added deadline sources require exact hashes and inventory without widening original modified scope',()=>{
+  function addedFixture() {
+    const f=fixture();
+    for(const path of ['src/event_deadline.rs','src/event_deadline_tests.rs']) {
+      const bytes=Buffer.from(path);f.contents.set(path,bytes);f.inventory.push(path);
+      f.manifest.addedFiles.push({path,patchedSha256:digest(bytes)});
+    }
+    return f;
+  }
+  const good=verify(addedFixture());
+  assert.equal(good.verifiedFileCount,8);
+  assert.deepEqual(good.modifiedFiles,['Cargo.toml','src/api.rs','src/errors.rs']);
+  for(const mutate of [
+    f=>f.contents.set('src/event_deadline.rs',Buffer.from('altered deadline')),
+    f=>f.manifest.addedFiles[1].patchedSha256='c'.repeat(64),
+    f=>f.inventory.pop(),
+    f=>f.inventory.push('src/undeclared_deadline.rs'),
+    f=>f.manifest.addedFiles.push({...f.manifest.addedFiles[0]}),
+  ]) {
+    const value=addedFixture();mutate(value);
+    assert.throws(()=>verify(value),/wasapi event provenance/u);
+  }
+});

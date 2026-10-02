@@ -147,6 +147,8 @@ function Start-WatchModeDesktopShell {
     "OMNI_WATCH_MODE_AUTHORITATIVE_TRANSFORMED_REFERENCE_FRAMES", "OMNI_WATCH_MODE_INPUT_SAMPLE_RATE_HZ",
     "OMNI_WATCH_MODE_MEDIA_AUTHORITY_RUN_MARKER", "OMNI_WATCH_MODE_MEDIA_AUTHORITY_CELL_ID", "OMNI_WATCH_MODE_MEDIA_AUTHORITY_LEASE_ID",
     "OMNI_WATCH_MODE_READINESS_PATH",
+    "OMNI_WATCH_MODE_COMPLETION_POLICY", "OMNI_WATCH_MODE_MEDIA_COMPLETE_PATH",
+    "OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY", "OMNI_WATCH_MODE_AEC_SIGNED_FREEZE_SHA256",
     "OMNI_WATCH_MODE_INPUT_COMPLETE_PATH", "OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH", "OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS",
     "OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS", "OMNI_WATCH_MODE_LOCAL_PLAYBACK_DRAIN_TIMEOUT_MS", "OMNI_WATCH_MODE_REPORT_WRITE_TIMEOUT_MS",
     "OMNI_WATCH_MODE_EXIT_AFTER_REPORT", "OMNI_WATCH_MODE_LAUNCH_ID", "OMNI_WATCH_MODE_SOURCE_HEAD_COMMIT",
@@ -285,7 +287,24 @@ function Start-WatchModeDesktopShell {
     )) {
       throw 'desktop strict terminal authority paths do not match the request-bound output directory'
     }
+    $env:OMNI_WATCH_MODE_COMPLETION_POLICY = if ([string]$request.completionPolicy -ceq 'aec-output-quiescent-v2') {
+      'aec-output-quiescent-v2'
+    } else { $null }
+    $env:OMNI_WATCH_MODE_MEDIA_COMPLETE_PATH = if ([string]$request.completionPolicy -ceq 'aec-output-quiescent-v2') {
+      [System.IO.Path]::GetFullPath([string]$request.paths.mediaComplete)
+    } else { $null }
     $env:OMNI_WATCH_MODE_INPUT_COMPLETE_PATH = $requestedInputCompletePath
+    if ([string]$request.completionPolicy -ceq 'aec-output-quiescent-v2') {
+      $freezePath = Join-Path $OutputDirectory 'aec-threshold-freeze.json'
+      if (-not (Test-Path -LiteralPath $freezePath -PathType Leaf)) {
+        throw 'AEC requires coordinator-signed frozen thresholds before starting any paid desktop session'
+      }
+      $env:OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY = [IO.Path]::GetFullPath($OutputDirectory)
+      $env:OMNI_WATCH_MODE_AEC_SIGNED_FREEZE_SHA256 = (Get-FileHash -LiteralPath $freezePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else {
+      $env:OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY = $null
+      $env:OMNI_WATCH_MODE_AEC_SIGNED_FREEZE_SHA256 = $null
+    }
     $env:OMNI_WATCH_MODE_TERMINAL_AUTHORITY_PATH = $requestedTerminalAuthorityPath
     $env:OMNI_WATCH_MODE_INPUT_COMPLETION_WATCHDOG_MS = "$([int]$Context.lifecycle.inputCompletionWatchdogSeconds * 1000)"
     $env:OMNI_WATCH_MODE_PROVIDER_FINISH_TIMEOUT_MS = "$([int]$Context.lifecycle.providerFinishTimeoutSeconds * 1000)"

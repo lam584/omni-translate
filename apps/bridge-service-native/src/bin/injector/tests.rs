@@ -335,3 +335,14 @@
             timeout,
         ));
     }
+
+    #[test]
+    fn source_clock_reconstruction_uses_device_frequency_not_sample_rate_or_queue_timestamp() {
+        // Three distinct clock unit domains representing the same played second.
+        for frequency in [48_000, 384_000, 10_000_000] {
+            assert_eq!(source_clock_origin(frequency, frequency, 90_000_000).unwrap(), 80_000_000);
+        }
+        assert!(source_clock_origin(1, 0, 20).is_err());
+        assert!(source_clock_origin(48_000, 48_000, 9_999_999).is_err());
+        assert!(source_clock_origin(u64::MAX, 1, u64::MAX).is_err());
+    }

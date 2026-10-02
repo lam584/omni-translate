@@ -1,4 +1,9 @@
 mod config;
+mod open_input_drain;
+mod aec_terminal_events;
+#[cfg(test)]
+mod open_input_drain_tests;
+mod source_coverage;
 pub(crate) mod local_aec_probe;
 mod playback_drain;
 mod provider_terminal_observer;
@@ -216,7 +221,15 @@ where
     let producer_start_time_utc_ticks = current_process_start_time_utc_ticks()?;
     let producer_started_at_unix_ms =
         process_start_unix_ms_from_utc_ticks(producer_start_time_utc_ticks)?;
+    let completion_policy = read_env("OMNI_WATCH_MODE_COMPLETION_POLICY").filter(|value| !value.trim().is_empty());
+    if completion_policy.as_deref().is_some_and(|policy| policy != open_input_drain::AEC_COMPLETION_POLICY) {
+        return Err("OMNI_WATCH_MODE_COMPLETION_POLICY is unsupported".to_string());
+    }
+    let media_complete_path = if completion_policy.is_some() {
+        Some(required_environment_value(&read_env, "OMNI_WATCH_MODE_MEDIA_COMPLETE_PATH")?)
+    } else { None };
     Ok(StrictPaidTerminalConfig {
+        completion_policy, media_complete_path,
         identity: ExpectedInputCompleteIdentity {
             run_marker: required_environment_value(&read_env, "OMNI_WATCH_MODE_RUN_MARKER")?,
             cell_id: required_environment_value(&read_env, "OMNI_WATCH_MODE_CELL_ID")?,
@@ -539,6 +552,13 @@ fn initialize_strict_paid_terminal(app: &AppHandle, run_marker: &str) -> bool {
                 &config.identity.cell_id,
                 &config.identity.lease_id,
             )?;
+        if config.completion_policy.is_some() {
+            app.state::<AudioStateStore>().enable_strict_watch_aec_open_input_drain()?;
+            let media_path = config.media_complete_path.as_deref().expect("AEC policy requires media marker path");
+            if std::path::Path::new(media_path).exists() || media_path == config.input_complete_path {
+                return Err("AEC media marker must be independent and absent before provider preconnect".to_string());
+            }
+        }
         Ok(config)
     });
     if let Err(error) = strict_terminal_config {

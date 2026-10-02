@@ -15,6 +15,7 @@ import {
   SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
   SHARD_ORCHESTRATION_IMPLEMENTATION_FILES,
   authorityInventoryDigest,
+  aecThresholdFreezeBytes,
   canonicalJson,
   buildShardCellResult,
   createSignedExecutionPlan,
@@ -484,6 +485,7 @@ function createFixture({ providerPreflightOverrides = {}, releaseSelection } = {
   const generatedAt = new Date(now.getTime() - 1_000);
   const expiresAt = new Date(now.getTime() + 3_600_000);
   const workers = testWorkers();
+  if (releaseSelection?.executionScope === 'aec-c03-iteration') workers[0].workerId = releaseSelection.aecWorker;
   const signingKeys = generateCoordinatorSigningKeyPair();
   const authorityImplementationHashes = inventory('matrix');
   const runtimeBinaryHashes = [
@@ -514,7 +516,7 @@ function createFixture({ providerPreflightOverrides = {}, releaseSelection } = {
        ...providerPreflightOverrides,
      },
     workers,
-    assignments: defaultSingleWorkerAssignments(workers).map((assignment, index) => ({ ...assignment, cellId: selectedCells[index].cellId })),
+    assignments: defaultSingleWorkerAssignments(workers, releaseSelection),
     ...signingKeys,
   });
   const leases = issueCellLeases(plan, signingKeys.privateKeyPem, { issuedAt: generatedAt });
@@ -942,7 +944,8 @@ test('signed plan accepts one or three workers and binds unique multi-worker tra
   verifySignedExecutionPlan(fourWorker38Plan, { now: fixture.now });
   assert.deepEqual(fourWorker38Plan.cells.map(cell => cell.workerId), ['vm171', 'vm169', 'vm131', 'vm167']);
   assert.deepEqual(fourWorker38Plan.dispatchSchedule, fourWorkerDispatchSchedule(createBalancedReleasePlan(SELECTED_38)));
-  assert.deepEqual(fourWorker38Plan.budget, fourWorkerPlan.budget);
+  assert.equal(fourWorker38Plan.budget.matrixMaxExternalAudioSamples, 10_807_135);
+  assert.equal(fourWorkerPlan.budget.matrixMaxExternalAudioSamples, 10_100_180);
   assert.ok(fourWorker38Plan.cells.every(cell => cell.modelId === SELECTED_38.modelId));
   const duplicateFourKey = [...threeWorkers, structuredClone(fourth)];
   duplicateFourKey[3].transportAuthority.hostKeySha256 = threeWorkers[1].transportAuthority.hostKeySha256;
@@ -1677,12 +1680,12 @@ const SELECTED_38 = Object.freeze({
   endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com',
   region: 'cn-beijing',
 });
-test('signed 3.8 plan binds workspace and four leases without changing the sample ceiling', () => {
+test('signed 3.8 plan binds workspace and four leases with the exact upgraded AEC ceiling', () => {
   const fixture = createFixture({ releaseSelection: SELECTED_38 });
   verifySignedExecutionPlan(fixture.plan, { now: fixture.now });
   assert.equal(fixture.plan.providerIdentity.endpointHost, SELECTED_38.endpointHost);
   assert.equal(fixture.leases.length, 4);
-  assert.equal(fixture.leases.reduce((total, lease) => total + lease.maxExternalAudioSamples, 0), SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
+  assert.equal(fixture.leases.reduce((total, lease) => total + lease.maxExternalAudioSamples, 0), 10_807_135);
   for (const lease of fixture.leases) verifyCellLease(lease, fixture.plan, { now: fixture.now });
 });
 test('even re-signed 3.8 plans cannot mix legacy cells, workspace, profile or budget', () => {
@@ -1742,3 +1745,64 @@ test('3.8 send-boundary usage binds the signed workspace rather than generic or 
   setHost('other.cn-beijing.maas.aliyuncs.com');
   assert.throws(() => validateProviderUsageAuthority(root, { cell, lease, releaseSelection: SELECTED_38 }), /endpointHost mismatch/);
 });
+
+
+test('signed AEC c03 scope refuses extra cells, foreign workers, old policy and excessive leases', () => {
+  for (const aecWorker of ['vm131', 'vm171']) {
+    const fixture = createFixture({ releaseSelection: {...SELECTED_38, executionScope: 'aec-c03-iteration', aecWorker} });
+    assert.equal(fixture.plan.cells.length, 1);
+    assert.equal(fixture.plan.cells[0].workerId, aecWorker);
+    assert.equal(fixture.leases.length, 1);
+    assert.equal(fixture.leases[0].maxExternalAudioSamples, 2_880_000);
+    verifySignedExecutionPlan(fixture.plan, {now: fixture.now});
+    assert.throws(() => verifySignedExecutionPlan(fixture.plan, {now: fixture.now,
+      currentRuntimeBinaryHashes: inventory('runtime', SHA_A)}), /runtime binary hashes/);
+    for (const mutate of [p => p.cells.push(p.cells[0]),
+      p => p.cells[0].completionPolicy = 'media-input-complete-v1',
+      p => p.cells[0].aecQualityGates.sourceCoverage = 0.9,
+      p => p.budget.allocatedExternalAudioSamples++,
+      p => p.cells[0].workerId = 'vm169',
+      p => p.releaseSelection.executionScope = 'full-matrix']) {
+      const changed = structuredClone(fixture.plan); mutate(changed);
+      const {signature, planDigest, ...core} = changed;
+      const payload = {...core, planDigest: sha256Canonical(core)};
+      const signed = {...payload, signature: {...signature,
+        valueBase64: crypto.sign(null, Buffer.from(canonicalJson(payload)), fixture.signingKeys.privateKeyPem).toString('base64')}};
+      assert.throws(() => verifySignedExecutionPlan(signed, {now: fixture.now}));
+    }
+  }
+});
+
+for (const aecWorker of ['vm131', 'vm171']) {
+  test(`AEC freeze is immutable signature/identity/path/hash-bound before dispatch: ${aecWorker}`, () => {
+    const fixture = createFixture({releaseSelection: {...SELECTED_38, executionScope: 'aec-c03-iteration', aecWorker}});
+    const {plan, signingKeys} = fixture;
+    const cell = plan.cells[0];
+    const bytes = aecThresholdFreezeBytes(cell, signingKeys.publicKeyPem, plan.authority.runtimeBinaryHashes);
+    assert.equal(bytes.length, cell.aecThresholdFreeze.artifact.bytes);
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), cell.aecThresholdFreeze.artifact.sha256);
+    const wrapper = JSON.parse(bytes);
+    assert.deepEqual(wrapper.payload.identity, {runMarker: cell.runMarker, cellId: cell.cellId, leaseId: cell.leaseId});
+    assert.equal(wrapper.payload.profile, 'aec-closed-loop-dual-reference/v1');
+    assert.deepEqual(wrapper.payload.runtimeBinaryHashes, plan.authority.runtimeBinaryHashes);
+    assert.throws(() => aecThresholdFreezeBytes(cell, signingKeys.publicKeyPem,
+      plan.authority.runtimeBinaryHashes.map(entry => ({...entry, sha256: 'f'.repeat(64)}))), /payload|identity/);
+    assert.equal(wrapper.payload.thresholds.echoAttenuationDb, 20);
+    assert.equal(wrapper.payload.thresholds.sourceGainToleranceDb, 3);
+    assert.equal(wrapper.payload.thresholds.sourceCoverage, 0.95);
+    assert.ok(!bytes.toString().includes('PRIVATE KEY'));
+    for (const mutate of [
+      c => {c.aecThresholdFreeze.document.payload.thresholds.echoAttenuationDb = 19;},
+      c => {c.aecThresholdFreeze.document.payload.identity.leaseId = 'foreign';},
+      c => {c.aecThresholdFreeze.document.payload.runtimeBinaryHashes[0].sha256 = 'f'.repeat(64);},
+      c => {c.aecThresholdFreeze.document.signatureBase64 = Buffer.alloc(64).toString('base64');},
+      c => {c.aecThresholdFreeze.artifact.sha256 = '0'.repeat(64);},
+      c => {c.aecThresholdFreeze.artifact.bytes++;},
+      c => {c.aecThresholdFreeze.artifact.path = '../freeze.json';},
+      c => {c.runMarker = 'watch_mode_diagnostic.run_id=' + '0'.repeat(32);},
+    ]) {
+      const changed = structuredClone(plan); mutate(changed.cells[0]);
+      assert.throws(() => verifySignedExecutionPlan(resignAuthority(changed, 'planDigest', signingKeys.privateKeyPem), {snapshot: fixture.snapshot}), /AEC|freeze|runMarker/);
+    }
+  });
+}

@@ -29,6 +29,18 @@ function New-WatchModeExecutionContext {
         [System.IO.Path]::GetFileName($terminalAuthorityPath) -cne 'evidence-driven-terminal.json') {
       throw 'strict paid Watch authority paths must be canonical files directly under paths.outputRoot'
     }
+    $mediaCompletePath = $null
+    if ([string]$Request.completionPolicy -ceq 'aec-output-quiescent-v2') {
+      $mediaCompletePath = [System.IO.Path]::GetFullPath([string]$Request.paths.mediaComplete)
+      if ([string]$Request.feedbackMode -cne 'echo-cancel' -or
+          [System.IO.Path]::GetDirectoryName($mediaCompletePath) -cne $requestedOutputRoot -or
+          [System.IO.Path]::GetFileName($mediaCompletePath) -cne 'media-complete.json' -or
+          $mediaCompletePath -ceq $inputCompletePath) {
+        throw 'AEC media completion must be a separate canonical media-complete.json under paths.outputRoot'
+      }
+    } elseif ([string]$Request.feedbackMode -ceq 'echo-cancel') {
+      throw 'strict AEC requires aec-output-quiescent-v2'
+    }
     [System.IO.Directory]::CreateDirectory($requestedOutputRoot) | Out-Null
     $outputDir = $requestedOutputRoot
   } else {
@@ -55,6 +67,8 @@ function New-WatchModeExecutionContext {
     CellHardWatchdogSeconds = [int]$Request.timeouts.cellHardWatchdogSeconds
     PhysicalRecorderTailSeconds = [int]$Request.timeouts.physicalRecorderTailSeconds
     InputCompletePath = $inputCompletePath
+    MediaCompletePath = $mediaCompletePath
+    CompletionPolicy = [string]$Request.completionPolicy
     TerminalAuthorityPath = $terminalAuthorityPath
     SkipDriverRepair = $Request.driverPolicy -ne 'repair-if-needed'
     AllowDriverRepair = $Request.driverPolicy -eq 'repair-if-needed'

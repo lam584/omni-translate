@@ -30,8 +30,21 @@ export const RELEASE_MODELS = Object.freeze([
 export const SUPPORTED_RELEASE_MODELS = Object.freeze([
   ...RELEASE_MODELS, 'qwen3.8-livetranslate-flash-realtime',
 ]);
-export const SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION = 13;
-export const SELECTABLE_RELEASE_PLAN_ID = 'watch-mode-balanced-v13-explicit-model-endpoint';
+export const SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION = 14;
+export const AEC_ITERATION_RELEASE_PLAN_SCHEMA_VERSION = 15;
+export const AEC_ITERATION_EXECUTION_SCOPE = 'aec-c03-iteration';
+export const AEC_ITERATION_MANIFEST_SCHEMA_VERSION = 1;
+export const AEC_ITERATION_MANIFEST_KIND = 'watch-mode-aec-c03-iteration-manifest';
+export const MATRIX_EXECUTION_SCOPE = 'full-matrix';
+export const AEC_COMPLETION_POLICY = 'aec-output-quiescent-v2';
+export const AEC_OPEN_INPUT_MAX_SAMPLES = 2_880_000;
+export const AEC_QUALITY_GATES = Object.freeze({
+  startupBufferMs: 800, maximumStartupWaitMs: 1_000,
+  firstAudibleInputToAcousticSeconds: 8, firstPlayableDeltaToAcousticSeconds: 1.5,
+  echoAttenuationDb: 20, sourceGainToleranceDb: 3, sourceCoverage: 0.95,
+});
+export const AEC_ITERATION_RELEASE_PLAN_ID = 'watch-mode-aec-c03-v15-signed-iteration';
+export const SELECTABLE_RELEASE_PLAN_ID = 'watch-mode-balanced-v14-aec-output-quiescent';
 
 export const RELEASE_FEEDBACK_MODES = Object.freeze([
   'process-exclusion',
@@ -206,7 +219,16 @@ export const BALANCED_RELEASE_PLAN = Object.freeze({
 });
 
 /** A selection authorizes exactly four cells for one model, never an implicit eight-cell run. */
-export function createBalancedReleasePlan({ modelId = RELEASE_MODELS[0], endpointHost, region = 'cn-beijing' } = {}) {
+export function createBalancedReleasePlan({ modelId = RELEASE_MODELS[0], endpointHost, region = 'cn-beijing',
+  executionScope = MATRIX_EXECUTION_SCOPE, aecWorker } = {}) {
+  if (![MATRIX_EXECUTION_SCOPE, AEC_ITERATION_EXECUTION_SCOPE].includes(executionScope)) {
+    throw new Error('unsupported signed execution scope');
+  }
+  const iteration = executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  if (iteration && (modelId !== SUPPORTED_RELEASE_MODELS[1] || !['vm131', 'vm171'].includes(aecWorker))) {
+    throw new Error('AEC c03 iteration requires exact 3.8 model and aecWorker vm131 or vm171');
+  }
+  if (!iteration && aecWorker !== undefined) throw new Error('aecWorker is only authorized for AEC c03 iteration');
   if (!SUPPORTED_RELEASE_MODELS.includes(modelId)) throw new Error('unsupported exact release model');
   if (region !== 'cn-beijing') throw new Error('release plan requires the validated cn-beijing region');
   if (modelId === RELEASE_MODELS[0]) {
@@ -219,19 +241,36 @@ export function createBalancedReleasePlan({ modelId = RELEASE_MODELS[0], endpoin
     throw new Error('3.8 release plan requires an explicit Beijing workspace endpoint host');
   }
   const identity = deriveWatchModelProtocolIdentity(modelId, { endpointHost, region });
-  const paidCells = LIVE_LLM_CELLS.map((entry) => Object.freeze({
+  const paidCells = LIVE_LLM_CELLS.filter(entry => !iteration || entry.feedbackLoopPrevention === 'echo-cancel').map((entry) => Object.freeze({
     ...entry,
     cellId: [entry.tier, modelId, entry.feedbackLoopPrevention, entry.deviceClass].join('::'),
     modelId,
     modelProtocolProfileIdentity: identity,
+    ...(entry.feedbackLoopPrevention === 'echo-cancel' ? {
+      completionPolicy: AEC_COMPLETION_POLICY,
+      maxExternalAudioSamples: AEC_OPEN_INPUT_MAX_SAMPLES,
+      boundedCaptureGraceFrames: AEC_OPEN_INPUT_MAX_SAMPLES - CANONICAL_PROVIDER_REFERENCE_FRAMES,
+      aecQualityGates: AEC_QUALITY_GATES,
+    } : {}),
   }));
   return Object.freeze({
     ...BALANCED_RELEASE_PLAN,
-    schemaVersion: SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION,
-    planId: SELECTABLE_RELEASE_PLAN_ID,
+    schemaVersion: iteration ? AEC_ITERATION_RELEASE_PLAN_SCHEMA_VERSION : SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION,
+    planId: iteration ? AEC_ITERATION_RELEASE_PLAN_ID : SELECTABLE_RELEASE_PLAN_ID,
+    ...(iteration ? { executionScope, aecWorker } : {}),
     models: Object.freeze([modelId]),
     providerEndpoint: Object.freeze({ region, endpointHost }),
-    cells: Object.freeze([...LOCAL_ISOLATION_CELLS, ...paidCells]),
+    cells: Object.freeze([...(iteration ? LOCAL_ISOLATION_CELLS.filter(c => c.feedbackLoopPrevention === 'echo-cancel') : LOCAL_ISOLATION_CELLS), ...paidCells]),
+    tiers: Object.freeze(BALANCED_RELEASE_PLAN.tiers.filter(t => !iteration || t.tier !== 'model-stability').map(t => Object.freeze({
+      ...t, cellCount: t.tier === 'local-isolation' ? (iteration ? 1 : LOCAL_ISOLATION_CELLS.length)
+        : paidCells.filter(c => c.tier === t.tier).length,
+    }))),
+    paidLlmSeconds: paidCells.reduce((n, c) => n + c.maxExternalAudioSamples / PROVIDER_INPUT_SAMPLE_RATE_HZ, 0),
+    paidProviderInputSampleCeiling: paidCells.reduce((n, c) => n + c.maxExternalAudioSamples, 0),
+    externalProviderBudget: Object.freeze({ ...BALANCED_RELEASE_PLAN.externalProviderBudget,
+      cellMaxInputSamples: Math.max(...paidCells.map(c => c.maxExternalAudioSamples)),
+      matrixMaxInputSamples: paidCells.reduce((n, c) => n + c.maxExternalAudioSamples, 0),
+    }),
   });
 }
 
@@ -239,12 +278,14 @@ export function createBalancedReleasePlan({ modelId = RELEASE_MODELS[0], endpoin
 export function normalizeReleaseSelection(selection) {
   if (selection === undefined) return undefined;
   if (!selection || typeof selection !== 'object' || Array.isArray(selection)
-      || Object.keys(selection).some(key => !['modelId', 'endpointHost', 'region'].includes(key))
+      || Object.keys(selection).some(key => !['modelId', 'endpointHost', 'region', 'executionScope', 'aecWorker'].includes(key))
       || selection.modelId !== SUPPORTED_RELEASE_MODELS[1]) {
     throw new Error('releaseSelection must explicitly select the supported 3.8 model');
   }
   const plan = createBalancedReleasePlan(selection);
-  return Object.freeze({modelId: plan.models[0], ...plan.providerEndpoint});
+  return Object.freeze({modelId: plan.models[0], ...plan.providerEndpoint,
+    ...(plan.executionScope ? { executionScope: plan.executionScope, aecWorker: plan.aecWorker } : {}),
+  });
 }
 
 export function liveCellsForReleasePlan(plan = BALANCED_RELEASE_PLAN) {
@@ -257,12 +298,14 @@ export const expectedBalancedCellIds = (plan = BALANCED_RELEASE_PLAN) => plan.ce
 
 export function balancedReleasePlanFailure(plan) {
   if (!plan || typeof plan !== 'object') return 'balanced release validation plan is missing';
-  if (plan.schemaVersion === SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION) {
+  if ([SELECTABLE_RELEASE_PLAN_SCHEMA_VERSION, AEC_ITERATION_RELEASE_PLAN_SCHEMA_VERSION].includes(plan.schemaVersion)) {
     try {
       if (!Array.isArray(plan.models) || plan.models.length !== 1 || plan.models[0] !== SUPPORTED_RELEASE_MODELS[1]) {
-        return 'v13 release plan requires one exact 3.8 model';
+        return 'selected release plan requires one exact 3.8 model';
       }
-      const expected = createBalancedReleasePlan({ modelId: plan.models[0], ...plan.providerEndpoint });
+      const expected = createBalancedReleasePlan({ modelId: plan.models[0], ...plan.providerEndpoint,
+        ...(plan.executionScope !== undefined ? {executionScope: plan.executionScope, aecWorker: plan.aecWorker} : {}),
+      });
       return isDeepStrictEqual(plan, expected) ? null : 'selected release plan differs from exact model/endpoint/budget contract';
     } catch (error) { return error.message; }
   }

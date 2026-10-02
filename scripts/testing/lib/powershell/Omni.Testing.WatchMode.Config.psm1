@@ -44,6 +44,7 @@ function New-OmniWatchModeContext {
     }
     timeouts = $Request.timeouts
     lifecycle = [pscustomobject]@{
+      completionPolicy = [string]$Request.completionPolicy
       sessionWatchdogSeconds = $sessionWatchdogSeconds
       inputCompletionWatchdogSeconds = [int]$Request.timeouts.inputCompletionWatchdogSeconds
       processExclusionRestartAfterSeconds = [int]$Request.timeouts.processExclusionRestartAfterSeconds

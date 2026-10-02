@@ -21,11 +21,12 @@ fn main() {
 #[cfg(windows)]
 mod injector {
     use serde::Serialize;
+    use std::io::Write;
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
-        initialize_mta, AudioClient, AudioRenderClient, Device, DeviceEnumerator, Direction,
+        initialize_mta, AudioClient, AudioClock, AudioRenderClient, Device, DeviceEnumerator, Direction,
         Handle, SampleType, StreamMode, WaveFormat,
     };
 
@@ -68,6 +69,10 @@ mod injector {
         pub render_wake_count: usize,
         pub max_render_wake_interval_ms: u128,
         pub zero_padding_underrun_count: usize,
+        pub source_playback_start_qpc100ns: Option<u64>,
+        pub source_clock_frequency: Option<u64>,
+        pub source_pcm48k_mono_path: Option<String>,
+        pub source_clock_metadata_path: Option<String>,
         pub detail: Option<String>,
     }
 
@@ -141,6 +146,10 @@ mod injector {
                 render_wake_count: error.render_wake_count,
                 max_render_wake_interval_ms: error.max_render_wake_interval_ms,
                 zero_padding_underrun_count: error.zero_padding_underrun_count,
+                source_playback_start_qpc100ns: None,
+                source_clock_frequency: None,
+                source_pcm48k_mono_path: None,
+                source_clock_metadata_path: None,
                 detail: Some(error.detail),
             }
         }
@@ -152,12 +161,19 @@ mod injector {
         endpoint_name: String,
         max_seconds: Option<f64>,
         reference_pcm16k_mono_path: Option<PathBuf>,
+        reference_pcm48k_mono_path: Option<PathBuf>,
         reference_only: bool,
         source_gain_db: f32,
         restart_quiet_window_after_seconds: f64,
         restart_quiet_window_seconds: f64,
         postroll_silence_seconds: f64,
     }
+
+    #[path = "source_clock.rs"]
+    mod source_clock;
+    use source_clock::SourcePlaybackClock;
+    #[cfg(test)]
+    use source_clock::source_clock_origin;
 
     #[path = "decode.rs"]
     mod decode;
@@ -242,6 +258,7 @@ mod injector {
     struct MediaRender {
         audio_client: AudioClient,
         render_client: AudioRenderClient,
+        audio_clock: Option<AudioClock>,
         event_handle: Handle,
         buffer_frames: usize,
     }
@@ -251,6 +268,7 @@ mod injector {
             device: &Device,
             format: &WaveFormat,
             render_sample_rate_hz: u32,
+            clock_requested: bool,
         ) -> Result<Self, InjectorError> {
             let mut audio_client = device
                 .get_iaudioclient()
@@ -283,7 +301,11 @@ mod injector {
                     buffer_frames,
                 )
             })?;
+            let audio_clock = if clock_requested { Some(audio_client.get_audioclock().map_err(|error| {
+                InjectorError::with_buffer(format!("get-render-clock: {}", error_text(error)), buffer_frames)
+            })?) } else { None };
             Ok(Self {
+                audio_clock,
                 audio_client,
                 render_client,
                 event_handle,
@@ -390,6 +412,10 @@ mod injector {
                 render_wake_count: 0,
                 max_render_wake_interval_ms: 0,
                 zero_padding_underrun_count: 0,
+                source_playback_start_qpc100ns: None,
+                source_clock_frequency: None,
+                source_pcm48k_mono_path: None,
+                source_clock_metadata_path: None,
                 detail: Some("reference-only; no render endpoint opened".to_string()),
             });
         }
@@ -451,6 +477,14 @@ mod injector {
             (args.postroll_silence_seconds * render_sample_rate_hz as f64).round() as usize;
         let mut render_samples = target_samples;
         append_postroll_silence(&mut render_samples, postroll_silence_frames);
+        if let Some(path) = args.reference_pcm48k_mono_path.as_ref() {
+            if render_sample_rate_hz != 48_000 { return Err("AEC quality evidence requires an actual 48kHz render endpoint".to_string().into()); }
+            let bytes: Vec<u8> = render_samples.chunks_exact(2).flat_map(|frame| ((frame[0] + frame[1]) * 0.5).to_le_bytes()).collect();
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+                .map_err(|error| format!("create source render PCM: {error}"))?;
+            file.write_all(&bytes).map_err(|error| format!("write source render PCM: {error}"))?;
+            file.sync_all().map_err(|error| format!("sync source render PCM: {error}"))?;
+        }
 
         let format = WaveFormat::new(
             32,
@@ -461,12 +495,13 @@ mod injector {
             None,
         );
         let mut render =
-            MediaRender::open_event_driven_unstarted(&device, &format, render_sample_rate_hz)?;
+            MediaRender::open_event_driven_unstarted(&device, &format, render_sample_rate_hz, args.reference_pcm48k_mono_path.is_some())?;
         let buffer_frames = render.buffer_frames;
         let total_frames = render_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(render_samples);
         let mut pacing_authority = RenderPacingAuthority::default();
         let mut observed_prefill_frames = 0;
+        let mut source_clock = SourcePlaybackClock::new(args.reference_pcm48k_mono_path.as_deref(), &endpoint_id, render_sample_rate_hz)?;
         let result = (|| -> Result<InjectorResult, String> {
             observed_prefill_frames = render.write_available(&mut pending).map_err(|error| {
                 format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
@@ -499,6 +534,7 @@ mod injector {
                     )
                 })?;
                 let observed_at = Instant::now();
+                source_clock.observe(&render, pacing_authority.submitted_frames)?;
                 let padding_frames = render.current_padding_frames().map_err(|error| {
                     format!("media refill padding query failed: submittedFrames={rendered_frames} totalFrames={total_frames} detail={error}")
                 })?;
@@ -549,6 +585,8 @@ mod injector {
                 render_absolute_timeout,
             )?;
 
+            source_clock.observe(&render, pacing_authority.submitted_frames)?;
+            source_clock.finish()?;
             Ok(InjectorResult {
                 passed: true,
                 media_path: args.media_path.display().to_string(),
@@ -575,6 +613,10 @@ mod injector {
                 render_wake_count: pacing_authority.wake_count,
                 max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
                 zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
+                source_playback_start_qpc100ns: source_clock.origin,
+                source_clock_frequency: source_clock.frequency,
+                source_pcm48k_mono_path: args.reference_pcm48k_mono_path.as_ref().map(|p| p.display().to_string()),
+                source_clock_metadata_path: source_clock.metadata_path.as_ref().map(|p| p.display().to_string()),
                 detail: None,
             })
         })();
@@ -594,6 +636,7 @@ mod injector {
         let mut endpoint_name = "Omni Translate Virtual Speaker".to_string();
         let mut max_seconds = None;
         let mut reference_pcm16k_mono_path = None;
+        let mut reference_pcm48k_mono_path = None;
         let mut reference_only = false;
         let mut source_gain_db = 0.0_f32;
         let mut restart_quiet_window_after_seconds = 0.0_f64;
@@ -610,6 +653,9 @@ mod injector {
                         &mut args,
                         "--reference-pcm16k-mono-path",
                     )?))
+                }
+                "--reference-pcm48k-mono-path" => {
+                    reference_pcm48k_mono_path = Some(PathBuf::from(next_arg(&mut args, "--reference-pcm48k-mono-path")?));
                 }
                 "--reference-only" => reference_only = true,
                 "--gain-db" => {
@@ -679,6 +725,7 @@ mod injector {
             endpoint_name,
             max_seconds,
             reference_pcm16k_mono_path,
+            reference_pcm48k_mono_path,
             reference_only,
             source_gain_db,
             restart_quiet_window_after_seconds,

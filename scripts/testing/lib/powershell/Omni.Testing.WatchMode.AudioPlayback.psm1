@@ -45,7 +45,7 @@ function Write-TestMediaReferencePcm {
   return $referencePcmPath
 }
 function Start-TestMediaPlayback {
-  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds, [int]$RestartQuietWindowAfterSeconds = 0, [int]$RestartQuietWindowSeconds = 0, [string]$InjectorExecutablePath)
+  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory, [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)][int]$PlaybackSeconds, [int]$RestartQuietWindowAfterSeconds = 0, [int]$RestartQuietWindowSeconds = 0, [string]$InjectorExecutablePath, [switch]$AecClosedLoopEvidence)
   if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
     throw "Test media file not found: $PathToMedia"
   }
@@ -62,6 +62,9 @@ function Start-TestMediaPlayback {
     )
     if ($RestartQuietWindowAfterSeconds -gt 0 -and $RestartQuietWindowSeconds -gt 0) { $args += @("--restart-quiet-window-after-seconds", "$RestartQuietWindowAfterSeconds", "--restart-quiet-window-seconds", "$RestartQuietWindowSeconds") }
     $referencePcmPath = $null
+    if ($AecClosedLoopEvidence) {
+      $args += @('--reference-pcm48k-mono-path', (Join-Path $OutputDirectory 'aec-source-reference-48k-mono.f32le'))
+    }
     if ($OutputDirectory) {
       $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
       $args += @("--reference-pcm16k-mono-path", $referencePcmPath)

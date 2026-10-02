@@ -282,8 +282,13 @@ fn release_selection(grant: &Value) -> Result<(&str, &str, &str), String> {
     let Some(selection) = grant.get("releaseSelection") else {
         return Ok((PREFLIGHT_MODEL, PROVIDER_ENDPOINT_HOST, STRICT_MODEL_PROTOCOL_REGION));
     };
-    if selection.as_object().map(|object| object.len()) != Some(3) {
-        return Err("releaseSelection must contain exactly modelId, endpointHost, region".to_string());
+    let iteration = selection.get("executionScope").is_some();
+    if selection.as_object().map(|object| object.len()) != Some(if iteration { 5 } else { 3 }) {
+        return Err("releaseSelection must be an exact full-matrix or AEC iteration selection".to_string());
+    }
+    if iteration && (selection.get("executionScope").and_then(Value::as_str) != Some("aec-c03-iteration")
+        || !matches!(selection.get("aecWorker").and_then(Value::as_str), Some("vm131" | "vm171"))) {
+        return Err("releaseSelection has an unauthorized AEC scope/worker".to_string());
     }
     let model = required_str(selection, "/modelId", "release selection model")?;
     let host = required_str(selection, "/endpointHost", "release selection endpoint")?;
@@ -294,6 +299,52 @@ fn release_selection(grant: &Value) -> Result<(&str, &str, &str), String> {
         return Err("releaseSelection requires exact 3.8 model and canonical cn-beijing workspace host".to_string());
     }
     Ok((model, host, region))
+}
+
+// Scope is derived only from the exact signed selection, never from a caller budget.
+struct GrantCellScope<'a> {
+    profile: PreflightAuthorityProfile,
+    model: &'a str,
+    aec_worker: Option<&'a str>,
+}
+
+impl<'a> GrantCellScope<'a> {
+    fn from_grant(grant: &'a Value, profile: PreflightAuthorityProfile) -> Result<Self, String> {
+        if profile == PreflightAuthorityProfile::IncidentPlusReplay {
+            if grant.get("releaseSelection").is_some() {
+                return Err("incident grant cannot carry a release selection".to_string());
+            }
+            return Ok(Self { profile, model: INCIDENT_PREFLIGHT_MODEL, aec_worker: None });
+        }
+        let (model, _, _) = release_selection(grant)?;
+        Ok(Self { profile, model,
+            aec_worker: grant.pointer("/releaseSelection/aecWorker").and_then(Value::as_str) })
+    }
+
+    fn cell_count(&self) -> usize {
+        if self.aec_worker.is_some() { 1 } else { self.profile.cell_count() }
+    }
+
+    fn canonical_index(&self, index: usize) -> usize {
+        if self.aec_worker.is_some() { 2 } else { index }
+    }
+
+    fn cell_max_samples(&self, index: usize) -> u64 {
+        if self.model == PREFLIGHT_MODEL_V2 && self.canonical_index(index) == 2 {
+            2_880_000
+        } else { self.profile.cell_max_samples(index) }
+    }
+
+    fn matrix_max_samples(&self) -> u64 {
+        if self.aec_worker.is_some() { 2_880_000 }
+        else if self.model == PREFLIGHT_MODEL_V2 { 10_807_135 }
+        else { self.profile.matrix_max_samples() }
+    }
+
+    fn declared_cell_max_samples(&self) -> u64 {
+        if self.model == PREFLIGHT_MODEL_V2 { 2_880_000 }
+        else { self.profile.declared_cell_max_samples() }
+    }
 }
 
 fn copy_release_selection(grant: &Value, target: &mut serde_json::Map<String, Value>) {
@@ -392,6 +443,7 @@ impl ProviderPreflightAuthorization {
 
         let grant = read_regular_json(&grant_path, "provider preflight grant")?;
         let profile = PreflightAuthorityProfile::from_grant(&grant)?;
+        let scope = GrantCellScope::from_grant(&grant, profile)?;
         if grant_path.file_name().and_then(|value| value.to_str()) != Some(profile.grant_file()) {
             return Err("provider preflight authority paths must use the canonical grant filename".to_string());
         }
@@ -454,7 +506,7 @@ impl ProviderPreflightAuthorization {
         if actual_files != expected_files.iter().cloned().collect() {
             return Err(format!(
                 "provider preflight reservation directory is not the exact {}-file set",
-                profile.cell_count()
+                scope.cell_count()
             ));
         }
 
@@ -471,9 +523,9 @@ impl ProviderPreflightAuthorization {
             return Err("provider preflight grant is outside its authorized time window".to_string());
         }
 
-        let mut reservations = Vec::with_capacity(profile.cell_count());
-        let mut reservation_digests = Vec::with_capacity(profile.cell_count());
-        let mut reservation_issued_at = Vec::with_capacity(profile.cell_count());
+        let mut reservations = Vec::with_capacity(scope.cell_count());
+        let mut reservation_digests = Vec::with_capacity(scope.cell_count());
+        let mut reservation_issued_at = Vec::with_capacity(scope.cell_count());
         for (index, file_name) in expected_files.iter().enumerate() {
             let reservation = read_regular_json(
                 &reservation_directory.join(file_name),
@@ -1102,6 +1154,7 @@ fn validate_grant(
         return Err("provider preflight grant schema is unsupported".to_string());
     }
     validate_readiness_selection(grant)?;
+    let scope = GrantCellScope::from_grant(grant, profile)?;
     let selected_identity = selected_registry_identity(grant, profile)?;
     if selected_identity.as_ref() != model_protocol_profile_identity {
         return Err("grant selected model/profile/endpoint authority mismatch".to_string());
@@ -1126,13 +1179,18 @@ fn validate_grant(
         PreflightAuthorityProfile::StrictReleaseMatrix => (1..=4).contains(&workers.len()),
         PreflightAuthorityProfile::IncidentPlusReplay => workers.len() == 2,
     };
+    if scope.aec_worker.is_some_and(|worker_id| workers.len() != 1
+        || workers[0].get("workerId").and_then(Value::as_str) != Some(worker_id)
+        || grant.pointer("/executor/workerId").and_then(Value::as_str) != Some(worker_id)) {
+        return Err("AEC iteration requires its unique signed worker/executor".to_string());
+    }
     if !valid_worker_count
         || required_u64(grant, "/localIsolationAuthority/providerCalls", "local provider calls")? != 0
         || required_u64(grant, "/budget/inputSampleRateHz", "budget sample rate")? != 16_000
         || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")?
-            != profile.declared_cell_max_samples()
+            != scope.declared_cell_max_samples()
         || required_u64(grant, "/budget/matrixMaxExternalAudioSamples", "matrix budget")?
-            != profile.matrix_max_samples()
+            != scope.matrix_max_samples()
         || required_str(grant, "/budget/reclaimPolicy", "budget reclaim policy")? != "never-within-execution"
         || required_str(grant, "/budget/retryPolicy", "budget retry policy")? != "new-execution-required"
     {
@@ -1239,10 +1297,10 @@ fn validate_grant(
     let cells = required_array(grant, "/cells", "grant cells")?;
     let mut lease_ids = HashSet::new();
     let mut worker_wave_slots = HashSet::new();
-    if cells.len() != profile.cell_count() {
+    if cells.len() != scope.cell_count() {
         return Err(format!(
             "provider preflight grant must contain exactly {} cells",
-            profile.cell_count()
+            scope.cell_count()
         ));
     }
     match (profile, model_protocol_profile_identity) {
@@ -1267,6 +1325,7 @@ fn validate_grant(
         let (expected_id, expected_model, expected_protocol, expected_feedback, expected_device) =
             match profile {
                 PreflightAuthorityProfile::StrictReleaseMatrix => {
+                    let index = scope.canonical_index(index);
                     let tier = if index < 3 { "pairwise-live" } else { "model-stability" };
                     (
                         format!(
@@ -1297,6 +1356,12 @@ fn validate_grant(
         let worker_id = required_str(cell, "/workerId", "grant cell workerId")?;
         let wave_index = required_u64(cell, "/waveIndex", "grant cell waveIndex")?;
         let lease_id = required_str(cell, "/leaseId", "grant cell leaseId")?;
+        let strict_aec = selected_model == PREFLIGHT_MODEL_V2 && expected_feedback == "echo-cancel";
+        if (strict_aec && cell.get("completionPolicy").and_then(Value::as_str) != Some("aec-output-quiescent-v2"))
+            || (!strict_aec && cell.get("completionPolicy").is_some())
+            || scope.aec_worker.is_some_and(|worker| worker_id != worker || wave_index != 0) {
+            return Err(format!("provider preflight grant cell {index} completion/scope is not canonical"));
+        }
         if required_u64(cell, "/cellIndex", "grant cellIndex")? != index as u64
             || required_str(cell, "/cellId", "grant cellId")? != expected_id
             || required_str(cell, "/providerId", "grant cell providerId")? != PROVIDER_ID
@@ -1307,7 +1372,7 @@ fn validate_grant(
             || required_str(cell, "/deviceClass", "grant device class")?
                 != expected_device
             || required_u64(cell, "/maxExternalAudioSamples", "grant cell budget")?
-                != profile.cell_max_samples(index)
+                != scope.cell_max_samples(index)
             || !worker_ids.contains(worker_id)
             || required_str(cell, "/deviceProfileInstanceId", "grant device profile")?.is_empty()
             || !lease_ids.insert(lease_id.to_string())

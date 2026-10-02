@@ -311,6 +311,7 @@ export function collectLocalIsolationDistributionFiles({ workspaceRoot, runtimeB
   // registry is a filesystem dependency, not an ESM import; freeze it too.
   if (scripts.has(path.resolve(workspaceRoot, 'scripts/testing/model-protocol-profile-contract.mjs'))) {
     scripts.add(path.resolve(workspaceRoot, 'contracts/model-protocol-profiles.v1.json'));
+    scripts.add(path.resolve(workspaceRoot, 'contracts/model-protocol-families.v1.json'));
   }
   // Strict content facts are audited filesystem input rather than an ESM import.
   if (scripts.has(path.resolve(workspaceRoot, 'scripts/testing/watch-mode-report.mjs'))

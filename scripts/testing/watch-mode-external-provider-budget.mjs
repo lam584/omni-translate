@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
-import { LIVE_LLM_CELLS, RELEASE_MODELS, createBalancedReleasePlan } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, RELEASE_MODELS, createBalancedReleasePlan, liveCellsForReleasePlan, normalizeReleaseSelection } from './watch-mode-balanced-release-plan.mjs';
 import {
   assertWatchModelProtocolIdentity,
   deriveWatchModelProtocolIdentity,
@@ -56,10 +56,15 @@ export const INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY = Object.freeze({
   incidentId: INCIDENT_REPLAY_PLUS_ID,
 });
 
-export function strictPaidBudgetOptionsForModel(modelId, endpointHost) {
-  const plan = createBalancedReleasePlan({ modelId, ...(endpointHost ? { endpointHost } : {}) });
+export function strictPaidBudgetOptionsForModel(modelId, endpointHost, releaseSelection) {
+  const selection = releaseSelection === undefined ? undefined : normalizeReleaseSelection(releaseSelection);
+  if (selection && (selection.modelId !== modelId || selection.endpointHost !== endpointHost)) {
+    throw new Error('strict budget model/endpoint does not match signed selection');
+  }
+  const plan = createBalancedReleasePlan(selection ?? { modelId, ...(endpointHost ? { endpointHost } : {}) });
   return {
     approvedModels: [...plan.models],
+    ...(selection ? { releaseSelection: selection } : {}),
     modelProtocols: STRICT_PAID_MODEL_PROTOCOLS,
     providerIdentity: { ...STRICT_PAID_PROVIDER_IDENTITY, ...(plan.providerEndpoint ? { endpointHost: plan.providerEndpoint.endpointHost } : {}) },
   };
@@ -803,6 +808,7 @@ export function buildCellExternalProviderBudget({
   providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
   expectedModelProtocolProfileIdentity = null,
   authorityMode = 'strict-paid',
+  releaseSelection,
 }) {
   const resolvedRunDirectory = path.resolve(runDirectory);
   const violations = [];
@@ -836,9 +842,24 @@ export function buildCellExternalProviderBudget({
   if (translationMode !== 'native') {
     violations.push(`strict paid subtitle translation mode must be native; got ${translationMode}`);
   }
+  let exactCell = null;
+  if (authorityMode === 'strict-paid' && normalizedModel === 'qwen3.8-livetranslate-flash-realtime') {
+    try {
+      const selection = releaseSelection === undefined ? undefined : normalizeReleaseSelection(releaseSelection);
+      const plan = createBalancedReleasePlan(selection ?? { modelId: normalizedModel, endpointHost: providerIdentity.endpointHost });
+      exactCell = liveCellsForReleasePlan(plan).find(c => c.cellId === normalizedCellId);
+      if (!exactCell || exactCell.feedbackLoopPrevention !== feedbackMode
+          || exactCell.modelId !== normalizedModel
+          || (plan.providerEndpoint && plan.providerEndpoint.endpointHost !== providerIdentity.endpointHost)) {
+        violations.push('strict paid cell does not match the exact selected plan/scope');
+        exactCell = null;
+      }
+    } catch (error) { violations.push(error.message); }
+  }
   if (!Number.isSafeInteger(resolvedInputCeilingSamples)
     || resolvedInputCeilingSamples <= 0
-    || resolvedInputCeilingSamples > STRICT_PAID_CELL_MAX_INPUT_SAMPLES) {
+    || (authorityMode === 'strict-paid' && normalizedModel === 'qwen3.8-livetranslate-flash-realtime' ? !exactCell || resolvedInputCeilingSamples !== exactCell.maxExternalAudioSamples
+      : resolvedInputCeilingSamples > STRICT_PAID_CELL_MAX_INPUT_SAMPLES)) {
     violations.push('strict paid input sample ceiling is invalid or exceeds the hard per-cell sample maximum');
   }
 
@@ -1090,6 +1111,7 @@ export function assertCellExternalProviderBudget(runDirectory, expected = {}) {
       expected.inputCeilingSamples ?? recorded.providerInputSampleCeiling,
     generatedAt: recorded.generatedAt,
     approvedModels: expected.approvedModels ?? recorded.approvedModels ?? RELEASE_MODELS,
+    releaseSelection: expected.releaseSelection,
     modelProtocols: expected.modelProtocols ?? STRICT_PAID_MODEL_PROTOCOLS,
     providerIdentity: expected.providerIdentity ?? STRICT_PAID_PROVIDER_IDENTITY,
     expectedModelProtocolProfileIdentity: expected.modelProtocolProfileIdentity ?? null,
@@ -1113,11 +1135,31 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
   generatedAt = new Date(),
   matrixInputSampleCeiling = null,
   expectedCells = LIVE_LLM_CELLS,
+  releaseSelection,
 } = {}) {
   const ledgers = Array.isArray(cellLedgers) ? cellLedgers : [];
   const violations = [];
   let reservedInputSamples = 0;
   let actualInputSamples = 0;
+  try {
+    const first = expectedCells[0];
+    const modelId = first?.modelId;
+    const selection = releaseSelection === undefined ? undefined : normalizeReleaseSelection(releaseSelection);
+    if (expectedCells.length === 1 && modelId === 'qwen3.8-livetranslate-flash-realtime'
+        && selection?.executionScope !== 'aec-c03-iteration') {
+      violations.push('AEC one-cell budget requires explicit signed AEC c03 scope selection');
+    }
+    const authorized = liveCellsForReleasePlan(createBalancedReleasePlan(selection ?? {modelId,
+      ...(modelId === 'qwen3.8-livetranslate-flash-realtime' ? {endpointHost: 'budget-projection.cn-beijing.maas.aliyuncs.com'} : {}),
+    }));
+    if (JSON.stringify(expectedCells) !== JSON.stringify(authorized)) {
+      violations.push('strict budget expected cells are not an exact authorized full matrix or AEC c03 projection');
+    }
+    const exactTotal = expectedCells.reduce((n, c) => n + c.maxExternalAudioSamples, 0);
+    if (matrixInputSampleCeiling !== null && matrixInputSampleCeiling !== undefined && Number(matrixInputSampleCeiling) !== exactTotal) {
+      violations.push('strict budget ceiling differs from the exact signed scope allocation');
+    }
+  } catch (error) { violations.push(error.message); }
   const expectedCellIds = expectedCells.map((cell) => cell.cellId);
   const recordedCellIds = ledgers.map((ledger) => ledger?.cellId);
   const leaseIds = ledgers.map((ledger) => ledger?.providerSendBoundary?.leaseId);
@@ -1153,6 +1195,9 @@ export function buildMatrixExternalProviderBudget(cellLedgers, {
         ? `: ${ledger.violations.join('; ')}`
         : '';
       violations.push(`cell ${index} budget did not pass${details}`);
+    }
+    if (Number(ledger?.providerInputSampleCeiling) !== Number(expectedCells[index]?.maxExternalAudioSamples)) {
+      violations.push(`cell ${index} does not reserve its exact signed scope sample ceiling`);
     }
     try {
       reservedInputSamples = reserveStrictPaidCellInputSamples({
@@ -1230,6 +1275,7 @@ export function assertMatrixExternalProviderBudget(filePath, cellLedgers, option
     matrixInputSampleCeiling: recorded.matrixInputSampleCeiling,
     generatedAt: recorded.generatedAt,
     expectedCells: options.expectedCells ?? LIVE_LLM_CELLS,
+    releaseSelection: options.releaseSelection,
   });
   if (JSON.stringify(recorded) !== JSON.stringify(rebuilt)) {
     throw new Error(`strict paid-matrix budget ledger does not match rebuilt cell authorities: ${filePath}`);

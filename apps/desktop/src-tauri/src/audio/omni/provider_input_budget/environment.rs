@@ -77,7 +77,8 @@ fn read_budget_environment(
     let ledger_path = required(LEDGER_PATH_ENV, ledger_path)?;
     let cell_id = required(CELL_ID_ENV, cell_id)?;
     if strict_paid_authority {
-        let expected_max_samples = strict_release_cell_max_samples(&cell_id)?;
+        let completion_policy = read_env(COMPLETION_POLICY_ENV);
+        let expected_max_samples = strict_release_cell_max_samples(&cell_id, completion_policy.as_deref())?;
         if max_samples != expected_max_samples {
             return Err(format!(
                 "strict paid Provider input cell {cell_id} requires exactly {expected_max_samples} samples; got {max_samples}"

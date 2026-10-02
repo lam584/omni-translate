@@ -183,14 +183,14 @@ function writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode) {
   }
 }
 
-function writeMatrixBudgetPlaceholder(outputRoot) {
+function writeMatrixBudgetPlaceholder(outputRoot, plan = createBalancedReleasePlan()) {
   const ledgerPath = path.join(outputRoot, 'external-provider-budget-matrix.json');
   fs.writeFileSync(ledgerPath, '{"passed":true}\n', 'utf8');
   const authority = fileAuthorityEntry(ledgerPath, path.basename(ledgerPath));
   return {
     passed: true,
-    matrixInputSampleCeiling: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
-    reservedInputSamples: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+    matrixInputSampleCeiling: plan.paidProviderInputSampleCeiling,
+    reservedInputSamples: plan.paidProviderInputSampleCeiling,
     auxiliaryExternalAudioSeconds: 0,
     ledgerPath: authority.path,
     ledgerBytes: authority.bytes,
@@ -1600,7 +1600,7 @@ test('strict provider preflight accepts only a completed production emitter', ()
 
 import { createBalancedReleasePlan, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 
-test('3.8 matrix carries its exact plan and has a separate canonical publication name', t => {
+test('3.8 matrix rejects legacy placeholder AEC evidence and keeps a separate canonical publication name', t => {
   const releaseSelection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
   const plan = createBalancedReleasePlan(releaseSelection);
   const releaseCells = liveCellsForReleasePlan(plan);
@@ -1614,12 +1614,14 @@ test('3.8 matrix carries its exact plan and has a separate canonical publication
   const options = { outputRoot, modelList: plan.models, feedbackModeList: DEFAULT_FEEDBACK_MODES,
     deviceProfiles: SUPPORTED_DEVICE_CLASSES.map(deviceClass => ({ profileId: deviceClass, deviceClass })),
     runDirectories, strict: true, provenance: CLEAN_PROVENANCE, authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
-    externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot), releaseSelection, releaseCells };
-  const { manifest } = writeMatrixRunManifest(options);
-  assert.deepEqual(manifest.releaseSelection, releaseSelection);
-  assert.deepEqual(manifest.validationPlan, plan);
-  assert.equal(manifest.cells.length, 4);
-  assert.ok(manifest.cells.every(cell => cell.modelId === releaseSelection.modelId));
+    externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot, plan), releaseSelection, releaseCells };
+  // Legacy placeholders have neither v2 lifecycle nor signed frozen dual-reference PCM.
+  // Their old green report must not become upgraded c03 evidence.
+  assert.equal(plan.paidProviderInputSampleCeiling, 10_807_135);
+  assert.equal(releaseCells[2].completionPolicy, 'aec-output-quiescent-v2');
+  assert.equal(releaseCells[2].maxExternalAudioSamples, 2_880_000);
+  assert.throws(() => writeMatrixRunManifest(options), /aec-closed-loop-evidence\.json is missing/);
+  assert.ok(!fs.existsSync(path.join(outputRoot, canonicalStrictMatrixManifestName(releaseSelection))));
   assert.equal(canonicalStrictMatrixManifestName(), CANONICAL_STRICT_MATRIX_MANIFEST);
   assert.notEqual(canonicalStrictMatrixManifestName(releaseSelection), CANONICAL_STRICT_MATRIX_MANIFEST);
   assert.throws(() => writeMatrixRunManifest({ ...options, releaseCells: LIVE_LLM_CELLS }), /release cells differ/);

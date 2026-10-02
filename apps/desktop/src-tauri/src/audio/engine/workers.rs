@@ -208,6 +208,7 @@ fn run_capture_loop(
                 render_submitted_frames: render_clock.submitted_frames,
                 render_timeline_epoch: render_clock.timeline_epoch,
                 render_discontinuity_count: render_clock.discontinuity_count,
+                render_hard_reset_generation: render_clock.hard_reset_generation,
                 render_discontinuity_reason: render_clock.last_discontinuity_reason,
                 data_discontinuity: buffer_info.flags.data_discontinuity,
                 timestamp_error: buffer_info.flags.timestamp_error,
@@ -299,7 +300,7 @@ fn run_capture_loop(
             .into_iter()
             .enumerate()
         {
-            let chunk = if spec.echo_cancel_enabled() {
+            let (chunk, aec_provenance) = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
                 let delay_samples = current_aec_delay_samples.saturating_sub(
                     chunk_index
@@ -312,13 +313,12 @@ fn run_capture_loop(
                     tap_queue_clock.consume_bytes(chunk_len);
                     metadata
                 });
-                let cancellation = store.process_echo_capture_with_metadata(
+                let (cancellation, provenance) = store.process_echo_capture_with_provenance(
                     &f32_chunk,
                     delay_samples,
                     capture_metadata,
                 )?;
-                // AEC3 output is the capture stream. Playback state is logged
-                // only as context and cannot delete a capture block.
+                // AEC3 output is the capture stream; playback never deletes a block.
                 let playback_active = store.inbound_speaker_playback_active();
                 store.record_aec3_capture_chunk(playback_active);
                 let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
@@ -328,12 +328,12 @@ fn run_capture_loop(
                     playback_active,
                 );
                 echo_diagnostics.maybe_log(&app, store, direction);
-                cleaned_bytes
+                (cleaned_bytes, provenance)
             } else {
-                chunk
+                (chunk, None)
             };
 
-            process_captured_chunk(
+            process_captured_chunk_with_provenance(
                 &app,
                 store,
                 direction,
@@ -341,6 +341,7 @@ fn run_capture_loop(
                 &stt_sender,
                 chunk,
                 sample_queue.len(),
+                aec_provenance,
             )?;
         }
 
@@ -832,59 +833,6 @@ fn should_fail_on_initial_frame_stall(direction: &str) -> bool {
     direction != "inbound"
 }
 
-fn process_captured_chunk(
-    app: &AppHandle,
-    store: &AudioStateStore,
-    direction: &str,
-    processor: &mut RouteProcessor,
-    stt_sender: &Option<mpsc::Sender<Vec<u8>>>,
-    chunk: Vec<u8>,
-    queued_bytes: usize,
-) -> Result<(), String> {
-    if let Some(stt_tx) = stt_sender {
-        if let Err(error) = stt_tx.send(chunk.clone()) {
-            let message = format!("audio route sender unavailable for {direction}: {error}");
-            let _ = diag_log_detail(
-                app,
-                "audio",
-                "error",
-                "watch_mode.omni_sender_unavailable",
-                format!("direction={direction} error={error}"),
-            );
-            return Err(format!("{message} | recommended: restart-route"));
-        }
-    }
-    let update = processor.ingest_chunk(&chunk, queued_bytes);
-    store.update_route_metrics(
-        direction,
-        &update.capture_state,
-        &update.pre_buffer_state,
-        &update.vad_state,
-        update.buffer_ahead_ms,
-        update.frames_captured,
-        update.last_energy_db,
-        Some(now_unix_millis_marker()),
-        update.active_segment_id.clone(),
-    );
-    if let Some(segment) = update.finalized_segment {
-        store.increment_segment_count(direction);
-        store.cache_segment_audio(segment.audio);
-        if should_push_placeholder_cue(direction, stt_sender.is_some()) {
-            store.push_subtitle_cue(segment.cue);
-        }
-    }
-    emit_audio_snapshot(app, store)
-}
-
-/// Whether a finalized VAD segment should surface a placeholder subtitle cue
-/// ("检测到麦克风片段 N"). These exist only to show microphone activity when
-/// no recognition session is attached: inbound never shows them (loopback can
-/// be legitimately silent), and once outbound has an ASR/realtime sender the
-/// session emits the real transcript cues, so the placeholder would otherwise
-/// pollute the translate queue with untranslatable diagnostic text.
-fn should_push_placeholder_cue(direction: &str, has_recognition_sender: bool) -> bool {
-    direction != "inbound" && !has_recognition_sender
-}
 
 #[cfg(test)]
 mod placeholder_cue_tests {

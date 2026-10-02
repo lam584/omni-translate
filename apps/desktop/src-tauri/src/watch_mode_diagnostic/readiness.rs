@@ -52,6 +52,12 @@ struct WatchModeReadiness {
     updated_at_ms: u64,
     frontend_ipc: ComponentReadiness,
     provider: ComponentReadiness,
+    #[serde(default)]
+    provider_socket_generation: u64,
+    #[serde(default)]
+    provider_route_generation: u64,
+    #[serde(default)]
+    provider_session_identity_sha256: Option<String>,
     bridge: ComponentReadiness,
     route: ComponentReadiness,
     failure: Option<ReadinessError>,
@@ -67,9 +73,24 @@ impl WatchModeReadiness {
             updated_at_ms: now_ms(),
             frontend_ipc: ComponentReadiness::pending(),
             provider: ComponentReadiness::pending(),
+            provider_socket_generation: 0, provider_route_generation: 0, provider_session_identity_sha256: None,
             bridge: ComponentReadiness::pending(),
             route: ComponentReadiness::pending(),
             failure: None,
+        }
+    }
+
+    fn begin_provider_socket(&mut self, route_generation: u64) {
+        self.provider_socket_generation = self.provider_socket_generation.saturating_add(1);
+        self.provider_route_generation = route_generation;
+        self.provider_session_identity_sha256 = None;
+        self.provider.set("pending", None);
+    }
+
+    fn mark_provider_session_updated(&mut self, route_generation: u64, session_identity_sha256: &str) {
+        if self.provider_route_generation == route_generation && self.provider_socket_generation > 0 {
+            self.provider_session_identity_sha256 = Some(session_identity_sha256.to_string());
+            self.provider.set("ready", None);
         }
     }
 
@@ -181,7 +202,19 @@ pub(super) fn mark_route_ready() {
 }
 
 pub(crate) fn mark_provider_ready() {
+    // In AEC paid mode a generic/cached readiness bit has no socket authority.
+    if std::env::var("OMNI_WATCH_MODE_COMPLETION_POLICY").as_deref() == Ok("aec-output-quiescent-v2") { return; }
     update(|status| status.provider.set("ready", None));
+}
+
+pub(crate) fn begin_provider_socket(route_generation: u64) {
+    if std::env::var("OMNI_WATCH_MODE_COMPLETION_POLICY").as_deref() != Ok("aec-output-quiescent-v2") { return; }
+    update(|status| status.begin_provider_socket(route_generation));
+}
+
+pub(crate) fn mark_provider_session_updated(route_generation: u64, session_identity_sha256: &str) {
+    if std::env::var("OMNI_WATCH_MODE_COMPLETION_POLICY").as_deref() != Ok("aec-output-quiescent-v2") { return; }
+    update(|status| status.mark_provider_session_updated(route_generation, session_identity_sha256));
 }
 
 pub(crate) fn fail(component: &str, code: &str, message: impl Into<String>) {
@@ -217,6 +250,23 @@ mod tests {
         status.recompute_state();
         assert_eq!(status.state, "ready");
         assert_eq!(status.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn replacement_socket_clears_cached_ready_and_rejects_old_route_generation() {
+        let mut status = WatchModeReadiness::new("run".to_string());
+        status.begin_provider_socket(1);
+        status.mark_provider_session_updated(1, &"a".repeat(64));
+        assert_eq!(status.provider.status, "ready");
+        status.begin_provider_socket(2);
+        assert_eq!(status.provider.status, "pending");
+        assert_eq!(status.provider_session_identity_sha256, None);
+        status.mark_provider_session_updated(1, &"a".repeat(64));
+        assert_eq!(status.provider.status, "pending");
+        status.mark_provider_session_updated(2, &"b".repeat(64));
+        assert_eq!(status.provider.status, "ready");
+        assert_eq!(status.provider_socket_generation, 2);
+        assert_eq!(status.provider_session_identity_sha256, Some("b".repeat(64)));
     }
 
     #[test]

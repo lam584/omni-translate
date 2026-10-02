@@ -1389,6 +1389,7 @@ export const writeMatrixRunManifest = ({
             localPlaybackDrainTimeoutSeconds: plannedCell.localPlaybackDrainTimeoutSeconds,
             reportWriteTimeoutSeconds: plannedCell.reportWriteTimeoutSeconds,
             cellHardWatchdogSeconds: plannedCell.cellHardWatchdogSeconds,
+            ...(plannedCell.completionPolicy ? {completionPolicy: plannedCell.completionPolicy, aecQualityGates: structuredClone(plannedCell.aecQualityGates)} : {}),
             authoritativeTransformedReferenceFrames: plannedCell.authoritativeTransformedReferenceFrames,
             boundedCaptureGraceFrames: plannedCell.boundedCaptureGraceFrames,
             maxExternalAudioSamples: plannedCell.maxExternalAudioSamples,
@@ -1543,8 +1544,8 @@ function collectStrictMatrixPublicationFailures({ outputRoot, manifestPath, curr
       && (!manifest.collectAll || (manifest.collectAll.verdict === 'passed'
         && Array.isArray(manifest.collectAll.failed) && manifest.collectAll.failed.length === 0
         && manifest.collectAll.completed?.length === cells.length))
-      && Number(manifest.externalProviderBudget?.matrixInputSampleCeiling) === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
-      && Number(manifest.externalProviderBudget?.reservedInputSamples) === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
+      && Number(manifest.externalProviderBudget?.matrixInputSampleCeiling) === plan.paidProviderInputSampleCeiling
+      && Number(manifest.externalProviderBudget?.reservedInputSamples) === plan.paidProviderInputSampleCeiling
       && Number(manifest.externalProviderBudget?.auxiliaryExternalAudioSeconds) === 0
       && !!manifest.externalProviderBudget?.ledgerPath && !!manifest.externalProviderBudget?.ledgerSha256
       && Number(manifest.externalProviderBudget?.ledgerBytes) > 0
@@ -1576,7 +1577,7 @@ function collectStrictMatrixPublicationFailures({ outputRoot, manifestPath, curr
   if (manifest.externalProviderBudget?.ledgerPath && rawBudgets.length === cells.length && rawBudgets.every(Boolean)) {
     check('budget.matrix', () => {
       const ledger = resolveAuthorityPath(root, manifest.externalProviderBudget.ledgerPath, 'strict matrix external provider budget ledger');
-      const rebuilt = assertMatrixExternalProviderBudget(ledger, rawBudgets, { expectedCells: cells });
+      const rebuilt = assertMatrixExternalProviderBudget(ledger, rawBudgets, { expectedCells: cells, releaseSelection: selection });
       const recorded = { ...manifest.externalProviderBudget };
       delete recorded.ledgerPath; delete recorded.ledgerBytes; delete recorded.ledgerSha256;
       requireTrue(JSON.stringify(rebuilt) === JSON.stringify(recorded),
@@ -1662,6 +1663,9 @@ export const publishSuccessfulStrictMatrixManifest = ({
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
   const selection = normalizeReleaseSelection(manifest.releaseSelection);
   const selectedReleasePlan = createBalancedReleasePlan(selection);
+  if (selection?.executionScope === 'aec-c03-iteration') {
+    throw new Error('AEC iteration is not eligible for canonical matrix publication');
+  }
   const selectedReleaseCells = liveCellsForReleasePlan(selectedReleasePlan);
   if (JSON.stringify(manifest.validationPlan) !== JSON.stringify(selectedReleasePlan)) {
     throw new Error('canonical matrix balanced release plan does not match release selection');
@@ -1697,9 +1701,9 @@ export const publishSuccessfulStrictMatrixManifest = ({
       && manifest.collectAll.completed?.length === selectedReleaseCells.length
     ))
     && Number(manifest.externalProviderBudget?.matrixInputSampleCeiling)
-      === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
+      === selectedReleasePlan.paidProviderInputSampleCeiling
     && Number(manifest.externalProviderBudget?.reservedInputSamples)
-      === STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES
+      === selectedReleasePlan.paidProviderInputSampleCeiling
     && Number(manifest.externalProviderBudget?.auxiliaryExternalAudioSeconds) === 0
     && manifest.externalProviderBudget?.ledgerPath
     && manifest.externalProviderBudget?.ledgerSha256
@@ -1746,7 +1750,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
     manifest.externalProviderBudget.ledgerPath,
     'strict matrix external provider budget ledger',
   );
-  const rebuiltMatrixBudget = assertMatrixExternalProviderBudget(matrixBudgetPath, rawCellBudgets, { expectedCells: selectedReleaseCells });
+  const rebuiltMatrixBudget = assertMatrixExternalProviderBudget(matrixBudgetPath, rawCellBudgets, { expectedCells: selectedReleaseCells, releaseSelection: selection });
   const manifestBudget = { ...manifest.externalProviderBudget };
   delete manifestBudget.ledgerPath;
   delete manifestBudget.ledgerBytes;

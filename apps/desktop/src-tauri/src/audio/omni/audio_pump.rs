@@ -1,3 +1,5 @@
+mod aec_lineage;
+use aec_lineage::{receive_with_lineage, observe_fence_with_lineage};
 use super::*;
 use super::realtime_socket::ReconnectedRealtimeSocket;
 
@@ -154,6 +156,7 @@ fn try_receive_provider_input(
     }
 }
 
+#[cfg(test)]
 fn observe_provider_input_fence_after_yield(
     audio_rx: &mpsc::Receiver<Vec<u8>>,
     pre_session_audio_queue: &mut VecDeque<Vec<u8>>,
@@ -392,19 +395,23 @@ impl OmniAudioPump {
                 if let Some(chunk) = pre_session_audio_queue.pop_front() {
                     chunk
                 } else {
-                    let Some(chunk) = try_receive_provider_input(
+                    let Some(chunk) = receive_with_lineage(
                         audio_rx,
                         &mut audio_input_disconnected,
-                    ) else {
+                        store,
+                    )? else {
                         break;
                     };
                     chunk
                 }
             } else {
-                match try_receive_provider_input(audio_rx, &mut audio_input_disconnected) {
+                match receive_with_lineage(audio_rx, &mut audio_input_disconnected, store)? {
                     Some(chunk) => {
                         pre_session_chunks_drained_this_tick += 1;
                         if pre_session_audio_queue.len() >= OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT {
+                            if store.aec_provider_lineage_required() {
+                                return Err("watch.aec-provenance-pre-session-queue-overflow".into());
+                            }
                             pre_session_audio_queue.pop_front();
                             pre_session_audio_dropped += 1;
                         }
@@ -432,6 +439,7 @@ impl OmniAudioPump {
                     None => break,
                 }
             };
+            let aec_provenance = store.aec_provider_packet(&raw_chunk)?;
             if let Some(dump) = provider_input_prefilter_dump.as_mut() {
                 dump.append_chunk(app, &raw_chunk)?;
             }
@@ -442,6 +450,7 @@ impl OmniAudioPump {
             }
             let asr_chunk = resample_48k_stereo_to_16k_mono(&raw_chunk);
             if asr_chunk.is_empty() {
+                if aec_provenance.is_some() { return Err("watch.aec-provenance-empty-resampled-packet".into()); }
                 let _ = diag_log(
                     &app,
                     "omni",
@@ -462,6 +471,7 @@ impl OmniAudioPump {
                         silence_grace_chunks_sent += 1;
                     }
                 } else {
+                    if aec_provenance.is_some() { return Err("watch.aec-provenance-silence-packet-discard".into()); }
                     silence_chunks_skipped = silence_chunks_skipped.saturating_add(1);
                     if silence_chunks_skipped == 1 || silence_chunks_skipped.is_multiple_of(250) {
                         log_skipped_silence(app, silence_chunks_skipped, chunk_rms);
@@ -496,6 +506,7 @@ impl OmniAudioPump {
                 silence_chunks_skipped = 0;
             }
             if !provider_input_budget.can_append(asr_chunk.len() as u64) {
+                if aec_provenance.is_some() { return Err("watch.aec-provenance-ceiling-before-packet-send".into()); }
                 let discarded_after_ceiling = if livetranslate_shutdown_requested
                     && provider_input_budget.strict_paid_authority_enabled()
                 {
@@ -525,6 +536,7 @@ impl OmniAudioPump {
                 );
                 break;
             }
+            store.validate_aec_provider_wire(aec_provenance.as_ref(), &raw_chunk, &asr_chunk, OMNI_PROVIDER_AUDIO_SAMPLE_RATE_HZ as u32)?;
             let b64 = base64_encode_i16(&asr_chunk);
             let append = super::build_dashscope_audio_append(&b64);
             let next_chunk_count = chunk_count.saturating_add(1);
@@ -602,6 +614,14 @@ impl OmniAudioPump {
                 pre_session_audio_queue.push_front(raw_chunk);
                 continue;
             }
+            if let Some(packet) = aec_provenance.as_ref() {
+                let session_id = store.strict_watch_provider_session_id()?
+                    .ok_or_else(|| "watch.aec-provenance-provider-session-missing".to_string())?;
+                let sent_qpc = crate::audio::engine::aec_timing::qpc_now_100ns()
+                    .ok_or_else(|| "watch.aec-provider-send-clock-missing".to_string())?;
+                store.record_aec_provider_input_from_packet(&asr_chunk, &raw_chunk, packet,
+                    &session_id, OMNI_PROVIDER_AUDIO_SAMPLE_RATE_HZ as u32, sent_qpc)?;
+            }
             store.record_strict_watch_provider_append(asr_chunk.len() as u64)?;
             provider_audio_pacer.record_successful_append(asr_chunk.len() as u64);
             manual_turn_audio_after_response = true;
@@ -643,11 +663,12 @@ impl OmniAudioPump {
                 // pump tick even though no input remains. If a ninth chunk is
                 // already queued, retain it for the next tick rather than
                 // exceeding the per-tick send bound.
-                observe_provider_input_fence_after_yield(
+                observe_fence_with_lineage(
                     audio_rx,
                     &mut pre_session_audio_queue,
                     &mut audio_input_disconnected,
-                );
+                    store,
+                )?;
                 break;
             }
         }

@@ -31,6 +31,7 @@ import {
   SHARD_INTERACTIVE_CELL_EXECUTION_FILE,
   SHARD_WORKER_READINESS_FILE,
   atomicWriteJson,
+  aecThresholdFreezeBytes,
   currentShardOrchestrationImplementationHashes,
   validateShardCellResult,
   validateInteractiveSessionAuthority,
@@ -228,7 +229,20 @@ export function buildShardCellExecutionRequest({
   if (!analyzerAuthority || !/^[a-f0-9]{64}$/u.test(analyzerAuthority.sha256)) {
     throw new Error('signed runtime authority is missing the pinned release omni-benchmark SHA-256');
   }
-  const runMarker = `watch_mode_diagnostic.run_id=${crypto.randomUUID().replaceAll('-', '')}`;
+  const aec = cell.completionPolicy === 'aec-output-quiescent-v2';
+  const runMarker = aec ? cell.runMarker : `watch_mode_diagnostic.run_id=${crypto.randomUUID().replaceAll('-', '')}`;
+  let freezePath;
+  if (aec) {
+    const bytes = aecThresholdFreezeBytes(cell, plan.coordinator.publicKeyPem, plan.authority.runtimeBinaryHashes);
+    freezePath = path.join(cellOutputRoot, 'aec-threshold-freeze.json');
+    fs.mkdirSync(cellOutputRoot, {recursive: true});
+    if (fs.existsSync(freezePath)) {
+      const stat = fs.lstatSync(freezePath);
+      if (!stat.isFile() || stat.isSymbolicLink() || !fs.readFileSync(freezePath).equals(bytes)) {
+        throw new Error('worker AEC threshold freeze differs from signed immutable bytes');
+      }
+    } else fs.writeFileSync(freezePath, bytes, {flag: 'wx'});
+  }
   const profile = cell.deviceProfileInstance;
   const protocol = WATCH_PROTOCOLS[cell.modelId];
   if (!protocol) throw new Error(`no production realtime protocol is defined for ${cell.modelId}`);
@@ -261,6 +275,7 @@ export function buildShardCellExecutionRequest({
       reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
       cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
       physicalRecorderTailSeconds: 2,
+      ...(aec ? {completionPolicy: cell.completionPolicy, mediaCompletePath: path.join(cellOutputRoot, 'media-complete.json')} : {}),
       inputCompletePath: path.join(cellOutputRoot, 'input-complete.json'),
       terminalAuthorityPath: path.join(cellOutputRoot, 'evidence-driven-terminal.json'),
       physicalPlaybackDeviceId: profile.physicalPlaybackDeviceId,
@@ -278,6 +293,10 @@ export function buildShardCellExecutionRequest({
       mediaSha256: cell.mediaSha256,
     },
     environment: {
+      ...(aec ? {OMNI_WATCH_MODE_COMPLETION_POLICY: cell.completionPolicy,
+        OMNI_WATCH_MODE_MEDIA_COMPLETE_PATH: path.join(cellOutputRoot, 'media-complete.json'),
+        OMNI_WATCH_MODE_AEC_THRESHOLD_FREEZE_PATH: freezePath,
+        OMNI_WATCH_MODE_AEC_SIGNED_FREEZE_SHA256: cell.aecThresholdFreeze.artifact.sha256} : {}),
       OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY: '1',
       OMNI_WATCH_MODE_AUDIO_ANALYZER_PATH: path.join(
         process.cwd(), 'target', 'release', process.platform === 'win32' ? 'omni-benchmark.exe' : 'omni-benchmark',

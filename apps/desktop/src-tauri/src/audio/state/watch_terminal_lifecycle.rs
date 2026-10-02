@@ -1,17 +1,23 @@
+mod store_api;
+mod input_ownership;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use serde::Serialize;
 
 use super::AudioStateStore;
 use crate::audio::time_utils::unix_ms;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StrictWatchTerminalIdentity {
     pub(crate) run_marker: String,
     pub(crate) cell_id: String,
     pub(crate) lease_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StrictWatchProviderAppendEvidence {
     pub(crate) source_sequence: u64,
     pub(crate) observed_at_unix_ms: u64,
@@ -78,6 +84,46 @@ pub(crate) struct StrictWatchTerminalLifecycleSnapshot {
     pub(crate) final_renderer_ack: StrictWatchRendererAckEvidence,
 }
 
+
+/// AEC completion never infers state from diagnostic text or a single idle poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum StrictWatchOpenInputPhase { Open, QuiescentApproved, CaptureClosed, FinishSent, Finished }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StrictWatchActivityEvidence {
+    pub(crate) source_sequence: u64,
+    pub(crate) activity_generation: u64,
+    pub(crate) observed_at_unix_ms: u64,
+    pub(crate) owner_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StrictWatchOpenInputSnapshot {
+    pub(crate) identity: StrictWatchTerminalIdentity,
+    pub(crate) source_sequence: u64,
+    pub(crate) activity_generation: u64,
+    pub(crate) phase: StrictWatchOpenInputPhase,
+    pub(crate) session_updated: bool,
+    pub(crate) last_provider_append: Option<StrictWatchProviderAppendEvidence>,
+    pub(crate) pending_speech: usize,
+    pub(crate) pending_input_segments: usize,
+    pub(crate) pending_responses: usize,
+    pub(crate) pending_renderer_acks: usize,
+    pub(crate) input_open: bool,
+    pub(crate) provider_input_open: bool,
+    pub(crate) last_input_speech: Option<StrictWatchActivityEvidence>,
+    pub(crate) last_output: Option<StrictWatchActivityEvidence>,
+    pub(crate) last_physical_started: Option<StrictWatchActivityEvidence>,
+    pub(crate) last_physical_frame: Option<StrictWatchActivityEvidence>,
+    pub(crate) last_physical_completed: Option<StrictWatchActivityEvidence>,
+    pub(crate) media_complete: Option<StrictWatchActivityEvidence>,
+    pub(crate) output_quiescent: Option<StrictWatchActivityEvidence>,
+    pub(crate) capture_closed: Option<StrictWatchActivityEvidence>,
+}
+
 #[derive(Clone, Debug)]
 struct RendererAck {
     source_sequence: u64,
@@ -100,6 +146,25 @@ struct RendererFailure {
 #[derive(Clone, Debug)]
 struct StrictWatchTerminalLifecycleState {
     identity: StrictWatchTerminalIdentity,
+    aec_open_input_drain: bool,
+    provider_call_started_qpc_100ns: Option<u64>,
+    provider_session_id: Option<String>,
+    open_input_phase: StrictWatchOpenInputPhase,
+    activity_generation: u64,
+    terminal_violation: Option<String>,
+    active_speech: HashSet<String>,
+    // Stopped VAD is not a response terminal. Keep its typed owner until the
+    // admitted response lineage has a successful response.done.
+    input_response_owners: HashMap<String, Option<String>>,
+    active_responses: HashSet<String>,
+    last_input_speech: Option<StrictWatchActivityEvidence>,
+    last_output: Option<StrictWatchActivityEvidence>,
+    last_physical_started: Option<StrictWatchActivityEvidence>,
+    last_physical_frame: Option<StrictWatchActivityEvidence>,
+    last_physical_completed: Option<StrictWatchActivityEvidence>,
+    media_complete: Option<StrictWatchActivityEvidence>,
+    output_quiescent: Option<StrictWatchActivityEvidence>,
+    capture_closed: Option<StrictWatchActivityEvidence>,
     next_source_sequence: u64,
     append_count: u64,
     accepted_samples_total: u64,
@@ -126,6 +191,37 @@ struct StrictWatchTerminalLifecycleState {
 }
 
 impl StrictWatchTerminalLifecycleState {
+    fn pending_input_segments(&self) -> usize {
+        self.input_response_owners.values().filter(|response| {
+            response.as_ref().is_none_or(|id| !self.response_done_ids.contains(id))
+        }).count()
+    }
+
+    fn activity(&mut self, owner_id: &str, fresh: bool) -> Result<StrictWatchActivityEvidence, String> {
+        if self.aec_open_input_drain && fresh && self.open_input_phase != StrictWatchOpenInputPhase::Open {
+            let error = format!("watch.aec-output-after-quiescence: owner={owner_id} phase={:?}", self.open_input_phase);
+            self.terminal_violation.get_or_insert(error.clone());
+            return Err(error);
+        }
+        self.activity_generation = self.activity_generation.checked_add(1)
+            .ok_or_else(|| "strict Watch activity generation exhausted".to_string())?;
+        Ok(StrictWatchActivityEvidence {
+            source_sequence: self.next_source_sequence(),
+            activity_generation: self.activity_generation,
+            observed_at_unix_ms: unix_ms(), owner_id: owner_id.to_string(),
+        })
+    }
+
+    fn check_open_input_failure(&self) -> Result<(), String> {
+        if let Some(error) = &self.terminal_violation { return Err(error.clone()); }
+        if self.aec_open_input_drain && self.output_quiescent.as_ref().is_some_and(|sealed| sealed.activity_generation != self.activity_generation) {
+            return Err("watch.aec-activity-generation-changed-after-quiescence".to_string());
+        }
+        if !self.failed_response_statuses.is_empty() { return Err("watch.aec-provider-response-failed".to_string()); }
+        if !self.renderer_failures.is_empty() { return Err("watch.aec-physical-playback-failed".to_string()); }
+        Ok(())
+    }
+
     fn next_source_sequence(&mut self) -> u64 {
         self.next_source_sequence = self
             .next_source_sequence
@@ -149,6 +245,7 @@ impl StrictWatchTerminalLifecycleState {
             }
             return Ok(*sequence);
         }
+        if self.aec_open_input_drain { self.activity(cue_id, true)?; }
         self.next_cue_sequence = self
             .next_cue_sequence
             .checked_add(1)
@@ -199,6 +296,15 @@ impl StrictWatchTerminalLifecycle {
         }
         *guard = Some(StrictWatchTerminalLifecycleState {
             identity,
+            aec_open_input_drain: false,
+            provider_call_started_qpc_100ns: None, provider_session_id: None,
+            open_input_phase: StrictWatchOpenInputPhase::Open,
+            activity_generation: 0, terminal_violation: None,
+            active_speech: HashSet::new(), active_responses: HashSet::new(),
+            input_response_owners: HashMap::new(),
+            last_input_speech: None, last_output: None,
+            last_physical_started: None, last_physical_frame: None, last_physical_completed: None,
+            media_complete: None, output_quiescent: None, capture_closed: None,
             next_source_sequence: 0,
             append_count: 0,
             accepted_samples_total: 0,
@@ -266,6 +372,14 @@ impl StrictWatchTerminalLifecycle {
                             .to_string(),
                     );
                 }
+                if state.aec_open_input_drain {
+                    if let Some(provider_session_id) = &state.provider_session_id {
+                        use sha2::Digest;
+                        if format!("{:x}", sha2::Sha256::digest(provider_session_id.as_bytes())) != session_identity_sha256 {
+                            return Err("watch.aec-session-updated-current-socket-identity-mismatch".to_string());
+                        }
+                    }
+                }
                 state.session_updated_received = Some(StrictWatchSessionUpdatedEvidence {
                     source_sequence: state.next_source_sequence(),
                     observed_at_unix_ms: unix_ms(),
@@ -312,6 +426,13 @@ impl StrictWatchTerminalLifecycle {
     fn record_session_finish_sent(&self) -> Result<(), String> {
         self.with_active_mut(
             |state| {
+                if state.aec_open_input_drain {
+                    state.check_open_input_failure()?;
+                    if state.open_input_phase != StrictWatchOpenInputPhase::CaptureClosed {
+                        return Err("watch.aec-finish-before-approved-capture-close".to_string());
+                    }
+                    state.open_input_phase = StrictWatchOpenInputPhase::FinishSent;
+                }
                 state.finish_count = state.finish_count.saturating_add(1);
                 if state.finish_count != 1 || state.session_finish_sent.is_some() {
                     return Err("strict Watch session.finish was sent more than once".to_string());
@@ -351,7 +472,18 @@ impl StrictWatchTerminalLifecycle {
                             .to_string(),
                     );
                 }
+                if state.aec_open_input_drain {
+                    state.check_open_input_failure()?;
+                    if state.open_input_phase != StrictWatchOpenInputPhase::QuiescentApproved {
+                        return Err("watch.aec-capture-closed-before-quiescence".to_string());
+                    }
+                    state.open_input_phase = StrictWatchOpenInputPhase::CaptureClosed;
+                }
                 let source_sequence = state.next_source_sequence();
+                state.capture_closed = Some(StrictWatchActivityEvidence {
+                    source_sequence, activity_generation: state.activity_generation,
+                    observed_at_unix_ms: unix_ms(), owner_id: "capture-input-fence-owner".to_string(),
+                });
                 state.provider_input_closed_source_sequence = Some(source_sequence);
                 Ok(source_sequence)
             },
@@ -394,6 +526,10 @@ impl StrictWatchTerminalLifecycle {
                     return Err(format!(
                         "strict Watch {stage} was received more than once for response {response_id}"
                     ));
+                }
+                if state.aec_open_input_drain {
+                    if stage == "responseDone" { state.active_responses.remove(response_id); }
+                    state.activity(response_id, false)?;
                 }
                 let evidence = StrictWatchResponseTerminalEvidence {
                     stage,
@@ -482,6 +618,10 @@ impl StrictWatchTerminalLifecycle {
                     );
                 }
                 let source_sequence = state.next_source_sequence();
+                if state.aec_open_input_drain {
+                    state.check_open_input_failure()?;
+                    state.open_input_phase = StrictWatchOpenInputPhase::Finished;
+                }
                 state.session_finished_received = Some(StrictWatchProviderTerminalEvidence {
                     source_sequence,
                     observed_at_unix_ms: unix_ms(),
@@ -529,6 +669,9 @@ impl StrictWatchTerminalLifecycle {
                 if state.renderer_receipt_ids.contains(receipt_id) {
                     return Ok(());
                 }
+                if state.aec_open_input_drain {
+                    state.last_physical_completed = Some(state.activity(cue_id, false)?);
+                }
                 let ack = RendererAck {
                     source_sequence: state.next_source_sequence(),
                     observed_at_unix_ms: unix_ms(),
@@ -552,7 +695,9 @@ impl StrictWatchTerminalLifecycle {
                 if reason.trim().is_empty() { return Err("strict Watch renderer failure reason is empty".to_string()); }
                 let cue_sequence = state.cue_sequences.get(cue_id).copied().ok_or_else(|| format!("strict Watch renderer failure references unknown/unsubmitted cue: {cue_id}"))?;
                 let response_id = state.cue_response_ids.get(cue_id).cloned().ok_or_else(|| format!("strict Watch renderer cue has no response lineage: {cue_id}"))?;
-                if state.renderer_acks.contains_key(&cue_sequence) { return Err(format!("strict Watch renderer failure arrived after ACK for cue: {cue_id}")); }
+                // A real physical ACK remains immutable history, but a later
+                // evidence I/O failure from the same admitted cue is terminal.
+                // Never let an earlier ACK turn failed evidence into success.
                 if let Some(existing) = state.renderer_failures.get(&cue_sequence) {
                     if existing.reason == reason {
                         return Ok(());
@@ -577,6 +722,7 @@ impl StrictWatchTerminalLifecycle {
         let state = guard.as_ref().ok_or_else(|| {
             "strict Watch terminal lifecycle is not initialized".to_string()
         })?;
+        if state.aec_open_input_drain { state.check_open_input_failure()?; }
         if !state.failed_response_statuses.is_empty() {
             let failures = state
                 .failed_response_statuses
@@ -692,621 +838,4 @@ impl StrictWatchTerminalLifecycle {
             state.session_finished_received.is_some(),
         ))
     }
-}
-
-impl AudioStateStore {
-    pub(crate) fn begin_strict_watch_terminal_lifecycle(
-        &self,
-        run_marker: &str,
-        cell_id: &str,
-        lease_id: &str,
-    ) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle.begin(StrictWatchTerminalIdentity {
-            run_marker: run_marker.to_string(),
-            cell_id: cell_id.to_string(),
-            lease_id: lease_id.to_string(),
-        })
-    }
-
-    pub(crate) fn record_strict_watch_provider_append(&self, samples: u64) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_provider_append(samples)
-    }
-
-    pub(crate) fn record_strict_watch_session_updated_received(
-        &self,
-        session_identity_sha256: &str,
-        sent_session_config_sha256: &str,
-        echoed_session_config_sha256: &str,
-    ) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_session_updated_received(
-                session_identity_sha256,
-                sent_session_config_sha256,
-                echoed_session_config_sha256,
-            )
-    }
-
-    pub(crate) fn record_strict_watch_session_finish_sent(&self) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_session_finish_sent()
-    }
-
-    pub(crate) fn record_strict_watch_provider_input_closed(&self) -> Result<u64, String> {
-        self.strict_watch_terminal_lifecycle
-            .record_provider_input_closed()
-    }
-
-    pub(crate) fn record_strict_watch_response_audio_done(
-        &self,
-        response_id: &str,
-    ) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_response_terminal("lastResponseAudioDone", response_id)
-    }
-
-    pub(crate) fn record_strict_watch_response_done(
-        &self,
-        response_id: &str,
-    ) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_response_terminal("responseDone", response_id)
-    }
-
-    pub(crate) fn record_strict_watch_response_failed(
-        &self,
-        response_id: &str,
-        status: &str,
-    ) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_response_failed(response_id, status)
-    }
-
-    pub(crate) fn record_strict_watch_session_finished_received(&self) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle
-            .record_session_finished_received()
-    }
-
-    pub(crate) fn record_strict_watch_renderer_cue_submitted(
-        &self,
-        cue_id: &str,
-        response_id: &str,
-    ) -> Result<u64, String> {
-        self.strict_watch_terminal_lifecycle
-            .record_renderer_cue_submitted(cue_id, response_id)
-    }
-
-    pub(crate) fn record_strict_watch_renderer_ack(
-        &self,
-        cue_id: &str,
-        receipt_authority: &str,
-        receipt_id: &str,
-    ) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle.record_renderer_ack(
-            cue_id,
-            receipt_authority,
-            receipt_id,
-        )
-    }
-
-    pub(crate) fn record_strict_watch_renderer_failure(&self, cue_id: &str, reason: &str) -> Result<(), String> {
-        self.strict_watch_terminal_lifecycle.record_renderer_failure(cue_id, reason)
-    }
-
-    pub(crate) fn strict_watch_terminal_lifecycle_snapshot(
-        &self,
-    ) -> Result<StrictWatchTerminalLifecycleSnapshot, String> {
-        self.strict_watch_terminal_lifecycle.snapshot()
-    }
-
-    pub(crate) fn strict_watch_session_finished_received(&self) -> Result<bool, String> {
-        self.strict_watch_terminal_lifecycle
-            .session_finished_received()
-    }
-
-    pub(crate) fn strict_watch_provider_terminal_phase(&self) -> Result<(bool, bool), String> {
-        self.strict_watch_terminal_lifecycle.provider_terminal_phase()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn record_strict_watch_test_session_updated(&self) -> Result<(), String> {
-        self.record_strict_watch_session_updated_received(
-            &"a".repeat(64),
-            &"b".repeat(64),
-            &"b".repeat(64),
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_finished_requires_a_completed_response_terminal() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-
-        let error = store
-            .record_strict_watch_session_finished_received()
-            .expect_err(
-                "strict session.finished cannot authorize success without a completed response terminal",
-            );
-        assert!(
-            error.contains("completed response terminal"),
-            "the missing response authority must be explicit: {error}"
-        );
-        assert!(
-            !store.strict_watch_session_finished_received().unwrap(),
-            "a rejected session.finished must not write terminal authority"
-        );
-    }
-
-    #[test]
-    fn provider_input_cannot_precede_typed_session_updated_authority() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_provider_append(320).unwrap();
-
-        assert!(store.record_strict_watch_test_session_updated().is_err());
-        assert!(store
-            .strict_watch_terminal_lifecycle_snapshot()
-            .expect_err("session.updated is required before Provider input")
-            .contains("sessionUpdatedReceived"));
-    }
-
-    #[test]
-    fn session_updated_digest_mismatch_is_rejected_without_consuming_the_boundary() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        assert!(store
-            .record_strict_watch_session_updated_received(
-                &"a".repeat(64),
-                &"b".repeat(64),
-                &"c".repeat(64),
-            )
-            .is_err());
-        store
-            .record_strict_watch_test_session_updated()
-            .expect("a rejected echo must not consume session.updated authority");
-    }
-
-    #[test]
-    fn never_submitted_renderer_ack_cannot_create_terminal_cue() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .expect("strict lifecycle begins");
-        store.record_strict_watch_test_session_updated().unwrap();
-        store
-            .record_strict_watch_provider_append(480)
-            .expect("provider append records");
-        store
-            .record_strict_watch_provider_input_closed()
-            .expect("capture producer completion records");
-        store
-            .record_strict_watch_session_finish_sent()
-            .expect("session.finish records");
-        store
-            .record_strict_watch_response_audio_done("response-1")
-            .expect("response audio terminal records");
-        store
-            .record_strict_watch_response_done("response-1")
-            .expect("response terminal records");
-        store
-            .record_strict_watch_session_finished_received()
-            .expect("session.finished records");
-
-        let ack = store.record_strict_watch_renderer_ack(
-            "never-submitted-cue",
-            "bridge-translation-status-ack",
-            "never-submitted-status",
-        );
-
-        assert!(ack.is_err(), "an unknown renderer cue must be rejected");
-        assert!(
-            store.strict_watch_terminal_lifecycle_snapshot().is_err(),
-            "a rejected ACK must not manufacture final renderer authority"
-        );
-    }
-
-    #[test]
-    fn session_finish_requires_capture_producer_completion_authority() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .expect("strict lifecycle begins");
-        store.record_strict_watch_test_session_updated().unwrap();
-        store
-            .record_strict_watch_provider_append(480)
-            .expect("provider append records");
-
-        assert!(
-            store.record_strict_watch_session_finish_sent().is_err(),
-            "an empty-but-connected Provider input channel cannot authorize finish"
-        );
-    }
-
-    #[test]
-    fn final_renderer_ack_must_share_the_last_provider_response_lineage() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted(
-                "cue-from-earlier-response",
-                "response-earlier",
-            )
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "cue-from-earlier-response",
-                "bridge-translation-status-ack",
-                "receipt-earlier",
-            )
-            .unwrap();
-        store
-            .record_strict_watch_response_audio_done("response-final")
-            .unwrap();
-        store
-            .record_strict_watch_session_finished_received()
-            .unwrap();
-
-        assert!(
-            store.strict_watch_terminal_lifecycle_snapshot().is_err(),
-            "an ACK from an unrelated earlier response cannot cover the final response"
-        );
-    }
-
-    #[test]
-    fn final_streaming_response_may_complete_before_session_finish() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store
-            .record_strict_watch_response_done("response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "cue-1",
-                "bridge-translation-status-ack",
-                "receipt-1",
-            )
-            .unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store.record_strict_watch_session_finished_received().unwrap();
-
-        let snapshot = store
-            .strict_watch_terminal_lifecycle_snapshot()
-            .expect("a streamed final response may complete before session.finish");
-        assert!(
-            snapshot.last_response_terminal.source_sequence
-                < snapshot.session_finish_sent.source_sequence
-        );
-        assert_eq!(
-            snapshot.final_renderer_ack.response_id,
-            snapshot.last_response_terminal.response_id
-        );
-    }
-
-    #[test]
-    fn empty_terminal_response_does_not_replace_last_renderable_response_lineage() {
-        let store = AudioStateStore::new();
-        store.begin_strict_watch_terminal_lifecycle("run", "cell", "lease").unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store.record_strict_watch_response_done("response-rendered").unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-rendered", "response-rendered")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "cue-rendered",
-                "bridge-translation-status-ack",
-                "receipt-rendered",
-            )
-            .unwrap();
-        store.record_strict_watch_response_audio_done("response-empty").unwrap();
-        store.record_strict_watch_response_done("response-empty").unwrap();
-        store.record_strict_watch_session_finished_received().unwrap();
-
-        let snapshot = store.strict_watch_terminal_lifecycle_snapshot().unwrap();
-        assert_eq!(snapshot.last_response_terminal.response_id, "response-rendered");
-        assert_eq!(snapshot.final_renderer_ack.response_id, "response-rendered");
-    }
-
-    #[test]
-    fn response_audio_done_cannot_arrive_after_response_done_for_the_same_response() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store
-            .record_strict_watch_response_done("response-1")
-            .unwrap();
-
-        assert!(
-            store
-                .record_strict_watch_response_audio_done("response-1")
-                .is_err(),
-            "response.done is final for its response and cannot be followed by audio.done"
-        );
-    }
-
-    #[test]
-    fn failed_response_revokes_prior_audio_terminal_and_blocks_snapshot() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store
-            .record_strict_watch_response_audio_done("response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "cue-1",
-                "bridge-translation-status-ack",
-                "receipt-1",
-            )
-            .unwrap();
-        store
-            .record_strict_watch_response_failed("response-1", "failed")
-            .unwrap();
-        assert!(
-            store
-                .record_strict_watch_session_finished_received()
-                .expect_err("the failed response revoked the only completed terminal")
-                .contains("completed response terminal")
-        );
-        assert!(!store.strict_watch_session_finished_received().unwrap());
-
-        assert!(
-            store
-                .strict_watch_terminal_lifecycle_snapshot()
-                .expect_err("a failed response can never authorize strict success")
-                .contains("response-1:failed")
-        );
-    }
-    #[test]
-    fn c03_stale_and_text_only_cues_do_not_replace_the_final_renderer_obligation() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-
-        // c03's first independently rendered response completed normally.
-        store
-            .record_strict_watch_response_done("resp_WDJIKTFe36RZNIzRWp9sW")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted(
-                "omni-cue-inbound-1788721212106",
-                "resp_WDJIKTFe36RZNIzRWp9sW",
-            )
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "omni-cue-inbound-1788721212106",
-                "speaker-render-completed",
-                "receipt-first",
-            )
-            .unwrap();
-
-        // A repeated submission for the same response/cue is a revision of the
-        // same renderer obligation, not a new sequence.
-        let revision_sequence = store
-            .record_strict_watch_renderer_cue_submitted(
-                "omni-cue-inbound-1788721218752",
-                "resp_LoeeIYG1QPFUYyjfkk6C3",
-            )
-            .unwrap();
-        assert_eq!(
-            store
-                .record_strict_watch_renderer_cue_submitted(
-                    "omni-cue-inbound-1788721218752",
-                    "resp_LoeeIYG1QPFUYyjfkk6C3",
-                )
-                .unwrap(),
-            revision_sequence
-        );
-        store
-            .record_strict_watch_response_done("resp_LoeeIYG1QPFUYyjfkk6C3")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "omni-cue-inbound-1788721218752",
-                "speaker-render-completed",
-                "receipt-long",
-            )
-            .unwrap();
-
-        // These original c03 responses were evicted while still pending.  The
-        // playback worker never submitted them, so they remain Provider/text
-        // terminals and cannot manufacture renderer ACK obligations.
-        for response_id in [
-            "resp_KwAMpjJU47P9MEES7E6cC",
-            "resp_PgrQznH7gyBObK1SCuuhq",
-            "resp_Vz9y1VpwI9Vq6hjo7M8Ye",
-            "resp_M432D1btnPQxAquKkHJca",
-            "resp_LOZSDvXETf86bLyUjr2Jz",
-            "resp_IIQ6mNWjQSNxyF5u3VILO",
-            "resp_UalQGKnFwAqHLl5vaiS7V",
-            "resp_RBPUATgfA3iwmXvmJY6l6",
-            "resp_U9B7lIuktL7D2bNV2vNoD",
-            "resp_AG7EMHYNhMxUyVkhhJxoB",
-        ] {
-            store.record_strict_watch_response_done(response_id).unwrap();
-        }
-
-        // The final c03 cue survived stale eviction, reached the playback
-        // worker, and therefore must retain an independent last-cue ACK
-        // obligation. Its physical renderer failed with 0x80070002.
-        store
-            .record_strict_watch_response_done("resp_WAOAjQCyKsCUZsq32h4Ph")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted(
-                "omni-cue-inbound-1788721358299",
-                "resp_WAOAjQCyKsCUZsq32h4Ph",
-            )
-            .unwrap();
-        store
-            .record_strict_watch_renderer_failure(
-                "omni-cue-inbound-1788721358299",
-                "speaker-renderer-produced-no-completion-receipt",
-            )
-            .unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store.record_strict_watch_session_finished_received().unwrap();
-
-        let error = store
-            .strict_watch_terminal_lifecycle_snapshot()
-            .expect_err("the final independently submitted cue must still fail closed");
-        assert!(error.contains("omni-cue-inbound-1788721358299"));
-        assert!(error.contains("resp_WAOAjQCyKsCUZsq32h4Ph"));
-        assert!(error.contains("sequence=3"));
-        assert!(error.contains("speaker-renderer-produced-no-completion-receipt"));
-    }
-
-    #[test]
-    fn earlier_submitted_cue_failure_is_not_hidden_by_a_later_successful_cue() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_response_done("response-1").unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_failure("cue-1", "speaker-renderer-failed")
-            .unwrap();
-        store.record_strict_watch_response_done("response-2").unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-2", "response-2")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_ack(
-                "cue-2",
-                "speaker-render-completed",
-                "receipt-2",
-            )
-            .unwrap();
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store.record_strict_watch_session_finished_received().unwrap();
-
-        let error = store
-            .strict_watch_terminal_lifecycle_snapshot()
-            .expect_err("a later successful cue must not hide an earlier submitted-cue failure");
-        assert!(error.contains("cue-1"));
-        assert!(error.contains("response-1"));
-        assert!(error.contains("sequence=1"));
-        assert!(error.contains("speaker-renderer-failed"));
-    }
-
-    #[test]
-    fn renderer_ack_without_attempt_authority_cannot_override_a_prior_failure() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_response_done("response-1").unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_failure("cue-1", "speaker-renderer-failed")
-            .unwrap();
-
-        let error = store
-            .record_strict_watch_renderer_ack(
-                "cue-1",
-                "speaker-render-completed",
-                "receipt-after-failure",
-            )
-            .expect_err("an unscoped ACK must not recover a terminal renderer failure");
-        assert!(error.contains("ACK arrived after terminal failure"));
-        assert!(error.contains("cue-1"));
-    }
-
-    #[test]
-    fn renderer_failure_is_first_write_immutable_and_same_reason_is_idempotent() {
-        let store = AudioStateStore::new();
-        store
-            .begin_strict_watch_terminal_lifecycle("run", "cell", "lease")
-            .unwrap();
-        store.record_strict_watch_test_session_updated().unwrap();
-        store.record_strict_watch_provider_append(480).unwrap();
-        store.record_strict_watch_provider_input_closed().unwrap();
-        store.record_strict_watch_response_done("response-1").unwrap();
-        store
-            .record_strict_watch_renderer_cue_submitted("cue-1", "response-1")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_failure("cue-1", "first-renderer-failure")
-            .unwrap();
-        store
-            .record_strict_watch_renderer_failure("cue-1", "first-renderer-failure")
-            .expect("repeating the identical failure is idempotent");
-
-        let error = store
-            .record_strict_watch_renderer_failure("cue-1", "later-renderer-failure")
-            .expect_err("a different later reason must not replace the first failure");
-        assert!(error.contains("failure reason changed"));
-        assert!(error.contains("first=first-renderer-failure"));
-        assert!(error.contains("later=later-renderer-failure"));
-
-        store.record_strict_watch_session_finish_sent().unwrap();
-        store.record_strict_watch_session_finished_received().unwrap();
-        let snapshot_error = store
-            .strict_watch_terminal_lifecycle_snapshot()
-            .expect_err("the immutable first renderer failure must remain terminal");
-        assert!(snapshot_error.contains("first-renderer-failure"));
-        assert!(!snapshot_error.contains("later-renderer-failure"));
-    }
-
 }

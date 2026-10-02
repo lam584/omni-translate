@@ -25,6 +25,9 @@ pub(super) use strict_media_end_authority::StrictMediaEndAuthority;
 const MAX_PROVIDER_INPUT_AUTHORITY_SAMPLES: u64 = 2_880_000;
 const STRICT_ORDINARY_CELL_MAX_SAMPLES: u64 = 2_173_045;
 const STRICT_PROCESS_CELL_MAX_SAMPLES: u64 = 2_877_045;
+const STRICT_AEC_OPEN_INPUT_MAX_SAMPLES: u64 = 2_880_000;
+const COMPLETION_POLICY_ENV: &str = "OMNI_WATCH_MODE_COMPLETION_POLICY";
+const AEC_COMPLETION_POLICY: &str = "aec-output-quiescent-v2";
 const MAX_SAMPLES_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES";
 const LEDGER_PATH_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH";
 const CELL_ID_ENV: &str = "OMNI_WATCH_MODE_CELL_ID";
@@ -62,7 +65,7 @@ const INCIDENT_PLUS_MODEL: &str = "qwen3.5-omni-plus-realtime";
 const INCIDENT_PLUS_PROTOCOL: &str = "dashscope-omni";
 const INCIDENT_PLUS_ID: &str = "watch-mode-loss-incident-plus-v1";
 
-fn strict_release_cell_max_samples(cell_id: &str) -> Result<u64, String> {
+fn strict_release_cell_max_samples(cell_id: &str, completion_policy: Option<&str>) -> Result<u64, String> {
     let parts = cell_id.split("::").collect::<Vec<_>>();
     let [tier, model, feedback_mode, device_class] = parts.as_slice() else {
         return Err(format!(
@@ -73,6 +76,18 @@ fn strict_release_cell_max_samples(cell_id: &str) -> Result<u64, String> {
         return Err(format!(
             "strict paid Provider input cellId is outside the formal LiveTranslate release authority: {cell_id}"
         ));
+    }
+    if completion_policy == Some(AEC_COMPLETION_POLICY) {
+        if *tier == "pairwise-live" && *feedback_mode == "echo-cancel" && *model == STRICT_LIVETRANSLATE_MODEL_V2 {
+            return Ok(STRICT_AEC_OPEN_INPUT_MAX_SAMPLES);
+        }
+        return Err("strict AEC completion policy authorizes only the exact 3.8 echo-cancel cell".to_string());
+    }
+    if completion_policy.is_some_and(|policy| policy != "media-input-complete-v1") {
+        return Err("unsupported strict Provider input completion policy".to_string());
+    }
+    if *feedback_mode == "echo-cancel" && *model == STRICT_LIVETRANSLATE_MODEL_V2 {
+        return Err("strict 3.8 AEC requires aec-output-quiescent-v2".to_string());
     }
     match (*tier, *feedback_mode) {
         ("pairwise-live", "virtual-driver" | "echo-cancel") => {
@@ -929,9 +944,23 @@ mod tests {
             let mut total = 0;
             for (tier, mode) in [("pairwise-live", "process-exclusion"), ("pairwise-live", "virtual-driver"),
                 ("pairwise-live", "echo-cancel"), ("model-stability", "process-exclusion")] {
-                total += strict_release_cell_max_samples(&format!("{tier}::{model}::{mode}::default-speaker")).unwrap();
+                let policy = (model == STRICT_LIVETRANSLATE_MODEL_V2 && mode == "echo-cancel").then_some(AEC_COMPLETION_POLICY);
+                total += strict_release_cell_max_samples(&format!("{tier}::{model}::{mode}::default-speaker"), policy).unwrap();
             }
-            assert_eq!(total, 10_100_180);
+            assert_eq!(total, if model == STRICT_LIVETRANSLATE_MODEL_V2 { 10_807_135 } else { 10_100_180 });
+        }
+    }
+
+    #[test]
+    fn aec_open_input_budget_is_exact_and_does_not_lift_other_modes() {
+        let cell = "pairwise-live::qwen3.8-livetranslate-flash-realtime::echo-cancel::default-speaker";
+        assert_eq!(strict_release_cell_max_samples(cell, Some(AEC_COMPLETION_POLICY)).unwrap(), 2_880_000);
+        assert!(strict_release_cell_max_samples(cell, None).is_err());
+        for mode in ["process-exclusion", "virtual-driver"] {
+            let other = format!("pairwise-live::qwen3.8-livetranslate-flash-realtime::{mode}::default-speaker");
+            assert!(strict_release_cell_max_samples(&other, Some(AEC_COMPLETION_POLICY)).is_err());
+            assert_eq!(strict_release_cell_max_samples(&other, None).unwrap(),
+                if mode == "process-exclusion" { 2_877_045 } else { 2_173_045 });
         }
     }
 
@@ -1179,6 +1208,22 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn strict_aec_open_input_disables_only_the_exact_media_end_fence() {
+        let aec = "pairwise-live::qwen3.8-livetranslate-flash-realtime::echo-cancel::default-speaker";
+        let policy = |name: &str| (name == COMPLETION_POLICY_ENV).then(|| AEC_COMPLETION_POLICY.to_string());
+        assert!(StrictMediaEndAuthority::from_environment(&policy, true, "marker", aec, "lease", 2_880_000, 1).unwrap().is_none());
+        for ceiling in [2_173_045, 2_877_045, 2_880_001] {
+            assert!(StrictMediaEndAuthority::from_environment(&policy, true, "marker", aec, "lease", ceiling, 1).is_err());
+        }
+        for other in [
+            "pairwise-live::qwen3.5-livetranslate-flash-realtime::echo-cancel::default-speaker",
+            "pairwise-live::qwen3.8-livetranslate-flash-realtime::virtual-driver::usb",
+        ] {
+            assert!(StrictMediaEndAuthority::from_environment(&policy, true, "marker", other, "lease", 2_880_000, 1).is_err());
+        }
     }
 
     #[test]

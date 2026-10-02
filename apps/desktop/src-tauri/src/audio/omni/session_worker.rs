@@ -230,6 +230,11 @@ fn run_omni_worker<R: tauri::Runtime>(
     trace_call.fail_on_drop(
         "omni provider worker exited without an explicit trace terminal result",
     );
+    if direction == "inbound" {
+        crate::watch_mode_diagnostic::readiness::begin_provider_socket(session_generation);
+        store.reset_strict_watch_provider_socket()?;
+    }
+    if direction == "inbound" { store.record_strict_watch_provider_call_started()?; }
     let connected = connect_initial_with_trace(&mut trace_call, |trace_call| {
         OmniConnectionCoordinator::connect_initial(
             &app,
@@ -841,6 +846,10 @@ fn run_omni_worker<R: tauri::Runtime>(
             }};
         }
         if pump_socket_reconnected {
+            if direction == "inbound" {
+                crate::watch_mode_diagnostic::readiness::begin_provider_socket(session_generation);
+                store.reset_strict_watch_provider_socket()?;
+            }
             let reset = (|| -> Result<(), String> {
                 reset_gate_after_reconnect!(pump_reconnected_session_update.as_ref());
                 Ok(())
@@ -1112,6 +1121,10 @@ fn run_omni_worker<R: tauri::Runtime>(
         audio_samples_since_commit = poll.state.audio_samples_since_commit;
         manual_turn_audio_after_response = poll.state.manual_turn_audio_after_response;
         if poll_socket_reconnected {
+            if direction == "inbound" {
+                crate::watch_mode_diagnostic::readiness::begin_provider_socket(session_generation);
+                store.reset_strict_watch_provider_socket()?;
+            }
             if let Err(error) = provider_input_budget.record_reconnect() {
                 fail_connected!("provider-input-budget-reconnect-record-failed", error);
             }

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { AEC_CLOSED_LOOP_REQUIRED_ARTIFACTS } from './watch-mode-aec-closed-loop-evidence.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -84,11 +85,18 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
 // exactly the implementation it exercised. Neither inventory may be reused
 // across a commit or runtime authority digest.
 export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
+  'scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
+  'scripts/testing/watch-mode-aec-tap-evidence.mjs',
+  'scripts/testing/watch-mode-aec-terminal-evidence.mjs',
+  'scripts/testing/watch-mode-aec-realtime-evidence.mjs',
+  'crates/omni-benchmark-core/src/aec.rs',
+  'scripts/diagnostics/omni-benchmark/src/aec_cli.rs',
   'scripts/testing/watch-mode-external-provider-budget.mjs',
   'scripts/testing/watch-mode-model-protocol-authority.mjs',
   'scripts/testing/model-protocol-profile-contract.mjs',
   'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
   'contracts/model-protocol-profiles.v1.json',
+  'contracts/model-protocol-families.v1.json',
   'contracts/model-protocol-profiles.schema.json',
   'scripts/testing/watch-mode-canonical-source-authority.mjs',
   'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
@@ -176,13 +184,16 @@ export function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
-export function requiredCellArtifactPaths(feedbackLoopPrevention) {
+export function requiredCellArtifactPaths(feedbackLoopPrevention, completionPolicy) {
   const mode = String(feedbackLoopPrevention ?? '').trim();
   const paths = [...COMMON_CELL_ARTIFACTS];
   if (['echo-cancel', 'virtual-driver', 'process-exclusion'].includes(mode)) {
     paths.push(...PHYSICAL_CONTENT_ARTIFACTS);
   }
   if (mode === 'process-exclusion') paths.push(...PROCESS_EXCLUSION_ARTIFACTS);
+  if (mode === 'echo-cancel' && completionPolicy === 'aec-output-quiescent-v2') {
+    paths.push('media-complete.json', 'aec-desktop-playback-timeline.jsonl', 'aec-desktop-playback-timeline-terminal.json', ...AEC_CLOSED_LOOP_REQUIRED_ARTIFACTS);
+  }
   return paths.sort();
 }
 
@@ -284,7 +295,7 @@ export function writeCellAuthorityReceipt({
     resolvedRunDirectory,
     'Watch Mode run directory',
   );
-  const expectedArtifacts = requiredCellArtifactPaths(matrixCell.feedbackLoopPrevention);
+  const expectedArtifacts = requiredCellArtifactPaths(matrixCell.feedbackLoopPrevention, matrixCell.completionPolicy);
   const artifacts = expectedArtifacts.map((relativePath) => fileAuthorityEntry(
     resolveAuthorityPath(resolvedRunDirectory, relativePath, 'cell artifact'),
     relativePath,

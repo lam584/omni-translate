@@ -177,15 +177,15 @@ test('explicit selection preserves the complete historical 3.5 plan byte for byt
     '4ff47c8caf07299b60c6ba20147a5897f4b22c13a917b51663f032da679671f8');
   assert.equal(SUPPORTED_RELEASE_MODELS.length, 2);
 });
-test('3.8 selection creates four independent v2 cells with the same strict sample budgets', () => {
+test('3.8 selection creates four independent v2 cells with the upgraded exact AEC budget', () => {
   const plan = createBalancedReleasePlan({ modelId: SUPPORTED_RELEASE_MODELS[1], endpointHost: workspaceHost });
   assert.equal(balancedReleasePlanFailure(plan), null);
-  assert.equal(plan.schemaVersion, 13);
+  assert.equal(plan.schemaVersion, 14);
   assert.deepEqual(plan.models, ['qwen3.8-livetranslate-flash-realtime']);
   const cells = liveCellsForReleasePlan(plan);
   assert.equal(cells.length, 4);
-  assert.equal(plan.paidProviderInputSampleCeiling, 10_100_180);
-  assert.deepEqual(cells.map(c => c.maxExternalAudioSamples), LIVE_LLM_CELLS.map(c => c.maxExternalAudioSamples));
+  assert.equal(plan.paidProviderInputSampleCeiling, 10_807_135);
+  assert.deepEqual(cells.map(c => c.maxExternalAudioSamples), [2_877_045, 2_173_045, 2_880_000, 2_877_045]);
   assert.ok(cells.every(c => c.modelProtocolProfileIdentity.wireDialectVersion === 2));
   assert.ok(cells.every(c => !LIVE_LLM_CELLS.some(old => old.cellId === c.cellId)));
   assert.equal(createBalancedReleasePlan(), BALANCED_RELEASE_PLAN, 'no mutable global selection');
@@ -209,6 +209,36 @@ test('selection rejects unknown models, wrong regions, generic hosts and mismatc
     p => p.paidProviderInputSampleCeiling++,
   ]) {
     const changed = structuredClone(original); mutate(changed);
+    assert.ok(balancedReleasePlanFailure(changed));
+  }
+});
+
+
+test('AEC c03 iteration is a closed one-cell 3.8 authority, not a partial matrix', () => {
+  const options = {modelId: SUPPORTED_RELEASE_MODELS[1], endpointHost: workspaceHost,
+    executionScope: 'aec-c03-iteration', aecWorker: 'vm131'};
+  const plan = createBalancedReleasePlan(options);
+  const paid = liveCellsForReleasePlan(plan);
+  assert.equal(paid.length, 1);
+  assert.equal(paid[0].feedbackLoopPrevention, 'echo-cancel');
+  assert.equal(paid[0].completionPolicy, 'aec-output-quiescent-v2');
+  assert.equal(paid[0].maxExternalAudioSamples, 2_880_000);
+  assert.equal(paid[0].inputCompletionWatchdogSeconds, 180);
+  assert.equal(plan.paidProviderInputSampleCeiling, 2_880_000);
+  assert.equal(plan.executionScope, 'aec-c03-iteration');
+  assert.equal(plan.aecWorker, 'vm131');
+  assert.equal(balancedReleasePlanFailure(plan), null);
+  for (const worker of ['vm169', '', undefined]) {
+    assert.throws(() => createBalancedReleasePlan({...options, aecWorker: worker}));
+  }
+  assert.throws(() => createBalancedReleasePlan({...options, executionScope: 'partial-matrix'}));
+  assert.throws(() => createBalancedReleasePlan({...options, modelId: SUPPORTED_RELEASE_MODELS[0]}));
+  for (const mutate of [p => p.cells.push(LIVE_LLM_CELLS[0]),
+    p => p.cells.find(c => c.providerMode !== 'disabled').maxExternalAudioSamples++,
+    p => p.cells.find(c => c.providerMode !== 'disabled').completionPolicy = 'media-input-complete-v1',
+    p => p.cells.find(c => c.providerMode !== 'disabled').aecQualityGates.echoAttenuationDb = 19,
+    p => p.aecWorker = 'vm169']) {
+    const changed = structuredClone(plan); mutate(changed);
     assert.ok(balancedReleasePlanFailure(changed));
   }
 });

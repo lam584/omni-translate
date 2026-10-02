@@ -69,7 +69,7 @@ function Assert-WatchTerminalAuthorityFile {
   }
   $terminal = (Read-WatchJsonSnapshot -Path $Path -Label 'required evidence-driven terminal authority').json
   if ($terminal.artifactKind -cne 'watch-mode-evidence-driven-terminal' -or
-      [int]$terminal.schemaVersion -ne 3 -or $terminal.status -cne 'completed') {
+      ([int]$terminal.schemaVersion -ne 3 -and [int]$terminal.schemaVersion -ne 4) -or $terminal.status -cne 'completed') {
     throw "evidence-driven terminal authority is not a completed v3 authority: $Path"
   }
   foreach ($binding in @(
@@ -91,6 +91,37 @@ function Assert-WatchTerminalAuthorityFile {
       [string]$terminal.sourceHeadCommit -cne $SourceHeadCommit -or
       [string]$terminal.runtimeBundleDigest -cne $RuntimeBundleDigest) {
     throw 'evidence-driven terminal producer identity is incomplete or does not match the custodied desktop process'
+  }
+  if ([int]$terminal.schemaVersion -eq 4) {
+    if ([string]$terminal.completionPolicy -cne 'aec-output-quiescent-v2') {
+      throw 'AEC terminal v4 requires the exact aec-output-quiescent-v2 completion policy'
+    }
+    $directory = [System.IO.Path]::GetFullPath((Split-Path -Parent $Path))
+    $canonicalReport = [System.IO.Path]::GetFullPath((Join-Path $directory 'watch-session-report.json'))
+    if (-not $canonicalReport.Equals([System.IO.Path]::GetFullPath($ReportPath), [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'AEC terminal report path is not bound to this run directory'
+    }
+    $media = (Read-WatchJsonSnapshot -Path (Join-Path $directory 'media-complete.json') -Label 'AEC media complete').json
+    $options = @{
+      plannedCell = @{
+        cellId = $CellId; feedbackLoopPrevention = 'echo-cancel'; completionPolicy = 'aec-output-quiescent-v2'
+        authoritativeTransformedReferenceFrames = [long]$media.authoritativeTransformedReferenceFrames
+        boundedCaptureGraceFrames = if ($null -ne $media.PSObject.Properties['boundedCaptureGraceFrames']) { [long]$media.boundedCaptureGraceFrames } else { $null }
+        maxExternalAudioSamples = 2880000; localPlaybackDrainTimeoutSeconds = 120
+      }
+      expectedIdentity = @{
+        runMarker = $RunMarker; leaseId = $LeaseId; sourceHeadCommit = $SourceHeadCommit
+        runtimeBundleDigest = $RuntimeBundleDigest; launchId = [string]$ProcessLease.launchId
+        producerProcessId = [int]$ProcessLease.pid; producerStartTimeUtcTicks = [string]$ProcessLease.startTimeUtcTicks
+        producerExecutableSha256 = [string]$ProcessLease.executableSha256
+      }
+    }
+    $optionsJson = ConvertTo-Json -InputObject $options -Depth 12 -Compress
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($optionsJson))
+    $verifier = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../watch-mode-aec-terminal-evidence.mjs'))
+    $verificationOutput = & node $verifier $directory ('base64:' + $encoded) 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "AEC typed terminal validation failed: $verificationOutput" }
+    return $terminal
   }
   $events = @($terminal.events)
   $requiredStages = @(
@@ -165,7 +196,7 @@ function Get-WatchFailedTerminalAuthority {
     return $null
   }
   if ($terminal.artifactKind -cne 'watch-mode-evidence-driven-terminal' -or
-      [int]$terminal.schemaVersion -ne 3 -or $terminal.status -cne 'failed' -or
+      ([int]$terminal.schemaVersion -ne 3 -and [int]$terminal.schemaVersion -ne 4) -or $terminal.status -cne 'failed' -or
       [string]$terminal.runMarker -cne $RunMarker -or
       [string]$terminal.cellId -cne $CellId -or
       [string]$terminal.leaseId -cne $LeaseId -or
@@ -177,6 +208,10 @@ function Get-WatchFailedTerminalAuthority {
       [string]$terminal.sourceHeadCommit -cne $SourceHeadCommit -or
       [string]$terminal.runtimeBundleDigest -cne $RuntimeBundleDigest -or
       [string]::IsNullOrWhiteSpace([string]$terminal.errorCode)) {
+    return $null
+  }
+  if ([int]$terminal.schemaVersion -eq 4 -and
+      ($null -eq $terminal.PSObject.Properties['completionPolicy'] -or [string]$terminal.completionPolicy -cne 'aec-output-quiescent-v2')) {
     return $null
   }
   return $terminal

@@ -831,13 +831,13 @@ export async function prepareCoordinatorExecution({
     });
     const leases = issueCellLeases(plan, signingKeys.privateKeyPem, { issuedAt: planGeneratedAt });
     if (
-      leases.length !== SHARD_MATRIX_CELL_COUNT
-      || new Set(leases.map((lease) => lease.leaseId)).size !== SHARD_MATRIX_CELL_COUNT
+      leases.length !== plan.cells.length
+      || new Set(leases.map((lease) => lease.leaseId)).size !== plan.cells.length
       || leases.some((lease, index) => (
         Number(lease.maxExternalAudioSamples) !== Number(plan.cells[index].maxExternalAudioSamples)
       ))
-      || leases.reduce((sum, lease) => sum + Number(lease.maxExternalAudioSamples), 0) !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-    ) throw new Error(`coordinator did not allocate the exact ${SHARD_MATRIX_CELL_COUNT} disjoint paid-cell leases`);
+      || leases.reduce((sum, lease) => sum + Number(lease.maxExternalAudioSamples), 0) !== plan.budget.allocatedExternalAudioSamples
+    ) throw new Error(`coordinator did not allocate the exact ${plan.cells.length} disjoint paid-cell leases`);
     const planPath = path.join(stagingRoot, SHARD_EXECUTION_PLAN_FILE);
     atomicWriteJson(planPath, plan);
     const leaseDirectory = path.join(stagingRoot, 'leases');
@@ -956,8 +956,8 @@ function coordinatorCleanupErrors(targets, settlements) {
 }
 
 function assertExactLeaseSet(plan, leases, now) {
-  if (!Array.isArray(leases) || leases.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`coordinator requires exactly ${SHARD_MATRIX_CELL_COUNT} signed leases`);
+  if (!Array.isArray(leases) || leases.length !== plan.cells.length) {
+    throw new Error(`coordinator requires exactly ${plan.cells.length} signed leases`);
   }
   const byId = new Map();
   for (const lease of leases) {
@@ -967,7 +967,7 @@ function assertExactLeaseSet(plan, leases, now) {
   }
   if (plan.cells.some((cell) => !byId.has(cell.leaseId))) throw new Error('coordinator lease set is incomplete');
   const reserved = [...byId.values()].reduce((sum, entry) => sum + Number(entry.lease.maxExternalAudioSamples), 0);
-  if (reserved !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) throw new Error('coordinator lease set is not the exact mode-derived allocation');
+  if (reserved !== plan.budget.allocatedExternalAudioSamples) throw new Error('coordinator lease set is not the exact mode-derived allocation');
   return byId;
 }
 
@@ -1186,7 +1186,7 @@ export async function runCoordinatorWaves({
       results: new Map(wave.cellIds.map((cellId) => [cellId, results.get(cellId)])),
     });
   }
-  if (completed.size !== SHARD_MATRIX_CELL_COUNT) throw new Error('coordinator completed an incomplete paid matrix');
+  if (completed.size !== plan.cells.length) throw new Error('coordinator completed an incomplete paid matrix');
   return {
     results,
     waveCompletions,
@@ -1305,8 +1305,8 @@ export function validateCoordinatorExecutionAuthority({
   const leaseById = new Map(leases.map((lease) => [lease.leaseId, lease]));
   const claimDirectory = path.join(root, 'dispatch-claims');
   const claimFiles = fs.readdirSync(claimDirectory).filter((entry) => entry.endsWith('.json')).sort();
-  if (claimFiles.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`coordinator execution authority requires exactly ${SHARD_MATRIX_CELL_COUNT} dispatch claims`);
+  if (claimFiles.length !== plan.cells.length) {
+    throw new Error(`coordinator execution authority requires exactly ${plan.cells.length} dispatch claims`);
   }
   const claims = new Map();
   const claimAuthorities = [];
@@ -1518,17 +1518,17 @@ export function collectCoordinatorAggregation({
       sourceRunDirectory: binding.runDirectory,
     };
   });
-  if (new Set(canonicalCells.map((cell) => cell.leaseId)).size !== SHARD_MATRIX_CELL_COUNT) {
+  if (new Set(canonicalCells.map((cell) => cell.leaseId)).size !== plan.cells.length) {
     throw new Error('coordinator aggregation reuses a cell lease');
   }
   const actualExternalAudioSamples = canonicalCells.reduce(
     (sum, cell) => sum + Number(cell.actualExternalAudioSamples),
     0,
   );
-  if (actualExternalAudioSamples <= 0 || actualExternalAudioSamples > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES) {
+  if (actualExternalAudioSamples <= 0 || actualExternalAudioSamples > plan.budget.allocatedExternalAudioSamples) {
     throw new Error(
       `coordinator aggregate external audio usage is outside the approved `
-      + `${SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES}-sample mode-derived budget`,
+      + `${plan.budget.allocatedExternalAudioSamples}-sample mode-derived budget`,
     );
   }
   const executionAuthority = validateCoordinatorExecutionAuthority({
@@ -1553,10 +1553,10 @@ export function collectCoordinatorAggregation({
     executionAuthority,
     budget: {
       allocationMode: 'immutable-disjoint-cell-leases',
-      reservedExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+      reservedExternalAudioSamples: plan.budget.allocatedExternalAudioSamples,
       actualExternalAudioSamples,
       inputSampleRateHz: 16_000,
-      cellLeaseCount: SHARD_MATRIX_CELL_COUNT,
+      cellLeaseCount: plan.cells.length,
       auxiliaryExternalAudioSamples: 0,
       preflightExternalAudioSamples: 0,
     },
@@ -1590,24 +1590,25 @@ export function writeCoordinatorAggregate({ outputRoot, ...options }) {
 }
 
 export function validateCoordinatorAggregate(aggregate) {
+  const selection = normalizeReleaseSelection(aggregate?.releaseSelection);
+  const releasePlan = createBalancedReleasePlan(selection);
+  const releaseCells = liveCellsForReleasePlan(releasePlan);
   if (
     aggregate?.schemaVersion !== SHARD_AUTHORITY_SCHEMA_VERSION
     || aggregate?.artifactKind !== COORDINATOR_AGGREGATE_KIND
     || !['passed', 'failed'].includes(aggregate?.verdict)
     || aggregate?.aggregateDigest !== sha256Canonical(aggregateCore(aggregate))
     || !Array.isArray(aggregate.cells)
-    || aggregate.cells.length !== SHARD_MATRIX_CELL_COUNT
-    || new Set(aggregate.cells.map((cell) => cell.cellId)).size !== SHARD_MATRIX_CELL_COUNT
-    || new Set(aggregate.cells.map((cell) => cell.leaseId)).size !== SHARD_MATRIX_CELL_COUNT
-    || Number(aggregate.budget?.reservedExternalAudioSamples) !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-    || Number(aggregate.budget?.actualExternalAudioSamples) > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
+    || aggregate.cells.length !== releaseCells.length
+    || new Set(aggregate.cells.map((cell) => cell.cellId)).size !== releaseCells.length
+    || new Set(aggregate.cells.map((cell) => cell.leaseId)).size !== releaseCells.length
+    || Number(aggregate.budget?.reservedExternalAudioSamples) !== releasePlan.paidProviderInputSampleCeiling
+    || Number(aggregate.budget?.actualExternalAudioSamples) > releasePlan.paidProviderInputSampleCeiling
     || Number(aggregate.budget?.preflightExternalAudioSamples) !== 0
   ) throw new Error('coordinator aggregate is invalid or exceeds the fixed authority budget');
-  const selection = normalizeReleaseSelection(aggregate.releaseSelection);
   if (canonicalJson(aggregate.releaseSelection) !== canonicalJson(selection)) {
     throw new Error('coordinator aggregate release selection is not canonical');
   }
-  const releaseCells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
   for (const [index, cell] of aggregate.cells.entries()) {
     const expected = releaseCells[index];
     if (cell.modelId !== expected.modelId) throw new Error('coordinator aggregate model mismatch');

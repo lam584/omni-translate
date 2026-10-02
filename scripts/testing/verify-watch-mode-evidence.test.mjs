@@ -29,6 +29,7 @@ import {
   PROVIDER_INPUT_PREFILTER_FILE,
   PROVIDER_INPUT_PREFILTER_MAGIC,
   replayProviderInputPrefilter,
+  strictPaidBudgetOptionsForModel,
   writeCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
@@ -43,6 +44,7 @@ import {
 import { deriveWatchModelProtocolIdentity } from './watch-mode-model-protocol-authority.mjs';
 import {
   SHARD_EXECUTION_PLAN_FILE,
+  SHARD_ORCHESTRATION_IMPLEMENTATION_FILES,
   SHARD_INTERACTIVE_CELL_EXECUTION_FILE,
   SHARD_INTERACTIVE_COMMAND_FILE,
   SHARD_INTERACTIVE_CLAIM_RELEASE_FILE,
@@ -206,41 +208,8 @@ const formalTimingForMode = (feedbackLoopPrevention) => {
 const verifyStrictMatrixAuthority = (options) => verifyProductionStrictMatrixAuthority({
   ...options,
   requireLocalIsolation: false,
-  releaseCells: Array.isArray(options?.manifest?.cells)
-    ? options.manifest.cells.map((cell) => {
-      const releaseAuthority = LIVE_LLM_CELLS.find((approved) => (
-        approved.modelId === cell.modelId
-        && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
-        && approved.tier === cell.tier
-      )) ?? LIVE_LLM_CELLS.find((approved) => (
-        approved.modelId === cell.modelId
-        && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
-      ));
-      return {
-        cellId: cell.cellId,
-        tier: cell.tier,
-        providerMode: cell.providerMode,
-        inputCompletionWatchdogSeconds: releaseAuthority?.inputCompletionWatchdogSeconds,
-        processExclusionRestartAfterSeconds: releaseAuthority?.processExclusionRestartAfterSeconds,
-        processExclusionRestartQuietSeconds: releaseAuthority?.processExclusionRestartQuietSeconds,
-        providerFinishTimeoutSeconds: releaseAuthority?.providerFinishTimeoutSeconds,
-        localPlaybackDrainTimeoutSeconds: releaseAuthority?.localPlaybackDrainTimeoutSeconds,
-        reportWriteTimeoutSeconds: releaseAuthority?.reportWriteTimeoutSeconds,
-        cellHardWatchdogSeconds: releaseAuthority?.cellHardWatchdogSeconds,
-        authoritativeTransformedReferenceFrames: releaseAuthority?.authoritativeTransformedReferenceFrames,
-        boundedCaptureGraceFrames: releaseAuthority?.boundedCaptureGraceFrames,
-        maxExternalAudioSamples: releaseAuthority?.maxExternalAudioSamples,
-        auxiliaryExternalAudioSeconds: releaseAuthority?.auxiliaryExternalAudioSeconds,
-        subtitleTranslationMode: releaseAuthority?.subtitleTranslationMode,
-        modelId: cell.modelId,
-        modelProtocolProfileIdentity: structuredClone(
-          releaseAuthority?.modelProtocolProfileIdentity,
-        ),
-        feedbackLoopPrevention: cell.feedbackLoopPrevention,
-        deviceClass: cell.deviceClass,
-      };
-    })
-    : undefined,
+  validatePreflightEvidence: signedFixtureContexts.get(options?.manifest?.shardExecution?.executionId)?.validatePreflightEvidence,
+  releaseCells: liveCellsForReleasePlan(createBalancedReleasePlan(normalizeReleaseSelection(options?.manifest?.releaseSelection))),
 });
 
 test('evidence-driven terminal requires typed session readiness and eleven terminal producer stages', () => {
@@ -590,6 +559,15 @@ const fixturePreflightLifecycle = (model = PROVIDER_PREFLIGHT_MODEL) => ({
 });
 const TEST_ANALYZER_RELATIVE_PATH = 'target/release/omni-benchmark.exe';
 let testAnalyzerFixture = null;
+function existingTestAnalyzerPath() {
+  const requested = process.env.OMNI_TEST_AUDIO_ANALYZER_PATH;
+  const candidates = requested ? [path.resolve(requested)] : [
+    path.resolve(TEST_ANALYZER_RELATIVE_PATH), path.resolve('target/debug/omni-benchmark.exe'),
+  ];
+  const executable = candidates.find(candidate => fs.existsSync(candidate) && fs.lstatSync(candidate).isFile() && !fs.lstatSync(candidate).isSymbolicLink());
+  assert.ok(executable, 'Node fixtures require an existing Rust analyzer (OMNI_TEST_AUDIO_ANALYZER_PATH); no Cargo build is allowed');
+  return executable;
+}
 function prepareTestAnalyzerFixture() {
   if (testAnalyzerFixture) return testAnalyzerFixture;
   if (process.platform !== 'win32') {
@@ -599,7 +577,7 @@ function prepareTestAnalyzerFixture() {
   const releasePath = path.join(workspaceRoot, ...TEST_ANALYZER_RELATIVE_PATH.split('/'));
   fs.mkdirSync(path.dirname(releasePath), { recursive: true });
   fs.copyFileSync(
-    ensureRustAudioAnalyzer({ workspaceRoot: path.resolve('.') }),
+    existingTestAnalyzerPath(),
     releasePath,
     fs.constants.COPYFILE_EXCL,
   );
@@ -614,6 +592,7 @@ function prepareTestAnalyzerFixture() {
   const implementationFiles = [...new Set([
     ...AUTHORITY_IMPLEMENTATION_FILES,
     ...PAID_AUTHORITY_IMPLEMENTATION_FILES,
+    ...SHARD_ORCHESTRATION_IMPLEMENTATION_FILES,
   ])];
   for (const relativePath of implementationFiles) {
     const entry = fileAuthorityEntry(path.resolve(relativePath), relativePath);
@@ -632,6 +611,14 @@ const preparedAnalyzerFixture = prepareTestAnalyzerFixture();
 const TEST_ANALYZER_WORKSPACE = preparedAnalyzerFixture.workspaceRoot;
 const TEST_RUNTIME_BINARY_HASHES = preparedAnalyzerFixture.runtimeBinaryHashes;
 const TEST_RUNTIME_BUNDLE_DIGEST = sha256Canonical(TEST_RUNTIME_BINARY_HASHES);
+const TEST_HISTORICAL_RUNTIME = Object.freeze([
+  ...['sys', 'cat', 'inf'].map((extension, index) => ({path: 'drivers/windows-virtual-mic/package/omni-virtual-speaker.' + extension, bytes: 123, sha256: ['a', 'b', 'c'][index].repeat(64)})),
+  {path: PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE, bytes: 456, sha256: 'd'.repeat(64)}, ...TEST_RUNTIME_BINARY_HASHES,
+]);
+const TEST_AUDIO_ANALYZER = Object.freeze({workspaceRoot: TEST_ANALYZER_WORKSPACE,
+  releaseExecutablePath: path.join(TEST_ANALYZER_WORKSPACE, TEST_ANALYZER_RELATIVE_PATH),
+  releaseExecutableSha256: TEST_RUNTIME_BINARY_HASHES[0].sha256, noBuild: true});
+ensureRustAudioAnalyzer(TEST_AUDIO_ANALYZER);
 const provenanceOk = { now: FIXTURE_NOW, currentProvenance: CLEAN_CURRENT_PROVENANCE };
 const WATCH_MODEL_PROTOCOL_PROFILE_IDENTITY = deriveWatchModelProtocolIdentity(RELEASE_MODELS[0]);
 const healthyWatchSessionReport = {
@@ -1066,6 +1053,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   watchReport.cues = cueIds.map((cueId, index) => ({
     ...structuredClone(healthyWatchSessionReport.cues[0]),
     cueId,
+    sourceText: fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.txt'), 'utf8').split(/\r?\n\s*\r?\n/).slice(index * 3, (index + 1) * 3).join('\n\n'),
     llmText: `translated text ${index + 1}`,
     publishedText: `translated text ${index + 1}`,
     renderedText: `translated text ${index + 1}`,
@@ -1138,6 +1126,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   }
   fs.appendFileSync(path.join(runDirectory, 'app.log'), `${lifecycleLines.join('\n')}\n`, 'utf8');
   const authority = buildTranslatedPcmLoopbackAuthority({
+    ...TEST_AUDIO_ANALYZER,
     runDirectory,
     runMarker,
     recordingStartedAtEpochMs,
@@ -1155,7 +1144,7 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
   );
   const physicalAuthorityPath = path.join(runDirectory, 'physical-output-content.raw.json');
   const physicalAuthority = JSON.parse(fs.readFileSync(physicalAuthorityPath, 'utf8'));
-  const sourceWaveform = buildPhysicalSourceWaveformAuthority({ runDirectory });
+  const sourceWaveform = buildPhysicalSourceWaveformAuthority({ runDirectory, ...TEST_AUDIO_ANALYZER });
   assert.equal(sourceWaveform.passed, true, sourceWaveform.violations.join('; '));
   physicalAuthority.recording = {
     ...physicalAuthority.recording,
@@ -1212,8 +1201,8 @@ function writeAuthorityRawCell(root, directoryName, {
   feedbackLoopPrevention = 'echo-cancel',
   deviceClass = 'default-speaker',
   profileId = 'authority-profile',
-  runtimeBinaryHashes = [],
-  healthyBridgeProbe = false,
+  runtimeBinaryHashes = TEST_HISTORICAL_RUNTIME,
+  healthyBridgeProbe = true,
 } = {}) {
   const directory = path.join(root, directoryName);
   fs.mkdirSync(directory, { recursive: true });
@@ -1375,6 +1364,7 @@ function writeAuthorityRawCell(root, directoryName, {
       '[AUDIO] playback request received: cue_id=authority-aec samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=authority-fixture',
       '[AUDIO] speaker playback completed: cue_id=authority-aec frames=24000 sample_rate_hz=24000 sid=authority-fixture',
       'event=echo_cancel_backend | backend=webrtc-aec3 frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready=true msvcBuildVerified=true linkedBackendPresent=true fixtureVerified=true sid=authority-fixture',
+      'event=echo_cancel_reset | direction=inbound reason=wasapi-render-session-start estimatorResetCount=1 sid=authority-fixture',
       'event=echo_cancel_summary | direction=inbound final=false backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=10.0 residualEchoLikelihood=0.08 reportedDelayMs=0 doubleTalkFrames=0 avgProcessingUs=110.0 maxProcessingUs=230 captureChunks=50 intervalCaptureChunks=50 playbackActiveChunks=40 asrForwardedChunks=50 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-50.0 avgRemovedDb=10.0 sid=authority-fixture',
       'event=echo_cancel_summary | direction=inbound final=true backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=authority-fixture',
       `event=aec_live_scenario_stage status=completed cueId=authority-aec-1 stage=double-talk ordinal=1 delayMs=0 nonlinearity=none referenceFrames=4800 physicalFrames=4800 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=${playbackStartedAtMs + 1_000} completedAtMs=${playbackStartedAtMs + 1_100} source=runtime-physical-render playbackSource=native-omni`,
@@ -1616,6 +1606,7 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   leaseId = `lease-${path.basename(runDirectory)}-${cell.cellId}`,
   sourceHeadCommit = CLEAN_CURRENT_PROVENANCE.headCommit,
   runtimeBundleDigest = TEST_RUNTIME_BUNDLE_DIGEST,
+  releaseSelection,
 } = {}) {
   const collection = JSON.parse(fs.readFileSync(path.join(runDirectory, 'run-collection.json'), 'utf8'));
   const metadata = JSON.parse(fs.readFileSync(path.join(runDirectory, collection.artifacts.runMetadata), 'utf8'));
@@ -1623,14 +1614,11 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   const runMarker = metadata.runMarker;
   const providerPcmPath = path.join(runDirectory, 'provider-input-16k-mono.pcm');
   const totalAttemptedSamples = fs.statSync(providerPcmPath).size / 2;
-  const releaseAuthority = LIVE_LLM_CELLS.find((entry) => (
-    entry.modelId === cell.modelId
-    && entry.feedbackLoopPrevention === cell.feedbackLoopPrevention
-    && entry.tier === (cell.tier ?? 'pairwise-live')
-  )) ?? LIVE_LLM_CELLS.find((entry) => (
-    entry.modelId === cell.modelId
-    && entry.feedbackLoopPrevention === cell.feedbackLoopPrevention
-  ));
+  const selected = normalizeReleaseSelection(releaseSelection);
+  const approved = liveCellsForReleasePlan(createBalancedReleasePlan(selected ?? {modelId: cell.modelId}));
+  const releaseAuthority = approved.find(entry => entry.cellId === cell.cellId)
+    ?? approved.find(entry => entry.feedbackLoopPrevention === cell.feedbackLoopPrevention && entry.tier === (cell.tier ?? 'pairwise-live'));
+  const budgetOptions = strictPaidBudgetOptionsForModel(cell.modelId, selected?.endpointHost, selected);
   assert.ok(releaseAuthority, `missing formal release authority for ${cell.modelId}/${cell.feedbackLoopPrevention}`);
   const maxSamples = Number(cell.maxExternalAudioSamples ?? releaseAuthority.maxExternalAudioSamples);
   const identity = {
@@ -1644,7 +1632,7 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
     modelProtocolProfileIdentity: structuredClone(
       releaseAuthority.modelProtocolProfileIdentity,
     ),
-    ...STRICT_PAID_PROVIDER_IDENTITY,
+    ...budgetOptions.providerIdentity,
   };
   const sessionGeneration = 1;
   fs.appendFileSync(
@@ -1891,6 +1879,7 @@ function writeStrictPaidBudgetFixture(runDirectory, cell, {
   };
   fs.writeFileSync(terminalPath, `${JSON.stringify(terminal, null, 2)}\n`, 'utf8');
   return writeCellExternalProviderBudget({
+    ...budgetOptions,
     runDirectory,
     runMarker,
     cellId: cell.cellId,
@@ -2171,6 +2160,9 @@ function writeProcessExclusionRestartFixture(runDirectory) {
     captureBackend: 'wasapi-process-exclusion',
     sourceSubscriberActive: 'true',
   };
+  // Replace the preliminary playback-only summary; strict evidence requires exactly one terminal restart summary.
+  const logPath = path.join(runDirectory, 'app.log');
+  fs.writeFileSync(logPath, fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(line => !line.includes('event=process_exclusion_restart_summary')).join('\n'), 'utf8');
   fs.appendFileSync(
     path.join(runDirectory, 'app.log'),
     `${Object.entries(summary).map(([key, value]) => `${key}=${value}`).join(' ')}\n`,
@@ -2180,6 +2172,7 @@ function writeProcessExclusionRestartFixture(runDirectory) {
   if (fs.existsSync(matcherPath)) {
     const previous = JSON.parse(fs.readFileSync(matcherPath, 'utf8'));
     const rebuilt = buildTranslatedPcmLoopbackAuthority({
+    ...TEST_AUDIO_ANALYZER,
       runDirectory,
       runMarker: previous.runMarker,
       recordingStartedAtEpochMs: previous.recordingStartedAtEpochMs,
@@ -2202,97 +2195,19 @@ function writeProcessExclusionRestartFixture(runDirectory) {
   }
 }
 
+function primaryCellIndex(root, manifest, runDirectory) {
+  const index = manifest.cells.findIndex(cell => path.resolve(root, cell.runDirectory).toLowerCase() === path.resolve(runDirectory).toLowerCase());
+  assert.ok(index >= 0, 'the primary historical report must belong to its canonical matrix');
+  return index;
+}
 function writeAuthorityMatrixManifest(root, entries, {
   now = null,
   runtimeBinaryHashes = TEST_RUNTIME_BINARY_HASHES,
   rebuildReportAfterBudget = true,
 } = {}) {
-  const releaseCells = entries.map((entry) => {
-    const cell = entry.cell;
-    const releaseAuthority = LIVE_LLM_CELLS.find((approved) => (
-      approved.modelId === cell.modelId
-      && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
-      && approved.tier === (cell.tier ?? 'pairwise-live')
-    )) ?? LIVE_LLM_CELLS.find((approved) => (
-      approved.modelId === cell.modelId
-      && approved.feedbackLoopPrevention === cell.feedbackLoopPrevention
-    ));
-    assert.ok(releaseAuthority, `missing formal release authority for ${cell.modelId}/${cell.feedbackLoopPrevention}`);
-    return {
-      ...cell,
-      authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames
-        ?? releaseAuthority.authoritativeTransformedReferenceFrames,
-      boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames
-        ?? releaseAuthority.boundedCaptureGraceFrames,
-      maxExternalAudioSamples: cell.maxExternalAudioSamples
-        ?? releaseAuthority.maxExternalAudioSamples,
-      modelProtocolProfileIdentity: structuredClone(
-        cell.modelProtocolProfileIdentity ?? releaseAuthority.modelProtocolProfileIdentity,
-      ),
-    };
-  });
-  const budgetGeneratedAt = now instanceof Date
-    ? new Date(now.getTime() - 1_000)
-    : new Date();
-  const cellBudgets = entries.map((entry, index) => writeStrictPaidBudgetFixture(
-    entry.runDirectory,
-    releaseCells[index],
-    {
-      generatedAt: budgetGeneratedAt,
-      leaseId: entry.leaseId ?? `lease-${index}-${entry.cell.cellId}`,
-      sourceHeadCommit: CLEAN_CURRENT_PROVENANCE.headCommit,
-      runtimeBundleDigest: runtimeBinaryHashes.length === 0
-        ? TEST_RUNTIME_BUNDLE_DIGEST
-        : authorityInventoryDigest(runtimeBinaryHashes),
-    },
-  ));
-  if (rebuildReportAfterBudget) {
-    for (const entry of entries) {
-      writeDirectoryReport({ inputDir: entry.runDirectory, outputDir: entry.runDirectory, mode: 'live' });
-    }
-  }
-  // Non-echo fixtures rebuild their canonical/acoustic evidence before the
-  // report is minted.  Derive the receipt time only after those writes so a
-  // slow local matcher cannot make report.generatedAt later than its receipt.
-  const authorityNow = now instanceof Date ? now : new Date(Date.now() + 1_000);
-  const matrixBudget = writeMatrixExternalProviderBudget(root, cellBudgets, {
-    generatedAt: authorityNow,
-    expectedCells: releaseCells,
-    matrixInputSampleCeiling: releaseCells.reduce(
-      (total, cell) => total + cell.maxExternalAudioSamples,
-      0,
-    ),
-  });
-  const matrixBudgetAuthority = fileAuthorityEntry(
-    matrixBudget.filePath,
-    path.basename(matrixBudget.filePath),
-  );
-  const externalProviderBudget = {
-    ...matrixBudget.ledger,
-    ledgerPath: matrixBudgetAuthority.path,
-    ledgerBytes: matrixBudgetAuthority.bytes,
-    ledgerSha256: matrixBudgetAuthority.sha256,
-  };
-  const profilesByClass = new Map(entries.map((entry) => [
-    entry.cell.deviceClass,
-    {
-      profileId: entry.profileId ?? 'authority-profile',
-      deviceClass: entry.cell.deviceClass,
-    },
-  ]));
-  return writeMatrixRunManifest({
-    outputRoot: root,
-    modelList: [...new Set(releaseCells.map((cell) => cell.modelId))],
-    feedbackModeList: [...new Set(releaseCells.map((cell) => cell.feedbackLoopPrevention))],
-    deviceProfiles: [...profilesByClass.values()],
-    runDirectories: entries.map((entry) => entry.runDirectory),
-    strict: true,
-    now: authorityNow,
-    provenance: CLEAN_CURRENT_PROVENANCE,
-    authorityRuntimeBinaryHashes: runtimeBinaryHashes,
-    releaseCells,
-    externalProviderBudget,
-  });
+  assert.ok(entries.length > 0 && entries.every(entry => entry.cell.modelId === 'qwen3.5-livetranslate-flash-realtime'),
+    'historical raw fixtures authorize only the explicit 3.5 projection, never new AEC c03');
+  return writeSignedCoordinatorFixture(undefined, {root, rawEntries: entries, now, runtimeBinaryHashes, rebuildReportAfterBudget});
 }
 
 function writeAuthorityManifest(root, runDirectory, {
@@ -2907,8 +2822,9 @@ test('run manifest resolves relative current-run directories without discovering
 
 test('strict authority rebuilds report evidence from the fixed raw inventory', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-valid');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-valid');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
 
   const verified = verifyStrictMatrixAuthority({
     manifestPath,
@@ -2917,18 +2833,19 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
     workspaceRoot: TEST_ANALYZER_WORKSPACE,
     now: Date.now() + 2_000,
-    currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
   });
 
-  assert.deepEqual(verified.runDirectories, [runDirectory]);
-  assert.equal(verified.authorizedReports.size, 1);
+  assert.deepEqual(verified.runDirectories, manifest.runDirectories.map(relative => path.resolve(root, relative)));
+  assert.ok(verified.runDirectories.includes(runDirectory));
+  assert.equal(verified.authorizedReports.size, 4);
   assert.equal(
-    [...verified.authorizedReports.values()][0].generatedAt,
+    verified.authorizedReports.get(runDirectory.toLowerCase()).generatedAt,
     JSON.parse(fs.readFileSync(path.join(runDirectory, 'report.json'), 'utf8')).generatedAt,
   );
   assert.equal(
     verified.externalProviderBudget.actualProviderInputSamples,
-    320,
+    4 * 320,
   );
   assert.equal(
     verified.externalProviderBudget.cells[0].leaseId,
@@ -2938,29 +2855,32 @@ test('strict authority rebuilds report evidence from the fixed raw inventory', (
 
 test('strict authority fixture rejects a missing pinned analyzer without repairing explicit runtime options', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-analyzer', { runtimeBinaryHashes: [] });
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, { runtimeBinaryHashes: [] });
+  let runDirectory = writeAuthorityRawCell(root, 'authority-missing-analyzer', { runtimeBinaryHashes: [] });
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, { runtimeBinaryHashes: [] });
+  [runDirectory] = primaryRunDirectories;
   assert.throws(() => verifyStrictMatrixAuthority({
     manifestPath, manifest, evidenceRoot: root, currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: TEST_ANALYZER_WORKSPACE, currentRuntimeBinaryHashes: [], now: Date.now() + 2_000,
+    workspaceRoot: TEST_ANALYZER_WORKSPACE, currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes, now: Date.now() + 2_000,
   }), /strict runtime authority is missing target\/release\/omni-benchmark\.exe/);
 });
 
 test('strict authority fixture rejects an explicitly wrong analyzer pin without substituting the valid fixture hash', () => {
   const root = makeTempRoot();
   const wrongRuntime = TEST_RUNTIME_BINARY_HASHES.map((entry) => ({ ...entry, sha256: 'f'.repeat(64) }));
-  const runDirectory = writeAuthorityRawCell(root, 'authority-wrong-analyzer-pin', { runtimeBinaryHashes: wrongRuntime });
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, { runtimeBinaryHashes: wrongRuntime });
+  let runDirectory = writeAuthorityRawCell(root, 'authority-wrong-analyzer-pin', { runtimeBinaryHashes: wrongRuntime });
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, { runtimeBinaryHashes: wrongRuntime });
+  [runDirectory] = primaryRunDirectories;
   assert.throws(() => verifyStrictMatrixAuthority({
     manifestPath, manifest, evidenceRoot: root, currentProvenance: CLEAN_CURRENT_PROVENANCE,
-    workspaceRoot: TEST_ANALYZER_WORKSPACE, currentRuntimeBinaryHashes: wrongRuntime, now: Date.now() + 2_000,
+    workspaceRoot: TEST_ANALYZER_WORKSPACE, currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes, now: Date.now() + 2_000,
   }), /pinned release analyzer SHA-256 mismatch/);
 });
 
 test('strict authority rejects a rehashed WAV truncated by half a second despite self-consistent RIFF metadata', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-truncated-physical-wav');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-truncated-physical-wav');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const wavPath = path.join(runDirectory, 'physical-output-recording.wav');
   const wav = fs.readFileSync(wavPath);
   const blockAlign = wav.readUInt16LE(32);
@@ -2974,7 +2894,7 @@ test('strict authority rejects a rehashed WAV truncated by half a second despite
   truncatedWav.writeUInt32LE(truncatedDataBytes, 40);
   fs.writeFileSync(wavPath, truncatedWav);
 
-  refreshCellReceiptArtifacts(root, manifest, 0, ['physical-output-recording.wav']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['physical-output-recording.wav']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -2984,7 +2904,7 @@ test('strict authority rejects a rehashed WAV truncated by half a second despite
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: Date.now() + 2_000,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /physical-output WAV, recording, and capture timeline frame counts must match exactly/,
   );
@@ -2992,14 +2912,15 @@ test('strict authority rejects a rehashed WAV truncated by half a second despite
 
 test('strict authority rejects media playback without the fixed VAD-closing postroll', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-postroll');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-missing-postroll');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const playbackPath = path.join(runDirectory, 'playback.json');
   const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
   playback.postrollSilenceFrames = 0;
   playback.postrollSilenceSeconds = 0;
   fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
-  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['playback.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3008,7 +2929,7 @@ test('strict authority rejects media playback without the fixed VAD-closing post
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /playback\.json is not a completed production media-injector timeline/,
   );
@@ -3020,14 +2941,15 @@ test('strict process-exclusion authority rejects playback without the midpoint r
     feedbackLoopPrevention: 'process-exclusion',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-restart-window', options);
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-missing-restart-window', options);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
   const playbackPath = path.join(runDirectory, 'playback.json');
   const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
   playback.restartQuietWindowFrames = 0;
   playback.restartQuietWindowSeconds = 0;
   fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
-  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['playback.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3036,7 +2958,7 @@ test('strict process-exclusion authority rejects playback without the midpoint r
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /restart quiet-window authority is invalid/,
   );
@@ -3048,13 +2970,14 @@ test('strict process-exclusion authority binds quiet-window frames to the render
     feedbackLoopPrevention: 'process-exclusion',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-wrong-restart-window-frames', options);
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-wrong-restart-window-frames', options);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
   const playbackPath = path.join(runDirectory, 'playback.json');
   const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
   playback.restartQuietWindowFrames = 1;
   fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
-  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['playback.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3063,7 +2986,7 @@ test('strict process-exclusion authority binds quiet-window frames to the render
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /restart quiet-window authority is invalid/,
   );
@@ -3075,14 +2998,15 @@ test('strict non-process authority rejects any injected restart quiet window', (
     feedbackLoopPrevention: 'virtual-driver',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-unexpected-restart-window', options);
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-unexpected-restart-window', options);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
   const playbackPath = path.join(runDirectory, 'playback.json');
   const playback = JSON.parse(fs.readFileSync(playbackPath, 'utf8'));
   playback.restartQuietWindowAfterSeconds = 90;
   playback.restartQuietWindowFrames = 2_160_000;
   fs.writeFileSync(playbackPath, `${JSON.stringify(playback, null, 2)}\n`, 'utf8');
-  refreshCellReceiptArtifacts(root, manifest, 0, ['playback.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['playback.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3091,7 +3015,7 @@ test('strict non-process authority rejects any injected restart quiet window', (
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /restart quiet-window authority is invalid/,
   );
@@ -3099,14 +3023,15 @@ test('strict non-process authority rejects any injected restart quiet window', (
 
 test('strict authority rejects a placeholder paid-cell ledger even when its receipt hash is refreshed', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-placeholder-budget');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-placeholder-budget');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   fs.writeFileSync(
     path.join(runDirectory, 'external-provider-budget.json'),
     `${JSON.stringify({ passed: true }, null, 2)}\n`,
     'utf8',
   );
-  refreshCellReceiptArtifacts(root, manifest, 0, ['external-provider-budget.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['external-provider-budget.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3115,7 +3040,7 @@ test('strict authority rejects a placeholder paid-cell ledger even when its rece
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /paid-cell budget ledger has an unsupported schema\/kind/,
   );
@@ -3123,8 +3048,9 @@ test('strict authority rejects a placeholder paid-cell ledger even when its rece
 
 test('strict authority rejects a missing Rust send-boundary ledger', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-missing-rust-ledger');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-missing-rust-ledger');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   fs.unlinkSync(path.join(runDirectory, 'provider-input-budget-ledger.json'));
 
   assert.throws(
@@ -3134,7 +3060,7 @@ test('strict authority rejects a missing Rust send-boundary ledger', () => {
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /provider-input-budget-ledger\.json.*missing|authority artifact.*missing/,
   );
@@ -3142,13 +3068,14 @@ test('strict authority rejects a missing Rust send-boundary ledger', () => {
 
 test('strict authority rejects a self-consistently rehashed paid-cell JS ledger tamper', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-tampered-js-budget');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-tampered-js-budget');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const budgetPath = path.join(runDirectory, 'external-provider-budget.json');
   const budget = JSON.parse(fs.readFileSync(budgetPath, 'utf8'));
   budget.actualProviderInputSamples += 1;
   fs.writeFileSync(budgetPath, `${JSON.stringify(budget, null, 2)}\n`, 'utf8');
-  refreshCellReceiptArtifacts(root, manifest, 0, ['external-provider-budget.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['external-provider-budget.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -3157,7 +3084,7 @@ test('strict authority rejects a self-consistently rehashed paid-cell JS ledger 
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /paid-cell budget ledger does not match current raw artifacts/,
   );
@@ -3165,8 +3092,9 @@ test('strict authority rejects a self-consistently rehashed paid-cell JS ledger 
 
 test('strict authority rejects a wrong Rust model-protocol pair after all hashes are refreshed', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-wrong-rust-protocol');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-wrong-rust-protocol');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const ledgerPath = path.join(runDirectory, 'provider-input-budget-ledger.json');
   const journalPath = path.join(runDirectory, 'provider-input-budget-ledger.json.journal.jsonl');
   const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
@@ -3178,8 +3106,8 @@ test('strict authority rejects a wrong Rust model-protocol pair after all hashes
     return entry;
   });
   fs.writeFileSync(journalPath, `${journal.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
-  rewriteRecordedCellBudget(runDirectory, manifest.cells[0]);
-  refreshCellReceiptArtifacts(root, manifest, 0, [
+  rewriteRecordedCellBudget(runDirectory, manifest.cells[primaryCellIndex(root, manifest, runDirectory)]);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), [
     'external-provider-budget.json',
     'provider-input-budget-ledger.json',
     'provider-input-budget-ledger.json.journal.jsonl',
@@ -3192,7 +3120,7 @@ test('strict authority rejects a wrong Rust model-protocol pair after all hashes
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /protocol mismatch/,
   );
@@ -3200,8 +3128,9 @@ test('strict authority rejects a wrong Rust model-protocol pair after all hashes
 
 test('strict authority independently rejects a tampered matrix aggregate above the mode-derived sample cap', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-tampered-matrix-budget');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-tampered-matrix-budget');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const matrixPath = path.join(root, manifest.externalProviderBudget.ledgerPath);
   const matrix = JSON.parse(fs.readFileSync(matrixPath, 'utf8'));
   matrix.actualProviderInputSamples = SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES + 1;
@@ -3218,7 +3147,7 @@ test('strict authority independently rejects a tampered matrix aggregate above t
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /paid-matrix budget ledger does not match rebuilt cell authorities/,
   );
@@ -3226,8 +3155,12 @@ test('strict authority independently rejects a tampered matrix aggregate above t
 
 test('production strict authority requires all four fixed paid cells', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-one-of-four');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-one-of-four');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
+  manifest.cells = manifest.cells.slice(0, 1);
+  manifest.runDirectories = manifest.runDirectories.slice(0, 1);
+  delete manifest.collectAll;
 
   assert.throws(
     () => verifyProductionStrictMatrixAuthority({
@@ -3236,7 +3169,7 @@ test('production strict authority requires all four fixed paid cells', () => {
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
       requireLocalIsolation: false,
     }),
     /must contain exactly 4 paid live cells/,
@@ -3468,23 +3401,23 @@ test('strict shard preflight rejects a self-consistent model outside the paid re
   );
 });
 
-for (const releaseSelection of [undefined, { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' }]) {
-test(`strict production verifier replays signed coordinator ${releaseSelection?.modelId ?? 'default 3.5'}`, () => {
+const signedFixtureContexts = new Map();
+function writeSignedCoordinatorFixture(releaseSelection, fixtureOptions = {}) {
   const selectedPlan = createBalancedReleasePlan(releaseSelection);
   const LIVE_LLM_CELLS = liveCellsForReleasePlan(selectedPlan);
   const PROVIDER_PREFLIGHT_MODEL = selectedPlan.models[0];
   const selectedEndpoint = releaseSelection?.endpointHost ?? STRICT_PAID_PROVIDER_IDENTITY.endpointHost;
-  const root = makeTempRoot();
-  const evidenceRoot = path.join(root, 'evidence');
+  const root = fixtureOptions.root ?? makeTempRoot();
+  const evidenceRoot = fixtureOptions.rawEntries ? root : path.join(root, 'evidence');
   const coordinatorRoot = path.join(root, 'coordinator-source');
-  const workspaceRoot = path.resolve('.');
+  const workspaceRoot = TEST_ANALYZER_WORKSPACE;
   fs.mkdirSync(evidenceRoot, { recursive: true });
   fs.mkdirSync(coordinatorRoot, { recursive: true });
-  const baseMs = Date.now();
+  const baseMs = fixtureOptions.now instanceof Date ? fixtureOptions.now.getTime() : Date.now();
   const executionId = `watch-shard-verifier-${crypto.randomUUID()}`;
   const shardProvenance = {
     ...CLEAN_CURRENT_PROVENANCE,
-    headCommit: '1'.repeat(40),
+    headCommit: fixtureOptions.rawEntries ? CLEAN_CURRENT_PROVENANCE.headCommit : '1'.repeat(40),
   };
   const runtimeBinaryHashes = [{
     path: 'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
@@ -3502,7 +3435,9 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
     path: PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
     bytes: 456,
     sha256: 'd'.repeat(64),
-  }, ...TEST_RUNTIME_BINARY_HASHES];
+  }, ...(fixtureOptions.runtimeBinaryHashes ?? TEST_RUNTIME_BINARY_HASHES)];
+  const byRuntimePath = new Map(runtimeBinaryHashes.map(entry => [entry.path, entry]));
+  runtimeBinaryHashes.splice(0, runtimeBinaryHashes.length, ...byRuntimePath.values());
   const driverSysAuthority = runtimeBinaryHashes.find((entry) => entry.path.endsWith('/omni-virtual-speaker.sys'));
   const driverCatAuthority = runtimeBinaryHashes.find((entry) => entry.path.endsWith('/omni-virtual-speaker.cat'));
   const driverInfAuthority = runtimeBinaryHashes.find((entry) => entry.path.endsWith('/omni-virtual-speaker.inf'));
@@ -3529,7 +3464,7 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
     deviceProfileInstances: [deviceProfile(
       'vm1',
       'default',
-      'vmware-hda-default',
+      fixtureOptions.rawEntries ? 'authority-profile' : 'vmware-hda-default',
       'default-speaker',
       'default',
       'Built-in Speakers',
@@ -4113,7 +4048,9 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
     for (const cell of plan.cells) {
       const state = shardStates.find((entry) => entry.worker.workerId === cell.workerId);
       const lease = leases.find((entry) => entry.leaseId === cell.leaseId);
-      const runDirectory = writeAuthorityRawCell(
+      const supplied = fixtureOptions.rawEntries?.find(entry => entry.cell.feedbackLoopPrevention === cell.feedbackLoopPrevention
+        && (entry.cell.tier ?? 'pairwise-live') === cell.tier);
+      const runDirectory = supplied ? path.join(state.shardRoot, `runs/cell-${cell.cellIndex}`) : writeAuthorityRawCell(
         state.shardRoot,
         `runs/cell-${cell.cellIndex}`,
         {
@@ -4125,11 +4062,30 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
           healthyBridgeProbe: true,
         },
       );
+      if (supplied) fs.cpSync(supplied.runDirectory, runDirectory, {recursive: true});
+      if (cell.completionPolicy === 'aec-output-quiescent-v2') {
+        assert.equal(plan.budget.matrixMaxExternalAudioSamples, 10_807_135);
+        assert.equal(cell.maxExternalAudioSamples, 2_880_000);
+        assert.equal(cell.completionPolicy, 'aec-output-quiescent-v2');
+        assert.ok(!fs.existsSync(path.join(runDirectory, 'aec-closed-loop-evidence.json')));
+        // Old snapshots/PCM do not carry v2 terminal, signed freeze or dual-reference quality.
+        // Only the explicit rejection is evidence here; this fixture cannot claim c03 passed.
+        assert.throws(() => writeShardCellResult({plan, lease, workerId: cell.workerId,
+          vmIdentity: state.worker.vmIdentity, shardRoot: state.shardRoot, runDirectory,
+          provenance: shardProvenance, authorityImplementationHashes: implementationHashes,
+          runtimeBinaryHashes, shardOrchestrationImplementationHashes: shardImplementationHashes,
+          generatedAt: new Date(baseMs + cell.waveIndex * 3_000 + 500),
+        }), /AEC|aec-|freeze|strict paid-cell|provider input budget/i);
+        assert.ok(!fs.existsSync(path.join(runDirectory, SHARD_CELL_RESULT_FILE)));
+        assert.ok(!fs.existsSync(path.join(evidenceRoot, 'watch-mode-live-matrix-latest-successful.json')));
+        return;
+      }
       writeStrictPaidBudgetFixture(runDirectory, cell, {
         generatedAt: new Date(baseMs + cell.waveIndex * 3_000 + 500),
         leaseId: lease.leaseId,
         sourceHeadCommit: plan.provenance.headCommit,
         runtimeBundleDigest: plan.authority.runtimeBundleDigest,
+        releaseSelection,
       });
       fs.writeFileSync(
         path.join(runDirectory, SHARD_WORKER_READINESS_FILE),
@@ -4230,6 +4186,8 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
       coordinatorAggregatePath: aggregated.aggregatePath,
       shards,
       collectedMatrixIntegration: aggregated.matrixIntegration,
+      // Keep historical fixtures inside their signed plan lifetime during collection.
+      validationAt: new Date(baseMs + 31_000),
     });
     const stagedCellBudgets = staged.runDirectories.map((runDirectory) => JSON.parse(
       fs.readFileSync(path.join(runDirectory, 'external-provider-budget.json'), 'utf8'),
@@ -4237,7 +4195,8 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
     const matrixBudget = writeMatrixExternalProviderBudget(evidenceRoot, stagedCellBudgets, {
       generatedAt: new Date(baseMs + 31_500),
       expectedCells: LIVE_LLM_CELLS,
-      matrixInputSampleCeiling: STRICT_PAID_MATRIX_MAX_INPUT_SAMPLES,
+      matrixInputSampleCeiling: selectedPlan.paidProviderInputSampleCeiling,
+      releaseSelection,
     });
     const matrixBudgetAuthority = fileAuthorityEntry(
       matrixBudget.filePath,
@@ -4331,6 +4290,15 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
       matrixIntegration: staged.matrixIntegration,
     });
 
+    if (fixtureOptions.rawEntries) {
+      signedFixtureContexts.set(manifest.shardExecution.executionId, {validatePreflightEvidence: validateFixturePreflight});
+      return {manifestPath, manifest, primaryRunDirectories: fixtureOptions.rawEntries.map(entry => {
+        const index = LIVE_LLM_CELLS.findIndex(cell => cell.feedbackLoopPrevention === entry.cell.feedbackLoopPrevention
+          && cell.tier === (entry.cell.tier ?? 'pairwise-live'));
+        assert.ok(index >= 0);
+        return path.resolve(root, manifest.cells[index].runDirectory);
+      })};
+    }
     if (failedCellIds.length > 0) {
       assert.deepEqual(
         manifest.cells.filter((cell) => cell.verdict === 'failed').map((cell) => cell.cellId),
@@ -4429,37 +4397,27 @@ test(`strict production verifier replays signed coordinator ${releaseSelection?.
       /strict shard (?:execution|matrixIntegration) providerPreflightAuthorization/,
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    if (!fixtureOptions.rawEntries) fs.rmSync(root, { recursive: true, force: true });
   }
-});
-
+}
+for (const releaseSelection of [undefined, {modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing'}]) {
+  test(releaseSelection ? 'strict signed 3.8 coordinator rejects legacy raw AEC evidence, never publishes upgraded c03' : 'strict production verifier replays signed coordinator default 3.5', () => writeSignedCoordinatorFixture(releaseSelection));
 }
 
 test('strict authority rejects duplicate Rust provider lease IDs across cells', () => {
   const root = makeTempRoot();
-  const firstCell = {
-    cellId: 'test::lease-unique::first',
-    tier: 'pairwise-live',
-    providerMode: 'live-dashscope',
-    ...formalTimingForMode('echo-cancel'),
-    modelId: 'qwen3.5-livetranslate-flash-realtime',
-    feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'default-speaker',
-  };
-  const secondCell = {
-    ...firstCell,
-    cellId: 'test::lease-unique::second',
-    modelId: 'qwen3.5-livetranslate-flash-realtime',
-  };
-  const firstRunDirectory = writeAuthorityRawCell(root, 'authority-lease-first', firstCell);
-  const secondRunDirectory = writeAuthorityRawCell(root, 'authority-lease-second', secondCell);
-  const { manifestPath, manifest } = writeAuthorityMatrixManifest(root, [{
+  const firstCell = {...LIVE_LLM_CELLS[0]};
+  const secondCell = {...LIVE_LLM_CELLS[1]};
+  let firstRunDirectory = writeAuthorityRawCell(root, 'authority-lease-first', firstCell);
+  let secondRunDirectory = writeAuthorityRawCell(root, 'authority-lease-second', secondCell);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityMatrixManifest(root, [{
     runDirectory: firstRunDirectory,
     cell: firstCell,
   }, {
     runDirectory: secondRunDirectory,
     cell: secondCell,
   }]);
+  [firstRunDirectory, secondRunDirectory] = primaryRunDirectories;
   const firstLedger = JSON.parse(fs.readFileSync(
     path.join(firstRunDirectory, 'provider-input-budget-ledger.json'),
     'utf8',
@@ -4485,7 +4443,7 @@ test('strict authority rejects duplicate Rust provider lease IDs across cells', 
     'utf8',
   );
   rewriteRecordedCellBudget(secondRunDirectory, secondCell);
-  refreshCellReceiptArtifacts(root, manifest, 1, [
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, secondRunDirectory), [
     'external-provider-budget.json',
     'provider-input-budget-lease.json',
     'provider-input-budget-ledger.json',
@@ -4504,7 +4462,7 @@ test('strict authority rejects duplicate Rust provider lease IDs across cells', 
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /reuses Rust provider leaseId/,
   );
@@ -4512,15 +4470,7 @@ test('strict authority rejects duplicate Rust provider lease IDs across cells', 
 
 test('strict authority rejects reordered matrix budget cells after the ledger hash is refreshed', () => {
   const root = makeTempRoot();
-  const cells = ['first', 'second'].map((suffix, index) => ({
-    cellId: `test::ordered-budget::${suffix}`,
-    tier: 'pairwise-live',
-    providerMode: 'live-dashscope',
-    ...formalTimingForMode('echo-cancel'),
-    modelId: 'qwen3.5-livetranslate-flash-realtime',
-    feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'default-speaker',
-  }));
+  const cells = LIVE_LLM_CELLS.slice(0, 2);
   const entries = cells.map((cell, index) => ({
     runDirectory: writeAuthorityRawCell(root, `authority-order-${index}`, cell),
     cell,
@@ -4539,7 +4489,7 @@ test('strict authority rejects reordered matrix budget cells after the ledger ha
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /paid-matrix budget ledger does not match rebuilt cell authorities/,
   );
@@ -4547,9 +4497,10 @@ test('strict authority rejects reordered matrix budget cells after the ledger ha
 
 test('canonical strict authority round-trips the complete verifier receipt cell identity', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-canonical-round-trip');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
-  const verificationNow = new Date(Date.now() + 2_000);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-canonical-round-trip');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
+  const verificationNow = new Date(Date.parse(manifest.generatedAt) + 2_000);
   const authority = verifyStrictMatrixAuthority({
     manifestPath,
     manifest,
@@ -4557,7 +4508,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
     workspaceRoot: TEST_ANALYZER_WORKSPACE,
     now: verificationNow.getTime(),
-    currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
   });
   const verification = writeStrictMatrixVerificationReceipt({
     manifestPath,
@@ -4593,10 +4544,10 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
     workspaceRoot: TEST_ANALYZER_WORKSPACE,
     now: verificationNow.getTime() + 1_000,
-    currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
   });
 
-  assert.deepEqual(verifiedCanonical.runDirectories, [runDirectory]);
+  assert.deepEqual(verifiedCanonical.runDirectories, manifest.runDirectories.map(relative => path.resolve(root, relative)));
   assert.deepEqual(
     verification.receipt.paidImplementationHashes,
     authority.paidImplementationHashes,
@@ -4605,30 +4556,31 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
     verification.receipt.externalProviderBudget,
     manifest.externalProviderBudget,
   );
-  assert.deepEqual(verification.receipt.cells[0], {
-    cellId: manifest.cells[0].cellId,
-    tier: manifest.cells[0].tier,
-    providerMode: manifest.cells[0].providerMode,
-    inputCompletionWatchdogSeconds: manifest.cells[0].inputCompletionWatchdogSeconds,
-    processExclusionRestartAfterSeconds: manifest.cells[0].processExclusionRestartAfterSeconds,
-    processExclusionRestartQuietSeconds: manifest.cells[0].processExclusionRestartQuietSeconds,
-    providerFinishTimeoutSeconds: manifest.cells[0].providerFinishTimeoutSeconds,
-    localPlaybackDrainTimeoutSeconds: manifest.cells[0].localPlaybackDrainTimeoutSeconds,
-    reportWriteTimeoutSeconds: manifest.cells[0].reportWriteTimeoutSeconds,
-    cellHardWatchdogSeconds: manifest.cells[0].cellHardWatchdogSeconds,
-    authoritativeTransformedReferenceFrames: manifest.cells[0].authoritativeTransformedReferenceFrames,
-    boundedCaptureGraceFrames: manifest.cells[0].boundedCaptureGraceFrames,
-    maxExternalAudioSamples: manifest.cells[0].maxExternalAudioSamples,
-    auxiliaryExternalAudioSeconds: manifest.cells[0].auxiliaryExternalAudioSeconds,
-    subtitleTranslationMode: manifest.cells[0].subtitleTranslationMode,
-    modelId: manifest.cells[0].modelId,
-    feedbackLoopPrevention: manifest.cells[0].feedbackLoopPrevention,
-    deviceClass: manifest.cells[0].deviceClass,
-    deviceProfileId: manifest.cells[0].deviceProfileId,
-    runDirectory: manifest.cells[0].runDirectory,
-    receiptPath: manifest.cells[0].receiptPath,
-    receiptBytes: manifest.cells[0].receiptBytes,
-    receiptSha256: manifest.cells[0].receiptSha256,
+  assert.deepEqual(verification.receipt.cells[primaryCellIndex(root, manifest, runDirectory)], {
+    cellId: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].cellId,
+    tier: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].tier,
+    providerMode: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].providerMode,
+    inputCompletionWatchdogSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].inputCompletionWatchdogSeconds,
+    processExclusionRestartAfterSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].processExclusionRestartAfterSeconds,
+    processExclusionRestartQuietSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].processExclusionRestartQuietSeconds,
+    providerFinishTimeoutSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].providerFinishTimeoutSeconds,
+    localPlaybackDrainTimeoutSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].localPlaybackDrainTimeoutSeconds,
+    reportWriteTimeoutSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].reportWriteTimeoutSeconds,
+    cellHardWatchdogSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].cellHardWatchdogSeconds,
+    authoritativeTransformedReferenceFrames: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].authoritativeTransformedReferenceFrames,
+    boundedCaptureGraceFrames: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].boundedCaptureGraceFrames,
+    maxExternalAudioSamples: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].maxExternalAudioSamples,
+    auxiliaryExternalAudioSeconds: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].auxiliaryExternalAudioSeconds,
+    subtitleTranslationMode: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].subtitleTranslationMode,
+    modelId: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].modelId,
+    feedbackLoopPrevention: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].feedbackLoopPrevention,
+    deviceClass: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].deviceClass,
+    deviceProfileId: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].deviceProfileId,
+    runDirectory: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].runDirectory,
+    receiptPath: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].receiptPath,
+    receiptBytes: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].receiptBytes,
+    receiptSha256: manifest.cells[primaryCellIndex(root, manifest, runDirectory)].receiptSha256,
+    shardAuthority: structuredClone(manifest.cells[primaryCellIndex(root, manifest, runDirectory)].shardAuthority),
   });
 
   const tamperedBudgetReceipt = structuredClone(verification.receipt);
@@ -4654,7 +4606,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: verificationNow.getTime() + 1_000,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /canonical strict verification receipt external provider budget does not match/,
   );
@@ -4688,7 +4640,7 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: verificationNow.getTime() + 1_000,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /canonical strict verification receipt cells does not match/,
   );
@@ -4696,12 +4648,13 @@ test('canonical strict authority round-trips the complete verifier receipt cell 
 
 test('strict authority binds the metrics tree to the Desktop PID launched by the production runner', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-metrics-root-mismatch');
+  let runDirectory = writeAuthorityRawCell(root, 'authority-metrics-root-mismatch');
   const metricsPath = path.join(runDirectory, 'system-metrics.json');
   const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
   metrics.rootProcessId += 1;
   fs.writeFileSync(metricsPath, `${JSON.stringify(metrics, null, 2)}\n`, 'utf8');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -4711,7 +4664,7 @@ test('strict authority binds the metrics tree to the Desktop PID launched by the
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: Date.now() + 2_000,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /system metrics do not prove the complete production Desktop process-tree lifetime/,
   );
@@ -4723,8 +4676,9 @@ test('strict process-exclusion authority independently recomputes the three-tone
     feedbackLoopPrevention: 'process-exclusion',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-process-wav', options);
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-process-wav', options);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
 
   const verified = verifyStrictMatrixAuthority({
     manifestPath,
@@ -4732,11 +4686,11 @@ test('strict process-exclusion authority independently recomputes the three-tone
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
     workspaceRoot: TEST_ANALYZER_WORKSPACE,
-    currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     now: Date.now() + 2_000,
   });
 
-  assert.equal(verified.authorizedReports.size, 1);
+  assert.equal(verified.authorizedReports.size, 4);
   assert.equal(verified.translatedPcmLoopbackAuthorities[0].passed, true);
 });
 
@@ -4746,9 +4700,10 @@ test('strict translated PCM verifier rehashes every cue and rejects matcher-outp
     feedbackLoopPrevention: 'process-exclusion',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-translated-pcm-tamper', options);
-  const { manifest } = writeAuthorityManifest(root, runDirectory, options);
-  const cell = manifest.cells[0];
+  let runDirectory = writeAuthorityRawCell(root, 'authority-translated-pcm-tamper', options);
+  const { manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
+  const cell = manifest.cells[primaryCellIndex(root, manifest, runDirectory)];
   const cellExternalProviderBudget = JSON.parse(fs.readFileSync(
     path.join(runDirectory, 'external-provider-budget.json'),
     'utf8',
@@ -4847,14 +4802,15 @@ test('echo-cancel strict authority rejects relabeled Bridge playback evidence', 
     feedbackLoopPrevention: 'process-exclusion',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-echo-cancel-pcm-tamper', options);
-  const { manifest } = writeAuthorityManifest(root, runDirectory, options);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-echo-cancel-pcm-tamper', options);
+  const { manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
   const formalEchoCancelCell = LIVE_LLM_CELLS.find(
     (cell) => cell.feedbackLoopPrevention === 'echo-cancel',
   );
   assert.ok(formalEchoCancelCell, 'release plan must contain an echo-cancel paid cell');
   const cell = {
-    ...manifest.cells[0],
+    ...manifest.cells[primaryCellIndex(root, manifest, runDirectory)],
     cellId: formalEchoCancelCell.cellId,
     modelId: formalEchoCancelCell.modelId,
     feedbackLoopPrevention: formalEchoCancelCell.feedbackLoopPrevention,
@@ -4889,6 +4845,7 @@ test('echo-cancel strict authority rejects relabeled Bridge playback evidence', 
     'utf8',
   ));
   const untampered = buildTranslatedPcmLoopbackAuthority({
+    ...TEST_AUDIO_ANALYZER,
     runDirectory,
     appLogPath: path.join(runDirectory, 'app.log'),
     runMarker: cellExternalProviderBudget.runMarker,
@@ -4912,9 +4869,10 @@ test('echo-cancel strict authority accepts schema-v2 Desktop speaker playback ev
     feedbackLoopPrevention: 'echo-cancel',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-echo-cancel-desktop-speaker', options);
-  const { manifest } = writeAuthorityManifest(root, runDirectory, options);
-  const cell = manifest.cells[0];
+  let runDirectory = writeAuthorityRawCell(root, 'authority-echo-cancel-desktop-speaker', options);
+  const { manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
+  const cell = manifest.cells[primaryCellIndex(root, manifest, runDirectory)];
   const cellExternalProviderBudget = JSON.parse(fs.readFileSync(
     path.join(runDirectory, 'external-provider-budget.json'),
     'utf8',
@@ -4960,8 +4918,9 @@ test('strict virtual-driver authority binds the running SYS and signature identi
     modelId: 'qwen3.5-livetranslate-flash-realtime',
     runtimeBinaryHashes,
   };
-  const runDirectory = writeAuthorityRawCell(root, 'authority-installed-driver', options);
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, options);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-installed-driver', options);
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, options);
+  [runDirectory] = primaryRunDirectories;
 
   const verified = verifyStrictMatrixAuthority({
     manifestPath,
@@ -4969,11 +4928,11 @@ test('strict virtual-driver authority binds the running SYS and signature identi
     evidenceRoot: root,
     currentProvenance: CLEAN_CURRENT_PROVENANCE,
     workspaceRoot: TEST_ANALYZER_WORKSPACE,
-    currentRuntimeBinaryHashes: runtimeBinaryHashes,
+    currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     now: Date.now() + 2_000,
   });
 
-  assert.equal(verified.authorizedReports.size, 1);
+  assert.equal(verified.authorizedReports.size, 4);
 });
 
 test('strict authority rejects a report-only schema-v1 matrix even when all 18 summaries are handmade', () => {
@@ -5026,8 +4985,9 @@ test('production strict CLI rejects the legacy --run-directories escape hatch', 
 
 test('strict authority rejects an artifact changed after the runner receipt was emitted', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-hash-change');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-hash-change');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   fs.appendFileSync(path.join(runDirectory, 'app.log'), 'tampered after receipt\n', 'utf8');
 
   assert.throws(
@@ -5037,7 +4997,7 @@ test('strict authority rejects an artifact changed after the runner receipt was 
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /hash\/size mismatch for app\.log/,
   );
@@ -5045,13 +5005,15 @@ test('strict authority rejects an artifact changed after the runner receipt was 
 
 test('strict authority rejects swapping a manifest cell to a copied run directory', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-original');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-original');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const copiedDirectory = path.join(root, 'authority-copy');
   fs.cpSync(runDirectory, copiedDirectory, { recursive: true });
-  manifest.runDirectories[0] = 'authority-copy';
-  manifest.cells[0].runDirectory = 'authority-copy';
-  manifest.cells[0].receiptPath = `authority-copy/${path.basename(manifest.cells[0].receiptPath)}`;
+  const index = primaryCellIndex(root, manifest, runDirectory);
+  manifest.runDirectories[index] = 'authority-copy';
+  manifest.cells[index].runDirectory = 'authority-copy';
+  manifest.cells[index].receiptPath = `authority-copy/${path.basename(manifest.cells[index].receiptPath)}`;
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -5060,7 +5022,7 @@ test('strict authority rejects swapping a manifest cell to a copied run director
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /receipt runDirectory mismatch/,
   );
@@ -5068,13 +5030,14 @@ test('strict authority rejects swapping a manifest cell to a copied run director
 
 test('strict authority rejects a self-consistently rehashed summary that disagrees with raw evidence', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-summary-change');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory);
+  let runDirectory = writeAuthorityRawCell(root, 'authority-summary-change');
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
+  [runDirectory] = primaryRunDirectories;
   const reportPath = path.join(runDirectory, 'report.json');
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   report.modelId = 'forged-model';
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  refreshCellReceiptArtifacts(root, manifest, 0, ['report.json']);
+  refreshCellReceiptArtifacts(root, manifest, primaryCellIndex(root, manifest, runDirectory), ['report.json']);
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -5083,7 +5046,7 @@ test('strict authority rejects a self-consistently rehashed summary that disagre
       evidenceRoot: root,
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /report\.json does not match the independently rebuilt raw evidence/,
   );
@@ -5091,9 +5054,10 @@ test('strict authority rejects a self-consistently rehashed summary that disagre
 
 test('strict authority rejects an old receipt and cannot refresh evidence age during rebuild', () => {
   const root = makeTempRoot();
-  const runDirectory = writeAuthorityRawCell(root, 'authority-stale');
+  let runDirectory = writeAuthorityRawCell(root, 'authority-stale');
   const oldNow = new Date('2026-06-01T00:00:00.000Z');
-  const { manifestPath, manifest } = writeAuthorityManifest(root, runDirectory, { now: oldNow });
+  const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory, { now: oldNow });
+  [runDirectory] = primaryRunDirectories;
 
   assert.throws(
     () => verifyStrictMatrixAuthority({
@@ -5103,7 +5067,7 @@ test('strict authority rejects an old receipt and cannot refresh evidence age du
       currentProvenance: CLEAN_CURRENT_PROVENANCE,
       workspaceRoot: TEST_ANALYZER_WORKSPACE,
       now: Date.parse('2026-08-10T00:00:00.000Z'),
-      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      currentRuntimeBinaryHashes: manifest.authority.runtimeBinaryHashes,
     }),
     /manifest is stale/,
   );

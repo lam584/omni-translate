@@ -3,6 +3,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { verifyAecTerminalEvidence } from './watch-mode-aec-terminal-evidence.mjs';
+import { verifyAecRealtimeEvidence } from './watch-mode-aec-realtime-evidence.mjs';
+import { createAecClosedLoopManifest, verifyAecClosedLoopEvidence } from './watch-mode-aec-closed-loop-evidence.mjs';
+
 import { parseLooseArgs } from '../lib/testing-common.mjs';
 import {
   currentGitProvenance,
@@ -32,6 +36,10 @@ import {
 } from './watch-mode-evidence-authority.mjs';
 import {
   LIVE_LLM_CELLS,
+  AEC_ITERATION_EXECUTION_SCOPE,
+  AEC_ITERATION_MANIFEST_KIND,
+  AEC_ITERATION_MANIFEST_SCHEMA_VERSION,
+  MATRIX_EXECUTION_SCOPE,
   PROCESS_EXCLUSION_RESTART_AFTER_SECONDS,
   PROCESS_EXCLUSION_RESTART_QUIET_SECONDS,
   RELEASE_DEVICE_CLASSES,
@@ -108,6 +116,7 @@ import {
 } from './watch-mode-provider-preflight-authorization.mjs';
 
 export const STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND = 'watch-mode-strict-matrix-verification';
+export const STRICT_AEC_ITERATION_VERIFICATION_ARTIFACT_KIND = 'watch-mode-strict-aec-c03-iteration-verification';
 
 const strictPaidCellTimingProjection = (cell) => ({
   inputCompletionWatchdogSeconds: cell.inputCompletionWatchdogSeconds,
@@ -117,6 +126,7 @@ const strictPaidCellTimingProjection = (cell) => ({
   localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
   reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
   cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+  ...(cell.completionPolicy ? {completionPolicy: cell.completionPolicy, aecQualityGates: structuredClone(cell.aecQualityGates)} : {}),
   authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
   boundedCaptureGraceFrames: cell.boundedCaptureGraceFrames,
   maxExternalAudioSamples: cell.maxExternalAudioSamples,
@@ -147,7 +157,24 @@ const runtimeBundleDigest = (entries) => (
     : authorityInventoryDigest(entries)
 );
 
+// Historical 3.5 evidence retains its historical contract. It is never a v2
+// c03 result: selected 3.8 plans bind this version in the signed projection.
+function isAecClosedLoopV2(cell) {
+  if (cell.feedbackLoopPrevention !== 'echo-cancel') return false;
+  if (cell.modelId === 'qwen3.8-livetranslate-flash-realtime'
+      && cell.completionPolicy !== 'aec-output-quiescent-v2') {
+    throw new Error('selected 3.8 AEC cannot adopt a legacy completion policy');
+  }
+  return cell.completionPolicy === 'aec-output-quiescent-v2';
+}
+
 export function validateEvidenceDrivenTerminal(runDirectory, plannedCell, expectedIdentity) {
+  if (isAecClosedLoopV2(plannedCell)) {
+    const verified = verifyAecTerminalEvidence(runDirectory, { plannedCell, expectedIdentity });
+    const reportBytes = fs.readFileSync(path.join(runDirectory, 'watch-session-report.json'));
+    return { ...verified, marker: verified.inputComplete, reportAuthority: {path: 'watch-session-report.json',
+      bytes: reportBytes.length, sha256: crypto.createHash('sha256').update(reportBytes).digest('hex')} };
+  }
   const readAuthoritySnapshot = (name) => {
     const filePath = path.join(path.resolve(runDirectory), name);
     const stats = fs.lstatSync(filePath);
@@ -465,20 +492,33 @@ function atomicWriteJson(filePath, value) {
   fs.renameSync(temporaryPath, filePath);
 }
 
-export function writeStrictMatrixVerificationReceipt({
+export function writeStrictMatrixVerificationReceipt(options) {
+  return writeStrictManifestVerificationReceipt({...options, executionScope: MATRIX_EXECUTION_SCOPE});
+}
+export function writeStrictAecIterationVerificationReceipt(options) {
+  return writeStrictManifestVerificationReceipt({...options, executionScope: AEC_ITERATION_EXECUTION_SCOPE});
+}
+function writeStrictManifestVerificationReceipt({
   manifestPath,
   manifest,
   authority,
   currentProvenance,
   now = new Date(),
+  executionScope,
 }) {
+  const iteration = executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  if (iteration !== (manifest.artifactKind === AEC_ITERATION_MANIFEST_KIND)
+      || (iteration && (authority.executionScope !== executionScope || manifest.cells?.length !== 1))) {
+    throw new Error('strict verification receipt cannot cross execution scopes');
+  }
   const sourceManifest = fileAuthorityEntry(
     path.resolve(manifestPath),
     path.basename(manifestPath),
   );
   const receipt = {
     schemaVersion: 1,
-    artifactKind: STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND,
+    artifactKind: iteration ? STRICT_AEC_ITERATION_VERIFICATION_ARTIFACT_KIND : STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND,
+    ...(iteration ? {executionScope, aecWorker: manifest.aecWorker, releaseSelection: manifest.releaseSelection} : {}),
     verifiedAt: now.toISOString(),
     verifier: 'scripts/testing/verify-watch-mode-evidence.mjs',
     provenance: currentProvenance,
@@ -508,12 +548,18 @@ export function writeStrictMatrixVerificationReceipt({
     })),
     verdict: 'passed',
   };
-  const receiptPath = strictMatrixVerificationReceiptPath(manifestPath);
+  const receiptPath = iteration ? path.resolve(manifestPath) + '.aec-verified.json' : strictMatrixVerificationReceiptPath(manifestPath);
   atomicWriteJson(receiptPath, receipt);
   return { receiptPath, receipt };
 }
 
-export function validateStrictMatrixVerificationReceipt({
+export function validateStrictMatrixVerificationReceipt(options) {
+  return validateStrictManifestVerificationReceipt({...options, executionScope: MATRIX_EXECUTION_SCOPE});
+}
+export function validateStrictAecIterationVerificationReceipt(options) {
+  return validateStrictManifestVerificationReceipt({...options, executionScope: AEC_ITERATION_EXECUTION_SCOPE});
+}
+function validateStrictManifestVerificationReceipt({
   receiptPath,
   manifestPath,
   manifest,
@@ -521,20 +567,27 @@ export function validateStrictMatrixVerificationReceipt({
   implementationHashes,
   paidImplementationHashes = currentPaidAuthorityImplementationHashes(),
   runtimeBinaryHashes,
+  executionScope,
 }) {
+  const iteration = executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  if (iteration !== (manifest.artifactKind === AEC_ITERATION_MANIFEST_KIND)) throw new Error('strict receipt manifest scope mismatch');
   const resolvedReceiptPath = path.resolve(receiptPath);
-  const expectedReceiptPath = strictMatrixVerificationReceiptPath(manifestPath);
+  const expectedReceiptPath = iteration ? path.resolve(manifestPath) + '.aec-verified.json' : strictMatrixVerificationReceiptPath(manifestPath);
   if (resolvedReceiptPath !== expectedReceiptPath) {
     throw new Error(`strict verification receipt path mismatch: expected ${expectedReceiptPath}; got ${resolvedReceiptPath}`);
   }
   const receipt = readJson(resolvedReceiptPath);
   if (
     receipt.schemaVersion !== 1
-    || receipt.artifactKind !== STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND
+    || receipt.artifactKind !== (iteration ? STRICT_AEC_ITERATION_VERIFICATION_ARTIFACT_KIND : STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND)
     || receipt.verifier !== 'scripts/testing/verify-watch-mode-evidence.mjs'
     || receipt.verdict !== 'passed'
   ) {
     throw new Error('strict matrix verification receipt is missing or was not emitted by the production verifier');
+  }
+  if (iteration && (receipt.executionScope !== executionScope || receipt.aecWorker !== manifest.aecWorker
+      || canonicalJson(receipt.releaseSelection) !== canonicalJson(manifest.releaseSelection) || receipt.cells?.length !== 1)) {
+    throw new Error('AEC receipt does not bind the exact signed scope');
   }
   const sourceManifest = fileAuthorityEntry(
     path.resolve(manifestPath),
@@ -1148,7 +1201,10 @@ function assertCanonicalVerificationBinding({
   const receipt = readJson(receiptPath);
   if (
     receipt.schemaVersion !== 1
-    || receipt.artifactKind !== STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND
+    || receipt.artifactKind !== (manifest.executionScope === AEC_ITERATION_EXECUTION_SCOPE
+      ? STRICT_AEC_ITERATION_VERIFICATION_ARTIFACT_KIND : STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND)
+    || (manifest.executionScope === AEC_ITERATION_EXECUTION_SCOPE && (receipt.executionScope !== manifest.executionScope
+      || receipt.aecWorker !== manifest.aecWorker || canonicalJson(receipt.releaseSelection) !== canonicalJson(manifest.releaseSelection)))
     || receipt.verdict !== 'passed'
     || receipt.sourceManifestPath !== manifest.sourceManifest
     || receipt.sourceManifestBytes !== manifest.sourceManifestBytes
@@ -1229,6 +1285,7 @@ function assertStrictMatrixExternalProviderBudget({
   try {
     recorded = assertMatrixExternalProviderBudget(ledgerPath, cellLedgers, {
       expectedCells: releaseCells,
+      releaseSelection: manifest.releaseSelection,
     });
   } catch (error) {
     throw new Error(`strict matrix external provider budget authority failed: ${error.message}`);
@@ -1347,7 +1404,28 @@ export function assertStrictTranslatedPcmLoopbackAuthority({
       );
     }
   }
+  if (isAecClosedLoopV2(cell)) {
+    const realtime = verifyAecRealtimeEvidence(runDirectory, {loopback: rebuilt, identity: {
+      runMarker: cellExternalProviderBudget.runMarker, cellId: cell.cellId,
+      leaseId: cellExternalProviderBudget.providerSendBoundary?.leaseId}});
+    if (!realtime.passed) throw new Error('strict AEC physical realtime gate failed: ' + realtime.violations.join('; '));
+  }
   return rebuilt;
+}
+
+export function assertStrictAecClosedLoopAuthority({runDirectory, cell, cellExternalProviderBudget, freezePublicKey, analyzer = {}}) {
+  if (!isAecClosedLoopV2(cell)) return null;
+  const identity = {runMarker: cellExternalProviderBudget.runMarker, cellId: cell.cellId,
+    leaseId: cellExternalProviderBudget.providerSendBoundary?.leaseId};
+  if (!fs.existsSync(path.join(runDirectory, 'aec-closed-loop-evidence.json'))) {
+    throw new Error('strict AEC closed-loop manifest was not sealed before artifact collection');
+  }
+  const manifest = createAecClosedLoopManifest(runDirectory, {cell: identity, freezePublicKey});
+  if (!manifest.passed) throw new Error('strict AEC closed-loop provenance failed: ' + manifest.violations.join('; '));
+  const quality = verifyAecClosedLoopEvidence(runDirectory, {cell: identity, freezePublicKey,
+    runtimeAuthority: manifest.runtimeAuthority, ...analyzer});
+  if (!quality.passed) throw new Error('strict AEC closed-loop quality failed: ' + quality.violations.join('; '));
+  return quality;
 }
 
 const portableAuthorityPath = (...parts) => parts
@@ -1617,6 +1695,7 @@ export function verifyStrictShardProviderPreflightAuthorization({
     protocol: PROVIDER_PREFLIGHT_PROTOCOL,
     modelProtocolProfileIdentity: structuredClone(selectedCells[index].modelProtocolProfileIdentity),
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
+    ...(cell.completionPolicy ? {completionPolicy: cell.completionPolicy} : {}),
     deviceClass: cell.deviceClass,
     workerId: cell.workerId,
     waveIndex: cell.waveIndex,
@@ -2518,8 +2597,8 @@ export function verifyStrictShardMatrixAuthority({
     validateEvidence: validatePreflightEvidence,
   });
 
-  if (!Array.isArray(shardExecution.leases) || shardExecution.leases.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`strict shard execution requires exactly ${SHARD_MATRIX_CELL_COUNT} signed cell leases`);
+  if (!Array.isArray(shardExecution.leases) || shardExecution.leases.length !== releaseCells.length) {
+    throw new Error(`strict shard execution requires exactly ${releaseCells.length} signed-scope cell leases`);
   }
   const leases = [];
   const leasePaths = new Set();
@@ -2596,7 +2675,7 @@ export function verifyStrictShardMatrixAuthority({
     )
     || Number(aggregate.budget?.actualExternalAudioSamples) <= 0
     || Number(aggregate.budget?.actualExternalAudioSamples)
-      > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
+      > selectedPlan.paidProviderInputSampleCeiling
     || Number(aggregate.budget?.actualExternalAudioSamples)
       !== Number(externalProviderBudget?.actualProviderInputSamples)
     || aggregateGeneratedAtMs > validationAtMs
@@ -2671,10 +2750,10 @@ export function verifyStrictShardMatrixAuthority({
       });
     }
   }
-  if (workers.size !== expectedWorkerCount || validatedByCell.size !== SHARD_MATRIX_CELL_COUNT) {
+  if (workers.size !== expectedWorkerCount || validatedByCell.size !== releaseCells.length) {
     throw new Error(
       `strict shard guest manifests do not contain the signed ${expectedWorkerCount} workers `
-      + `and ${SHARD_MATRIX_CELL_COUNT} unique cells`,
+      + `and ${releaseCells.length} unique signed-scope cells`,
     );
   }
 
@@ -2789,7 +2868,14 @@ export function verifyStrictShardMatrixAuthority({
   };
 }
 
-export function verifyStrictMatrixAuthority({
+export function verifyStrictMatrixAuthority(options) {
+  return verifyStrictManifestAuthority({...options, executionScope: MATRIX_EXECUTION_SCOPE});
+}
+export function verifyStrictAecIterationAuthority(options) {
+  if (!['vm131', 'vm171'].includes(options.expectedAecWorker)) throw new Error('AEC canonical verification requires explicit fixed worker');
+  return verifyStrictManifestAuthority({...options, executionScope: AEC_ITERATION_EXECUTION_SCOPE});
+}
+function verifyStrictManifestAuthority({
   manifestPath,
   manifest,
   evidenceRoot,
@@ -2800,6 +2886,8 @@ export function verifyStrictMatrixAuthority({
   currentRuntimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
   releaseCells,
   requireLocalIsolation = true,
+  executionScope,
+  expectedAecWorker,
   validatePreflightEvidence = validateProviderPreflightRawAuthority,
 }) {
   const resolvedRoot = path.resolve(evidenceRoot);
@@ -2808,15 +2896,28 @@ export function verifyStrictMatrixAuthority({
     throw new Error(`strict authority manifest must be stored directly in the evidence root: manifest=${resolvedManifestPath} root=${resolvedRoot}`);
   }
   if (
-    manifest.schemaVersion !== STRICT_MATRIX_SCHEMA_VERSION
-    || manifest.artifactKind !== STRICT_MATRIX_ARTIFACT_KIND
+    manifest.schemaVersion !== (executionScope === AEC_ITERATION_EXECUTION_SCOPE ? AEC_ITERATION_MANIFEST_SCHEMA_VERSION : STRICT_MATRIX_SCHEMA_VERSION)
+    || manifest.artifactKind !== (executionScope === AEC_ITERATION_EXECUTION_SCOPE ? AEC_ITERATION_MANIFEST_KIND : STRICT_MATRIX_ARTIFACT_KIND)
   ) {
     throw new Error(`strict evidence requires ${STRICT_MATRIX_ARTIFACT_KIND} schemaVersion=${STRICT_MATRIX_SCHEMA_VERSION}`);
   }
   const planFailure = balancedReleasePlanFailure(manifest.validationPlan);
   if (planFailure) throw new Error(planFailure);
+  let aecFreezePublicKey = null;
   const selection = normalizeReleaseSelection(manifest.releaseSelection);
+  const iteration = executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  if (iteration !== (selection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE)) throw new Error('strict manifest execution scope differs from explicit verification scope');
   const selectedPlan = createBalancedReleasePlan(selection);
+  if (iteration) {
+    const full = createBalancedReleasePlan({modelId: selection.modelId, endpointHost: selection.endpointHost, region: selection.region});
+    const notRun = liveCellsForReleasePlan(full).filter(c => c.feedbackLoopPrevention !== 'echo-cancel').map(c => c.cellId);
+    if (manifest.executionScope !== executionScope || manifest.aecWorker !== expectedAecWorker
+        || selection.aecWorker !== expectedAecWorker || manifest.releaseEligible !== false
+        || manifest.matrixVerification !== 'not-run' || manifest.authority?.executionScope !== executionScope
+        || canonicalJson(manifest.notRunCellIds) !== canonicalJson(notRun)) {
+      throw new Error('AEC iteration manifest must bind its fixed worker and mark other matrix cells not-run');
+    }
+  }
   assertExactObject(manifest.validationPlan, selectedPlan, 'strict manifest selected validation plan');
   if (selection) {
     // Only the signed factory-bounded plan may authorize a non-default selection.
@@ -2825,6 +2926,7 @@ export function verifyStrictMatrixAuthority({
       portableAuthorityPath(executionRootRelative, SHARD_EXECUTION_PLAN_FILE), 'strict selected signed plan');
     const signedPlan = readJson(planPath);
     verifySignedExecutionPlan(signedPlan, { now: new Date(manifest.generatedAt), currentProvenance });
+    aecFreezePublicKey = signedPlan.coordinator.publicKeyPem;
     assertExactObject(signedPlan.releaseSelection, selection, 'strict manifest signed release selection');
     assertExactObject(manifest.matrixIntegration?.releaseSelection, selection, 'strict integration signed release selection');
     const selectedCells = liveCellsForReleasePlan(selectedPlan);
@@ -2907,7 +3009,7 @@ export function verifyStrictMatrixAuthority({
   if (manifest.cells.length !== releaseCells.length) {
     throw new Error(`strict authority manifest must contain exactly ${releaseCells.length} paid live cells`);
   }
-  const requiresShardAuthority = releaseCells.length === SHARD_MATRIX_CELL_COUNT
+  const requiresShardAuthority = (iteration || releaseCells.length === SHARD_MATRIX_CELL_COUNT)
     && canonicalJson(releaseCells.map((cell) => cell.cellId))
       === canonicalJson(liveCellsForReleasePlan(selectedPlan).map((cell) => cell.cellId));
   if (requiresShardAuthority && !manifest.collectAll) {
@@ -2973,6 +3075,7 @@ export function verifyStrictMatrixAuthority({
       'localPlaybackDrainTimeoutSeconds',
       'reportWriteTimeoutSeconds',
       'cellHardWatchdogSeconds',
+      'completionPolicy',
       'authoritativeTransformedReferenceFrames',
       'boundedCaptureGraceFrames',
       'maxExternalAudioSamples',
@@ -2985,6 +3088,9 @@ export function verifyStrictMatrixAuthority({
       if (cell?.[key] !== plannedCell?.[key]) {
         throw new Error(`strict matrix cell ${index} does not match balanced release plan field ${key}`);
       }
+    }
+    if (canonicalJson(cell?.aecQualityGates) !== canonicalJson(plannedCell.aecQualityGates)) {
+      throw new Error(`strict cell ${index} AEC frozen quality gates differ from the signed plan`);
     }
     const matrixIdentityFailure = watchModelProtocolIdentityFailure(
       cell?.modelProtocolProfileIdentity,
@@ -3045,7 +3151,7 @@ export function verifyStrictMatrixAuthority({
     if (!sameAuthorityInventory(receipt.runtimeBinaryHashes, currentRuntimeBinaryHashes)) {
       throw new Error(`strict matrix cell ${index} runtime binary hashes do not match the current release build`);
     }
-    const expectedArtifactPaths = requiredCellArtifactPaths(cell.feedbackLoopPrevention);
+    const expectedArtifactPaths = requiredCellArtifactPaths(cell.feedbackLoopPrevention, plannedCell.completionPolicy);
     if (!Array.isArray(receipt.artifacts) || receipt.artifacts.length !== expectedArtifactPaths.length) {
       throw new Error(`strict matrix cell ${index} raw inventory is incomplete; expected ${expectedArtifactPaths.length} fixed artifacts`);
     }
@@ -3073,6 +3179,7 @@ export function verifyStrictMatrixAuthority({
       cellExternalProviderBudget = assertCellExternalProviderBudget(runDirectory, {
         cellId: plannedCell.cellId,
         ...(selection ? {
+          releaseSelection: selection,
           approvedModels: selectedPlan.models,
           modelProtocols: { [selectedPlan.models[0]]: PROVIDER_PREFLIGHT_PROTOCOL },
           providerIdentity: { ...STRICT_PAID_PROVIDER_IDENTITY, endpointHost: selection.endpointHost },
@@ -3145,6 +3252,8 @@ export function verifyStrictMatrixAuthority({
       evidenceDrivenTerminal,
       analyzer,
     }));
+    assertStrictAecClosedLoopAuthority({runDirectory, cell, cellExternalProviderBudget,
+      freezePublicKey: aecFreezePublicKey, analyzer});
     cellAuthorityReceipts.push(receipt);
     const rebuiltReport = rebuildReportFromDirectory(runDirectory, {
       mode: 'live',
@@ -3231,6 +3340,7 @@ export function verifyStrictMatrixAuthority({
     translatedPcmLoopbackAuthorities,
     releaseCells,
     shardAuthority,
+    ...(iteration ? {executionScope, aecWorker: expectedAecWorker} : {}),
   };
 }
 
@@ -4573,7 +4683,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         if (provenanceFailure) {
           throw new Error(`strict run manifest provenance failed: ${provenanceFailure}`);
         }
-        const authority = verifyStrictMatrixAuthority({
+        const executionScope = args['execution-scope'] ?? MATRIX_EXECUTION_SCOPE;
+        if (![MATRIX_EXECUTION_SCOPE, AEC_ITERATION_EXECUTION_SCOPE].includes(executionScope)) throw new Error('unsupported explicit evidence execution scope');
+        if (executionScope === MATRIX_EXECUTION_SCOPE && args['aec-worker']) throw new Error('--aec-worker requires AEC iteration scope');
+        const verifyAuthority = executionScope === AEC_ITERATION_EXECUTION_SCOPE ? verifyStrictAecIterationAuthority : verifyStrictMatrixAuthority;
+        const authority = verifyAuthority({
+          expectedAecWorker: args['aec-worker'],
           manifestPath: resolved.manifestPath,
           manifest: resolved.manifest,
           evidenceRoot: path.resolve(args.root ?? DEFAULT_ROOT),
@@ -4619,7 +4734,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     && runManifestResolution
     && runManifestResolution.manifest.verification !== 'passed'
   ) {
-    const verification = writeStrictMatrixVerificationReceipt({
+    const writeVerification = verifiedAuthority.executionScope === AEC_ITERATION_EXECUTION_SCOPE
+      ? writeStrictAecIterationVerificationReceipt : writeStrictMatrixVerificationReceipt;
+    const verification = writeVerification({
       manifestPath: runManifestResolution.manifestPath,
       manifest: runManifestResolution.manifest,
       authority: verifiedAuthority,

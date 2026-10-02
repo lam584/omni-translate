@@ -148,6 +148,7 @@ function grantCells(assignments, plan) {
     deviceProfileInstanceId: assignments[cellIndex].deviceProfileInstanceId,
     leaseId: assignments[cellIndex].leaseId,
     maxExternalAudioSamples: cell.maxExternalAudioSamples,
+    ...(cell.completionPolicy ? {completionPolicy: cell.completionPolicy} : {}),
   }));
 }
 
@@ -312,18 +313,19 @@ export function createProviderPreflightGrant({
   releaseSelection,
   signingKeys,
 }) {
-  if (!Array.isArray(assignments) || assignments.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`provider preflight grant requires all ${SHARD_MATRIX_CELL_COUNT} paid assignments`);
-  }
   const selection = normalizeReleaseSelection(releaseSelection);
   const releasePlan = createBalancedReleasePlan(selection);
+  const expectedCount = liveCellsForReleasePlan(releasePlan).length;
+  if (!Array.isArray(assignments) || assignments.length !== expectedCount) {
+    throw new Error(`provider preflight grant requires all ${expectedCount} signed-scope paid assignments`);
+  }
   const cells = grantCells(assignments, releasePlan);
   if (
-    new Set(cells.map((cell) => cell.leaseId)).size !== SHARD_MATRIX_CELL_COUNT
+    new Set(cells.map((cell) => cell.leaseId)).size !== expectedCount
     || cells.some((cell) => !String(cell.leaseId ?? '').trim())
     || cells.reduce((sum, cell) => sum + cell.maxExternalAudioSamples, 0)
-      !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-  ) throw new Error(`provider preflight grant requires ${SHARD_MATRIX_CELL_COUNT} unique fixed-budget lease IDs`);
+      !== releasePlan.paidProviderInputSampleCeiling
+  ) throw new Error(`provider preflight grant requires ${expectedCount} unique fixed-budget lease IDs`);
   const normalizedWorkers = normalizedGrantWorkers(workers);
   if (normalizedWorkers.length === 4 && !preflightExecutorWorkerId) {
     throw new Error('four-worker provider preflight grant requires an explicit executor');
@@ -367,8 +369,8 @@ export function createProviderPreflightGrant({
     cells,
     budget: {
       inputSampleRateHz: 16_000,
-      cellMaxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
-      matrixMaxExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+      cellMaxExternalAudioSamples: releasePlan.externalProviderBudget.cellMaxInputSamples,
+      matrixMaxExternalAudioSamples: releasePlan.paidProviderInputSampleCeiling,
       reclaimPolicy: 'never-within-execution',
       retryPolicy: 'new-execution-required',
     },
@@ -481,8 +483,13 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
     || canonicalJson(grant.executor.readinessAuthority) !== canonicalJson(executorReadiness)) {
     throw new Error('provider preflight grant executor is not bound to its signed configured identity/readiness/runtime');
   }
-  if (!Array.isArray(grant.cells) || grant.cells.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`provider preflight grant requires the exact ${SHARD_MATRIX_CELL_COUNT} paid cells`);
+  if (!Array.isArray(grant.cells) || grant.cells.length !== approvedCells.length) {
+    throw new Error(`provider preflight grant requires the exact ${approvedCells.length} signed-scope paid cells`);
+  }
+  if (selection?.executionScope === 'aec-c03-iteration' && (grant.workers.length !== 1
+      || grant.workers[0].workerId !== selection.aecWorker || grant.executor.workerId !== selection.aecWorker
+      || grant.cells[0].workerId !== selection.aecWorker || grant.cells[0].waveIndex !== 0)) {
+    throw new Error('AEC preflight grant must bind exactly its selected fixed worker and lease');
   }
   const workerIds = new Set(grant.workers.map((worker) => worker.workerId));
   const slots = new Set();
@@ -510,6 +517,9 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
         throw new Error(`provider preflight grant cell ${index} ${key} mismatch`);
       }
     }
+    if (cell.completionPolicy !== approved.completionPolicy) {
+      throw new Error(`provider preflight grant cell ${index} completionPolicy mismatch`);
+    }
     if (
       !workerIds.has(cell.workerId)
       || !String(cell.deviceProfileInstanceId ?? '').trim()
@@ -527,8 +537,8 @@ export function verifyProviderPreflightGrant(grant, expected = {}) {
   });
   if (
     grant.budget?.inputSampleRateHz !== 16_000
-    || grant.budget?.cellMaxExternalAudioSamples !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
-    || grant.budget?.matrixMaxExternalAudioSamples !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
+    || grant.budget?.cellMaxExternalAudioSamples !== releasePlan.externalProviderBudget.cellMaxInputSamples
+    || grant.budget?.matrixMaxExternalAudioSamples !== releasePlan.paidProviderInputSampleCeiling
     || grant.budget?.reclaimPolicy !== 'never-within-execution'
     || grant.budget?.retryPolicy !== 'new-execution-required'
     || grant.authorization?.providerId !== PROVIDER_PREFLIGHT_PROVIDER_ID
@@ -603,8 +613,8 @@ export function createProviderPreflightLeaseReservations({ grant, issuedAt, sign
 
 export function verifyProviderPreflightLeaseReservations(reservations, grant) {
   verifyProviderPreflightGrant(grant);
-  if (!Array.isArray(reservations) || reservations.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`provider preflight requires exactly ${SHARD_MATRIX_CELL_COUNT} signed lease reservations`);
+  if (!Array.isArray(reservations) || reservations.length !== grant.cells.length) {
+    throw new Error(`provider preflight requires exactly ${grant.cells.length} signed lease reservations`);
   }
   const grantAt = isoMs(grant.generatedAt, 'provider preflight grant generatedAt');
   const expiresAt = isoMs(grant.expiresAt, 'provider preflight grant expiresAt');
@@ -756,9 +766,10 @@ export function validateProviderPreflightAuthorizationAuthorities({
     PROVIDER_PREFLIGHT_GRANT_FILE,
     'provider preflight grant authority',
   );
+  const authorityGrant = verifyProviderPreflightGrant(readRegularJson(grantPath, 'provider preflight grant'), expected);
   if (!Array.isArray(leaseReservationAuthorities)
-    || leaseReservationAuthorities.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`provider preflight reservation authority inventory must contain ${SHARD_MATRIX_CELL_COUNT} entries`);
+    || leaseReservationAuthorities.length !== authorityGrant.cells.length) {
+    throw new Error(`provider preflight reservation authority inventory must contain ${authorityGrant.cells.length} signed-scope entries`);
   }
   leaseReservationAuthorities.forEach((entry, index) => validateFileAuthorityEntry(
     root,

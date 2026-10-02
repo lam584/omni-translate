@@ -64,6 +64,7 @@ test('validated request reaches the private PowerShell runner as one path only',
 test('strict request requires request-bound media-end authority and identities', () => {
   const base = request({
     authorityMode: 'strict-paid',
+    completionPolicy: 'aec-output-quiescent-v2',
     physicalContentMode: 'local-canonical',
     model: {
       id: 'qwen3.5-livetranslate-flash-realtime',
@@ -75,7 +76,7 @@ test('strict request requires request-bound media-end authority and identities',
       authoritativeTransformedReferenceFrames: 2013045, inputSampleRateHz: 16000,
     },
     paths: {
-      ...request().paths, inputComplete: 'out/input-complete.json',
+      ...request().paths, inputComplete: 'out/input-complete.json', mediaComplete: 'out/media-complete.json',
       terminalAuthority: 'out/evidence-driven-terminal.json',
     },
     matrix: { cellId: 'c03', leaseId: 'lease-3', runMarker: 'watch_mode_diagnostic.run_id=abc' },
@@ -92,5 +93,30 @@ test('strict request requires request-bound media-end authority and identities',
     const candidate = structuredClone(base);
     mutate(candidate);
     assert.throws(() => validateWatchModeRunRequest(candidate), /strict-paid requires exact LiveTranslate identity/);
+  }
+});
+
+
+test('AEC open-input policy cannot be mistaken for media-end closure or another mode', () => {
+  const base = request({
+    authorityMode: 'strict-paid', completionPolicy: 'aec-output-quiescent-v2', physicalContentMode: 'local-canonical',
+    model: { id: 'qwen3.8-livetranslate-flash-realtime', protocol: 'dashscope-livetranslate', subtitleTranslationMode: 'native' },
+    media: { path: 'fixture.wav', playbackSeconds: 0, sha256: 'a'.repeat(64), authoritativeTransformedReferenceFrames: 2013045, inputSampleRateHz: 16000 },
+    paths: { ...request().paths, inputComplete: 'out/input-complete.json', mediaComplete: 'out/media-complete.json', terminalAuthority: 'out/evidence-driven-terminal.json' },
+    matrix: { cellId: 'c03', leaseId: 'lease-3', runMarker: 'watch_mode_diagnostic.run_id=abc' },
+  });
+  assert.equal(validateWatchModeRunRequest(base).completionPolicy, 'aec-output-quiescent-v2');
+  for (const mutate of [
+    value => { value.completionPolicy = 'media-input-complete-v1'; delete value.paths.mediaComplete; },
+    value => { value.paths.mediaComplete = value.paths.inputComplete; },
+    value => { delete value.paths.mediaComplete; },
+    value => { value.paths.mediaComplete = 'other/media-complete.json'; },
+    value => { value.feedbackMode = 'process-exclusion'; },
+    value => { value.timeouts.inputCompletionWatchdogSeconds = 181; },
+    value => { value.timeouts.providerFinishTimeoutSeconds = 16; },
+    value => { value.timeouts.localPlaybackDrainTimeoutSeconds = 121; },
+  ]) {
+    const candidate = structuredClone(base); mutate(candidate);
+    assert.throws(() => validateWatchModeRunRequest(candidate), /AEC|aec-output-quiescent-v2/);
   }
 });

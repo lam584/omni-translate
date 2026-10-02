@@ -228,6 +228,11 @@ export function verifyConfigPaths() {
       usedLegacy.add(legacy.pointer + '@' + legacy.files.find((f) => site.file.includes(f)));
       continue;
     }
+    // Exact signed preflight-grant projection introduced by c03 iteration.
+    // These are external authority fields (validated against signed scope),
+    // not persisted app settings; do not exempt other files or sibling paths.
+    if (site.file.endsWith('/release_evidence_diagnostic/provider_preflight_authority.rs')
+      && ['/releaseSelection/aecWorker', '/executor/workerId'].includes(site.pointer)) continue;
     const wirePrefix = WIRE_PREFIXES.find((p) => site.pointer === p || site.pointer.startsWith(p + '/'));
     if (wirePrefix) {
       if (WIRE_PARSER_FILES.some((f) => site.file.includes(f))) continue;

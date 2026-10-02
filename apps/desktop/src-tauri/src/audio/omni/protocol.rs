@@ -1,3 +1,6 @@
+mod desktop_timeline_evidence;
+mod native_desktop_stream;
+
 use super::*;
 
 #[path = "protocol/trailing_empty_vad.rs"]
@@ -931,6 +934,10 @@ impl OmniEventDiagnostics {
                     .find(|owner| owner.input_item_id.as_deref() == Some(item_id))
             })
             .and_then(|owner| owner.response_id.clone())
+    }
+
+    pub(super) fn native_input_response_bindings(&self) -> Vec<(String, String)> {
+        self.response_ledger.input_response_bindings()
     }
 
     pub(super) fn complete_native_response_owner(&mut self) {
@@ -3730,6 +3737,8 @@ struct OmniPlaybackQueueState {
     pending: VecDeque<OmniPlaybackCommand>,
     active_expected_end: Option<Instant>,
     terminated_stream_cues: std::collections::HashSet<String>,
+    desktop_timelines: std::collections::HashMap<String, crate::audio::speech::DesktopPlaybackTimeline>,
+    desktop_stream_active: bool,
     shutdown: OmniPlaybackShutdown,
 }
 
@@ -3749,6 +3758,7 @@ struct OmniPlaybackQueueInner {
     available: std::sync::Condvar,
     capacity: usize,
     quiescence: Option<Arc<crate::audio::state::TranslationPlaybackQuiescence>>,
+    timeline_evidence: std::sync::Mutex<desktop_timeline_evidence::TimelineEvidence>,
 }
 
 /// Bounded native-translation playback queue. Congestion never replaces a
@@ -3759,7 +3769,7 @@ pub(super) struct OmniPlaybackQueue {
     inner: Arc<OmniPlaybackQueueInner>,
 }
 
-enum OmniPlaybackReceiveOutcome {
+pub(super) enum OmniPlaybackReceiveOutcome {
     Command {
         command: OmniPlaybackCommand,
         dropped: Vec<OmniPlaybackStaleDrop>,
@@ -3786,11 +3796,14 @@ impl OmniPlaybackQueue {
                     pending: VecDeque::with_capacity(capacity),
                     active_expected_end: None,
                     terminated_stream_cues: std::collections::HashSet::new(),
+                    desktop_timelines: std::collections::HashMap::new(),
+                    desktop_stream_active: false,
                     shutdown: OmniPlaybackShutdown::Running,
                 }),
                 available: std::sync::Condvar::new(),
                 capacity,
                 quiescence,
+                timeline_evidence: std::sync::Mutex::new(desktop_timeline_evidence::TimelineEvidence::from_env()),
             }),
         }
     }
@@ -3807,7 +3820,7 @@ impl OmniPlaybackQueue {
                 / 1_000_000_000;
             quiescence.set_queue_state(
                 state.pending.len(),
-                usize::from(state.active_expected_end.is_some()),
+                usize::from(state.active_expected_end.is_some() || state.desktop_stream_active),
                 pending_frames.min(u128::from(u64::MAX)) as u64,
                 OMNI_OUTPUT_SAMPLE_RATE_HZ,
             );
@@ -3923,6 +3936,102 @@ impl OmniPlaybackQueue {
         self.inner.available.notify_one();
     }
 
+    fn set_desktop_stream_active(&self, active: bool) {
+        let mut state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.desktop_stream_active = active;
+        self.publish_state(&state);
+    }
+
+    fn append_desktop_timeline(&self, milestone: &str, timeline: &crate::audio::speech::DesktopPlaybackTimeline) -> Result<(), String> {
+        self.inner.timeline_evidence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).append(milestone, timeline)
+    }
+
+    // An evidence error is a playback authority failure, not just a log issue.
+    // Register the real source lineage if first-delta I/O failed before Start.
+    // Preserve API rejection (notably post-ACK) and fail-stop admission/drain.
+    pub(super) fn fail_desktop_evidence(&self, store: &AudioStateStore,
+        cue_id: &str, response_id: &str, error: &str) -> Result<(), String> {
+        let reason = format!("native-desktop-evidence-failed: {error}");
+        let edge = store.record_strict_watch_renderer_cue_submitted(cue_id, response_id)
+            .and_then(|_| store.record_strict_watch_renderer_failure(cue_id, &reason));
+        let failure = match edge {
+            Ok(()) => reason,
+            Err(edge_error) => format!("{reason}; typed renderer failure edge rejected: {edge_error}"),
+        };
+        self.inner.timeline_evidence.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fail(failure.clone());
+        self.abort();
+        store.watch_session_report.record_session_issue("output", "native-desktop-evidence-failed", "error", &failure);
+        Err(failure)
+    }
+
+    fn desktop_timeline_result(&self) -> Result<(), String> {
+        self.inner.timeline_evidence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).outcome()
+    }
+
+    fn seal_desktop_timeline(&self) -> Result<(), String> {
+        self.inner.timeline_evidence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).seal()
+    }
+
+    pub(super) fn record_desktop_audio_delta(&self, cue_id: &str, response_id: &str,
+        now_ms: u64, qpc_100ns: Option<u64>, audible: bool) -> Result<(), String> {
+        let mut state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.desktop_timelines.contains_key(response_id) && state.desktop_timelines.len() >= self.inner.capacity {
+            return Err("bounded playback timeline response inventory is full".into());
+        }
+        let first = !state.desktop_timelines.contains_key(response_id);
+        let entry = state.desktop_timelines.entry(response_id.into()).or_insert_with(|| crate::audio::speech::DesktopPlaybackTimeline {
+            cue_id: cue_id.into(), response_id: response_id.into(), first_audio_delta_at_ms: now_ms,
+            first_audio_delta_qpc_100ns: qpc_100ns, source_sample_rate_hz: 24_000, render_sample_rate_hz: 48_000, ..Default::default()
+        });
+        let first_audible = audible && entry.first_audible_audio_delta_at_ms.is_none();
+        if first_audible {
+            entry.first_audible_audio_delta_at_ms = Some(now_ms);
+            entry.first_audible_audio_delta_qpc_100ns = qpc_100ns;
+        }
+        let snapshot = entry.clone(); drop(state);
+        if first { self.append_desktop_timeline("audio-delta", &snapshot)?; }
+        else if first_audible { self.append_desktop_timeline("first-audible-audio-delta", &snapshot)?; }
+        Ok(())
+    }
+
+    pub(super) fn record_desktop_audio_done(&self, response_id: &str, now_ms: u64,
+        qpc_100ns: Option<u64>) -> Result<(), String> {
+        let mut state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = if let Some(timeline) = state.desktop_timelines.get_mut(response_id) {
+            if timeline.audio_done_at_ms.is_some() { return Err("duplicate typed desktop audio.done".into()); }
+            timeline.audio_done_at_ms = Some(now_ms); timeline.audio_done_qpc_100ns = qpc_100ns;
+            Some(timeline.clone())
+        } else { None };
+        drop(state);
+        if let Some(snapshot) = snapshot { self.append_desktop_timeline("audio-done", &snapshot)?; }
+        Ok(())
+    }
+
+    pub(super) fn desktop_timeline(&self, response_id: &str) -> Option<crate::audio::speech::DesktopPlaybackTimeline> {
+        self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .desktop_timelines.get(response_id).cloned()
+    }
+
+    fn remove_desktop_timeline(&self, response_id: &str) {
+        self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .desktop_timelines.remove(response_id);
+    }
+
+    fn stream_cancelled(&self, cue_id: &str) -> bool {
+        let state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.shutdown == OmniPlaybackShutdown::Aborted || state.terminated_stream_cues.contains(cue_id)
+    }
+
+    fn return_pending(&self, command: OmniPlaybackCommand) {
+        let mut state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutdown != OmniPlaybackShutdown::Aborted {
+            state.pending.push_front(command);
+            self.publish_state(&state);
+        }
+        self.inner.available.notify_one();
+    }
+
     fn projected_start(state: &OmniPlaybackQueueState, now: Instant) -> Instant {
         let active_end = state.active_expected_end.unwrap_or(now).max(now);
         state.pending.iter().fold(active_end, |start, command| {
@@ -3943,7 +4052,7 @@ impl OmniPlaybackQueue {
         Vec::new()
     }
 
-    fn recv_timeout(&self, timeout: Duration) -> OmniPlaybackReceiveOutcome {
+    pub(super) fn recv_timeout(&self, timeout: Duration) -> OmniPlaybackReceiveOutcome {
         let deadline = Instant::now() + timeout;
         let mut state = self
             .inner
@@ -4025,9 +4134,12 @@ impl OmniPlaybackQueue {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.inner.timeline_evidence.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fail("playback worker aborted before successful drain".into());
         state.shutdown = OmniPlaybackShutdown::Aborted;
         state.pending.clear();
         state.terminated_stream_cues.clear();
+        state.desktop_timelines.clear();
         state.active_expected_end = None;
         self.publish_state(&state);
         drop(state);
@@ -5168,6 +5280,17 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                 }
                 match cmd {
                     command @ OmniPlaybackCommand::Stream { .. } => {
+                        let config = speech_config.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                        let route = crate::audio::speech::SpeechOutputRoutePlan::for_configured_route(
+                            &route_direction, config.local_playback_enabled,
+                            config.virtual_mic_output_enabled, config.bridge_playback_enabled);
+                        if route.play_to_speaker && !route.write_to_bridge_playback {
+                            native_desktop_stream::process_native_desktop_stream(
+                                &app, &audio_state, &config, &route_direction,
+                                &playback_worker_queue, &mut translated_pcm_authority, command,
+                            );
+                            continue;
+                        }
                         process_omni_stream_playback_command(
                             &app,
                             &audio_state,
@@ -5387,6 +5510,21 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
         .translation_playback_quiescence()
         .set_pending_native_audio(false);
     let _ = emit_audio_snapshot(&app, &audio_state);
+    if let Err(error) = playback_worker_queue.seal_desktop_timeline() {
+        audio_state.watch_session_report.record_session_issue("output", "native-desktop-timeline-seal-failed", "error", &error);
+        let owner = playback_worker_queue.inner.timeline_evidence.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner).failure_owner();
+        if let Some((cue_id, response_id)) = owner {
+            // Use the actual last response, including a completed ACK owner.
+            // Existing lifecycle rejection remains explicit and fail-stops.
+            if let Err(failure) = playback_worker_queue.fail_desktop_evidence(&audio_state, &cue_id, &response_id, &error) {
+                let _ = diag_log(&app, "omni", "error", failure);
+            }
+        } else {
+            // No source owner exists: never invent a renderer cue for seal I/O.
+            playback_worker_queue.abort();
+        }
+    }
     if let Err(error) = translated_pcm_authority.finalize("worker-completed") {
         audio_state.watch_session_report.record_session_issue(
             "output",
@@ -5433,7 +5571,8 @@ impl OmniPlaybackWorker {
             return Ok(());
         };
         join.join()
-            .map_err(|_| format!("Omni playback worker panicked during {phase}"))
+            .map_err(|_| format!("Omni playback worker panicked during {phase}"))?;
+        self.queue.desktop_timeline_result()
     }
 }
 

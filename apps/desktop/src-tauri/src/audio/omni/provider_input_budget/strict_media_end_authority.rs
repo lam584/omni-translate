@@ -33,6 +33,15 @@ impl StrictMediaEndAuthority {
         if !strict_paid_authority {
             return Ok(None);
         }
+        if read_env(super::COMPLETION_POLICY_ENV).as_deref() == Some(super::AEC_COMPLETION_POLICY) {
+            if cell_id == "pairwise-live::qwen3.8-livetranslate-flash-realtime::echo-cancel::default-speaker"
+                && provider_input_max_samples == super::STRICT_AEC_OPEN_INPUT_MAX_SAMPLES {
+                // Media EOF is evidence only. Input stays open until the
+                // output-quiescence state machine closes the 180s lease.
+                return Ok(None);
+            }
+            return Err("AEC media-end bypass requires the exact 3.8 c03 open-input lease".to_string());
+        }
         let reference_frames = read_env(AUTHORITATIVE_REFERENCE_FRAMES_ENV);
         let input_sample_rate_hz = read_env(INPUT_SAMPLE_RATE_HZ_ENV);
         let media_sha256 = read_env(MEDIA_SHA256_ENV);

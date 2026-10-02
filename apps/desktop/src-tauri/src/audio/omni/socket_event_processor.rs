@@ -152,6 +152,32 @@ fn record_admitted_strict_response_terminal(
     }
 }
 
+
+fn record_admitted_open_input_activity(store: &AudioStateStore, direction: &str, event_type: &str, event: &Value) -> Result<(), String> {
+    if direction != "inbound" { return Ok(()); }
+    let item_id = event["item_id"].as_str().unwrap_or_default();
+    let response_id = native_response_id_from_event(event).unwrap_or_default();
+    match event_type {
+        "input_audio_buffer.speech_started" => store.record_strict_watch_input_speech(item_id, true),
+        "input_audio_buffer.speech_stopped" => store.record_strict_watch_input_speech(item_id, false),
+        "response.created" => store.record_strict_watch_response_started(&response_id),
+        "response.audio.delta" | "response.text.delta" | "response.output_text.delta"
+        | "response.audio_transcript.delta" | "response.text.done" | "response.output_text.done"
+        | "response.audio_transcript.done" => {
+            if ["delta", "text", "transcript", "stash"].iter().any(|key| event[*key].as_str().is_some_and(|text| !text.trim().is_empty())) {
+                store.record_strict_watch_nonempty_output(&response_id)
+            } else { Ok(()) }
+        }
+        "conversation.item.input_audio_transcription.delta" | "conversation.item.input_audio_transcription.text"
+        | "conversation.item.input_audio_transcription.completed" => {
+            if ["delta", "text", "transcript"].iter().any(|key| event[*key].as_str().is_some_and(|text| !text.trim().is_empty())) {
+                store.record_strict_watch_source_activity(item_id)
+            } else { Ok(()) }
+        }
+        _ => Ok(()),
+    }
+}
+
 fn track_response_lifecycle_for_server_event(
     event_diagnostics: &mut OmniEventDiagnostics,
     provider: &ProviderDraftInput,
@@ -760,12 +786,20 @@ impl OmniSocketEventProcessor {
                 // already matched the exact deferred input item above. The
                 // common post-dispatch flush below still runs immediately, so
                 // this ordering grants no extra time.
+                if direction == "inbound" && event_type == "session.created" {
+                    crate::watch_mode_diagnostic::readiness::begin_provider_socket(session_generation);
+                    store.reset_strict_watch_provider_socket()?;
+                    store.record_strict_watch_provider_session_created(evt["session"]["id"].as_str().unwrap_or_default())?;
+                }
                 if let Some(session_updated) = mutation.session_updated.as_ref() {
                     store.record_strict_watch_session_updated_received(
                         &session_updated.session_identity_sha256,
                         &session_updated.sent_session_config_sha256,
                         &session_updated.echoed_session_config_sha256,
                     )?;
+                    if direction == "inbound" {
+                        crate::watch_mode_diagnostic::readiness::mark_provider_session_updated(session_generation, &session_updated.session_identity_sha256);
+                    }
                 }
                 event_diagnostics.observe_trailing_empty_vad_event(&evt);
                 let response_completed = mutation.response_completed;
@@ -777,11 +811,14 @@ impl OmniSocketEventProcessor {
                     evt["text"] = Value::String(normalized_text);
                     evt["stash"] = Value::String(String::new());
                 }
+                // Preserve admitted wire evidence even when late output makes
+                // the typed drain reject this event and fail the session.
+                trace_call.record_ws_recv(event_type.as_str(), evt.clone());
+                record_admitted_open_input_activity(store, &direction, event_type.as_str(), &evt)?;
                 if let Some(completed_text) = mutation.completed_response_text {
                     pending_translated_text = completed_text;
                 }
                 let event_type = event_type.as_str();
-                trace_call.record_ws_recv(event_type, evt.clone());
                 track_response_lifecycle_for_server_event(
                     &mut event_diagnostics,
                     provider,
@@ -1499,6 +1536,12 @@ impl OmniSocketEventProcessor {
                     other => {
                         OmniEventProcessor::log_unknown_event(&app, other, &text);
                     }
+                }
+                // Use admitted source/response lineage, never the last response
+                // or an idle-queue guess to retire an input speech segment.
+                if direction == "inbound" && store.strict_watch_aec_open_input_drain_enabled() {
+                    store.record_strict_watch_input_response_bindings(
+                        &event_diagnostics.native_input_response_bindings())?;
                 }
         }
         Message::Close(_) => {

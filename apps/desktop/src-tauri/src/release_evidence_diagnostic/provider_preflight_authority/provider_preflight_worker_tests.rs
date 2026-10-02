@@ -151,7 +151,15 @@ fn v2_grant_fixture() -> Value {
         .unwrap().unwrap();
     grant["authorization"]["model"] = json!(PREFLIGHT_MODEL_V2);
     grant["authorization"]["modelProtocolProfileIdentity"] = json!(identity);
-    for cell in grant["cells"].as_array_mut().unwrap() {
+    // Explicit 3.8 selection uses the canonical full-matrix AEC authority,
+    // rather than the legacy 3.5 budget inherited from grant_fixture.
+    grant["budget"]["cellMaxExternalAudioSamples"] = json!(2_880_000);
+    grant["budget"]["matrixMaxExternalAudioSamples"] = json!(10_807_135);
+    for (index, cell) in grant["cells"].as_array_mut().unwrap().iter_mut().enumerate() {
+        if index == 2 {
+            cell["maxExternalAudioSamples"] = json!(2_880_000);
+            cell["completionPolicy"] = json!("aec-output-quiescent-v2");
+        }
         cell["cellId"] = json!(cell["cellId"].as_str().unwrap().replace(PREFLIGHT_MODEL, PREFLIGHT_MODEL_V2));
         cell["modelId"] = json!(PREFLIGHT_MODEL_V2);
         cell["modelProtocolProfileIdentity"] = json!(identity);
@@ -163,8 +171,48 @@ fn v2_grant_fixture() -> Value {
 fn signed_v2_release_is_exactly_four_cells_and_registry_authorized() {
     let grant = v2_grant_fixture();
     assert_eq!(grant["cells"].as_array().unwrap().len(), 4);
-    assert_eq!(grant["budget"]["matrixMaxExternalAudioSamples"], 10_100_180);
+    assert_eq!(grant["budget"]["cellMaxExternalAudioSamples"], 2_880_000);
+    assert_eq!(grant["budget"]["matrixMaxExternalAudioSamples"], 10_807_135);
+    let cells = grant["cells"].as_array().unwrap();
+    assert_eq!(cells.iter().map(|cell| cell["maxExternalAudioSamples"].as_u64().unwrap())
+        .collect::<Vec<_>>(), vec![2_877_045, 2_173_045, 2_880_000, 2_877_045]);
+    assert_eq!(cells[2]["completionPolicy"], "aec-output-quiescent-v2");
+    for index in [0, 1, 3] {
+        assert!(cells[index].get("completionPolicy").is_none());
+    }
     verify_fixture(grant, PreflightAuthorityProfile::StrictReleaseMatrix).unwrap();
+}
+
+#[test]
+fn resigned_v2_release_rejects_budget_and_completion_policy_tampering() {
+    let profile = PreflightAuthorityProfile::StrictReleaseMatrix;
+    let valid = v2_grant_fixture();
+    verify_fixture(valid.clone(), profile).unwrap();
+    for (pointer, value, expected_error) in [
+        ("/budget/cellMaxExternalAudioSamples", json!(2_877_045), "worker/local/budget authority"),
+        ("/budget/matrixMaxExternalAudioSamples", json!(10_100_180), "worker/local/budget authority"),
+        ("/budget/matrixMaxExternalAudioSamples", json!(10_807_136), "worker/local/budget authority"),
+        ("/cells/2/maxExternalAudioSamples", json!(2_173_045), "cell 2 is not canonical"),
+        ("/cells/2/maxExternalAudioSamples", json!(2_880_001), "cell 2 is not canonical"),
+        ("/cells/2/completionPolicy", json!("media-input-complete-v1"), "cell 2 completion/scope is not canonical"),
+    ] {
+        let mut changed = valid.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        // Re-sign each mutation so rejection proves semantic authority validation,
+        // not merely detection of a broken signature.
+        let error = verify_fixture(changed, profile).unwrap_err();
+        assert!(error.contains(expected_error), "{pointer}: {error}");
+    }
+    let mut missing_policy = valid.clone();
+    missing_policy["cells"][2].as_object_mut().unwrap().remove("completionPolicy");
+    assert!(verify_fixture(missing_policy, profile).unwrap_err()
+        .contains("cell 2 completion/scope is not canonical"));
+    for index in [0, 1, 3] {
+        let mut extra_policy = valid.clone();
+        extra_policy["cells"][index]["completionPolicy"] = json!("aec-output-quiescent-v2");
+        assert!(verify_fixture(extra_policy, profile).unwrap_err()
+            .contains(&format!("cell {index} completion/scope is not canonical")));
+    }
 }
 
 #[test]

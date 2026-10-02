@@ -560,11 +560,13 @@ test('worker discards a paid result when runtime hashes change during the cell',
 
 import { buildLiveWatchModeRunRequest } from './watch-mode-run-request.mjs';
 
-test('signed 3.8 shard reaches the actual run-request builder with its workspace and four routes', () => {
+test('signed 3.8 shard reaches the actual run-request builder with its workspace and four routes', t => {
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'signed-38-builder-'));
+  t.after(() => fs.rmSync(shardRoot, {recursive: true, force: true}));
   const selection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing' };
   const f = fixture(selection);
   for (const lease of f.leases) {
-    const request = buildShardCellExecutionRequest({ plan: f.plan, lease, workerId: f.workers[0].workerId, vmIdentity: f.workers[0].vmIdentity, shardRoot: path.join(os.tmpdir(), 'signed-38-builder'), now: f.now });
+    const request = buildShardCellExecutionRequest({ plan: f.plan, lease, workerId: f.workers[0].workerId, vmIdentity: f.workers[0].vmIdentity, shardRoot, now: f.now });
     const runRequest = buildLiveWatchModeRunRequest(request.runnerOptions, { authorityMode: 'strict-paid' });
     assert.equal(runRequest.model.id, selection.modelId);
     assert.equal(runRequest.model.protocol, 'dashscope-livetranslate');

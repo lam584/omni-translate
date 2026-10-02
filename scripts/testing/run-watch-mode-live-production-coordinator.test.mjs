@@ -4086,3 +4086,27 @@ test('production readiness transport retains the selected request identity', () 
   assert.equal(plan.planDigest, request.requestDigest);
   assert.equal(createProductionWorkerReadinessTransportPlan({ workerReadinessRequest: { ...request, releaseSelection: undefined } }).releaseSelection, undefined);
 });
+
+
+test('AEC production CLI requires explicit fixed identity and an isolated verifier scope', async () => {
+  const argv = ['--model', SELECTED_RELEASE.modelId, '--endpoint-host', SELECTED_RELEASE.endpointHost,
+    '--execution-scope', 'aec-c03-iteration', '--aec-worker', 'vm131'];
+  const options = parseProductionCoordinatorCliArgs(argv);
+  assert.deepEqual(options.releaseSelection, {...SELECTED_RELEASE, executionScope: 'aec-c03-iteration', aecWorker: 'vm131'});
+  assert.match(options.evidenceOutputRoot, /aec-c03-iterations[\\/]vm131/);
+  for (const flags of [ ['--aec-worker', 'vm169'], ['--execution-scope', 'any-cell'],
+    ['--execution-scope', 'full-matrix'], ['--model', 'qwen3.5-livetranslate-flash-realtime'] ]) {
+    const changed = [...argv];
+    const index = changed.indexOf(flags[0]); changed[index + 1] = flags[1];
+    assert.throws(() => parseProductionCoordinatorCliArgs(changed));
+  }
+  assert.throws(() => parseProductionCoordinatorCliArgs(argv.slice(0, -2)));
+  const {runProductionEvidenceVerifier} = await import('./run-watch-mode-live-production-coordinator.mjs');
+  await runProductionEvidenceVerifier({releaseSelection: options.releaseSelection, manifestPath: 'unused', evidenceOutputRoot: 'unused',
+    runProcess: async (_exe, args) => {
+      assert.equal(args[args.indexOf('--execution-scope') + 1], 'aec-c03-iteration');
+      assert.equal(args[args.indexOf('--aec-worker') + 1], 'vm131');
+      assert.ok(!args.includes('--latency-thresholds'), 'iteration must not inherit 20/60s override');
+      return {exitCode: 0};
+    }});
+});

@@ -48,10 +48,14 @@ impl CaptureClockReferenceMatcher {
         qpc_100ns: Option<u64>,
         samples: &[f32],
     ) -> Result<(), String> {
-        if samples.len() != FRAME_SAMPLES {
-            return Err(
-                "capture-clock reference matcher requires one committed 10 ms stereo frame".into(),
-            );
+        // Retain real short End/max-wait writes until capture can consume
+        // 480 frames. Never pad a partial write or invent a future sample.
+        if samples.is_empty() || samples.len() % CHANNELS != 0 {
+            return Err("capture-clock reference matcher requires nonempty frame-aligned stereo PCM".into());
+        }
+        let incoming_frames = samples.len() / CHANNELS;
+        if incoming_frames > MAX_BUFFERED_FRAMES {
+            return Err("capture-clock reference matcher committed write exceeds bounded buffer".into());
         }
         if self.epoch != Some(epoch) {
             self.clear_for_epoch(epoch);
@@ -64,8 +68,8 @@ impl CaptureClockReferenceMatcher {
                 &mut self.render_rate_hz,
             );
         }
-        while self.samples.len() / CHANNELS + FRAME_FRAMES > MAX_BUFFERED_FRAMES {
-            let drop_frames = (self.samples.len() / CHANNELS + FRAME_FRAMES - MAX_BUFFERED_FRAMES).min(FRAME_FRAMES);
+        while self.samples.len() / CHANNELS + incoming_frames > MAX_BUFFERED_FRAMES {
+            let drop_frames = (self.samples.len() / CHANNELS + incoming_frames - MAX_BUFFERED_FRAMES).min(FRAME_FRAMES);
             for _ in 0..drop_frames * CHANNELS {
                 let _ = self.samples.pop_front();
             }
@@ -116,7 +120,9 @@ impl CaptureClockReferenceMatcher {
         };
         let required_last = self.source_position_frames + ratio * (FRAME_FRAMES - 1) as f64;
         let available_frames = self.samples.len() / CHANNELS;
-        if required_last.floor() as usize + 1 >= available_frames {
+        // Integral positions need only the left sample: an exact 480-frame
+        // tail can be consumed without a fabricated interpolation lookahead.
+        if required_last.ceil() as usize >= available_frames {
             return None;
         }
         let mut output = Vec::with_capacity(FRAME_SAMPLES);
@@ -126,8 +132,12 @@ impl CaptureClockReferenceMatcher {
             let fraction = position - left as f64;
             for channel in 0..CHANNELS {
                 let a = self.samples[left * CHANNELS + channel];
-                let b = self.samples[(left + 1) * CHANNELS + channel];
-                output.push(a + (b - a) * fraction as f32);
+                if fraction == 0.0 {
+                    output.push(a);
+                } else {
+                    let b = self.samples[(left + 1) * CHANNELS + channel];
+                    output.push(a + (b - a) * fraction as f32);
+                }
             }
         }
         self.source_position_frames += ratio * FRAME_FRAMES as f64;
@@ -203,15 +213,15 @@ mod tests {
         matcher
             .enqueue_committed(7, 480, Some(100_000), &frame(0))
             .unwrap();
-        assert!(matcher.take_10ms(7).is_none());
+        assert_eq!(matcher.take_10ms(7).unwrap(), frame(0));
         matcher
             .enqueue_committed(7, 960, Some(200_000), &frame(480))
             .unwrap();
         matcher.observe_capture_clock(7, 3, 480, 100_000, true);
         matcher.observe_capture_clock(7, 3, 960, 200_000, true);
         let output = matcher.take_10ms(7).unwrap();
-        assert_eq!(output, frame(0));
-        assert_eq!(matcher.buffered_frames(), 480);
+        assert_eq!(output, frame(480));
+        assert_eq!(matcher.buffered_frames(), 0);
     }
 
     #[test]
@@ -363,12 +373,12 @@ mod tests {
             .enqueue_committed(2, 480, Some(200_000), &frame(10_000))
             .unwrap();
         assert!(matcher.take_10ms(1).is_none());
-        assert!(matcher.take_10ms(2).is_none());
+        assert_eq!(matcher.take_10ms(2).unwrap(), frame(10_000));
         matcher
             .enqueue_committed(2, 960, Some(300_000), &frame(10_480))
             .unwrap();
         let output = matcher.take_10ms(2).unwrap();
-        assert_eq!(output[0], 10_000.0);
+        assert_eq!(output[0], 10_480.0);
     }
 
     #[test]
@@ -384,5 +394,100 @@ mod tests {
         matcher.observe_capture_clock(4, 1, 480, 100_001, false);
         let output = matcher.take_10ms(4).unwrap();
         assert_eq!(output, frame(0));
+    }
+
+    fn partial(start: u64, frames: usize) -> Vec<f32> {
+        (0..frames).flat_map(|i| {
+            let value = (start + i as u64) as f32;
+            [value, -value]
+        }).collect()
+    }
+
+    #[test]
+    fn short_end_accumulates_real_partial_frames_without_padding_or_duplicate() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        matcher.enqueue_committed(20, 479, Some(100_000), &partial(0, 479)).unwrap();
+        assert!(matcher.take_10ms(20).is_none());
+        assert_eq!(matcher.buffered_frames(), 479);
+        matcher.enqueue_committed(20, 480, Some(100_208), &partial(479, 1)).unwrap();
+        assert_eq!(matcher.take_10ms(20).unwrap(), frame(0));
+        assert!(matcher.take_10ms(20).is_none());
+        assert_eq!(matcher.buffered_frames(), 0);
+        matcher.enqueue_committed(20, 511, Some(106_666), &partial(480, 31)).unwrap();
+        assert!(matcher.take_10ms(20).is_none());
+        assert_eq!(matcher.buffered_frames(), 31);
+    }
+
+    #[test]
+    fn maxwait_partitioned_writes_match_a_whole_committed_write() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        let mut end = 0;
+        for count in [17, 100, 362, 1, 23, 457] {
+            matcher.enqueue_committed(21, end + count as u64, None, &partial(end, count)).unwrap();
+            end += count as u64;
+        }
+        assert_eq!(matcher.take_10ms(21).unwrap(), frame(0));
+        assert_eq!(matcher.take_10ms(21).unwrap(), frame(480));
+        assert!(matcher.take_10ms(21).is_none());
+    }
+
+    #[test]
+    fn discard_does_not_splice_a_dropped_partial_tail_into_new_pcm() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        matcher.enqueue_committed(22, 479, None, &partial(0, 479)).unwrap();
+        matcher.discard_buffered();
+        matcher.enqueue_committed(22, 959, None, &partial(10_000, 480)).unwrap();
+        assert_eq!(matcher.take_10ms(22).unwrap(), frame(10_000));
+        assert!(matcher.take_10ms(22).is_none());
+    }
+
+    #[test]
+    fn epoch_reset_discards_partial_pcm_and_rate_history() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        matcher.enqueue_committed(23, 479, Some(100_000), &partial(0, 479)).unwrap();
+        matcher.enqueue_committed(24, 1, Some(200_000), &partial(10_000, 1)).unwrap();
+        assert!(matcher.take_10ms(23).is_none());
+        assert!(matcher.take_10ms(24).is_none());
+        assert_eq!(matcher.buffered_frames(), 1);
+        matcher.enqueue_committed(24, 480, Some(299_791), &partial(10_001, 479)).unwrap();
+        assert_eq!(matcher.take_10ms(24).unwrap(), frame(10_000));
+        assert_eq!(matcher.rate_ratio(), None);
+    }
+
+    #[test]
+    fn fractional_tail_waits_for_real_interpolation_lookahead() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        matcher.enqueue_committed(25, 480, None, &frame(0)).unwrap();
+        matcher.source_position_frames = 0.5;
+        assert!(matcher.take_10ms(25).is_none());
+        matcher.enqueue_committed(25, 481, None, &partial(480, 1)).unwrap();
+        let output = matcher.take_10ms(25).unwrap();
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[958], 479.5);
+    }
+
+    #[test]
+    fn partial_overflow_remains_bounded_and_drops_only_real_old_pcm() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        matcher.enqueue_committed(26, MAX_BUFFERED_FRAMES as u64, None,
+            &partial(0, MAX_BUFFERED_FRAMES)).unwrap();
+        matcher.enqueue_committed(26, MAX_BUFFERED_FRAMES as u64 + 7, None,
+            &partial(MAX_BUFFERED_FRAMES as u64, 7)).unwrap();
+        assert_eq!(matcher.buffered_frames(), MAX_BUFFERED_FRAMES);
+        assert_eq!(matcher.take_10ms(26).unwrap(), frame(7));
+    }
+
+    #[test]
+    fn malformed_or_oversized_partial_write_cannot_mutate_an_existing_epoch() {
+        let mut matcher = CaptureClockReferenceMatcher::default();
+        matcher.enqueue_committed(27, 479, None, &partial(0, 479)).unwrap();
+        assert!(matcher.enqueue_committed(28, 1, None, &[1.0]).is_err());
+        assert!(matcher.enqueue_committed(28, 0, None, &[]).is_err());
+        assert!(matcher.enqueue_committed(28, MAX_BUFFERED_FRAMES as u64 + 1, None,
+            &partial(0, MAX_BUFFERED_FRAMES + 1)).is_err());
+        assert_eq!(matcher.epoch, Some(27));
+        assert_eq!(matcher.buffered_frames(), 479);
+        matcher.enqueue_committed(27, 480, None, &partial(479, 1)).unwrap();
+        assert_eq!(matcher.take_10ms(27).unwrap(), frame(0));
     }
 }

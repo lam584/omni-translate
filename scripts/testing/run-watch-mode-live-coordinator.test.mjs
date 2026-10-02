@@ -791,7 +791,7 @@ test(`production readiness/grant/plan preserves ${releaseSelection?.modelId ?? '
     assert.equal(new Set(result.leases.map((lease) => lease.leaseId)).size, SHARD_MATRIX_CELL_COUNT);
     assert.equal(
       result.leases.reduce((sum, lease) => sum + lease.maxExternalAudioSamples, 0),
-      SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+      createBalancedReleasePlan(releaseSelection).paidProviderInputSampleCeiling,
     );
     assert.equal(verifySignedExecutionPlan(result.plan).planDigest, result.plan.planDigest);
     const grant = JSON.parse(fs.readFileSync(path.join(result.executionRoot, 'provider-preflight-grant.json'), 'utf8'));
@@ -1321,7 +1321,7 @@ test(`coordinator aggregate canonicalizes ${releaseSelection?.modelId ?? 'defaul
       new Set(result.aggregate.cells.map((cell) => cell.leaseId)).size,
       SHARD_MATRIX_CELL_COUNT,
     );
-    assert.equal(result.aggregate.budget.reservedExternalAudioSamples, SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
+    assert.equal(result.aggregate.budget.reservedExternalAudioSamples, createBalancedReleasePlan(releaseSelection).paidProviderInputSampleCeiling);
     assert.equal(result.aggregate.budget.preflightExternalAudioSamples, 0);
     assert.equal(result.matrixIntegration.cells.length, SHARD_MATRIX_CELL_COUNT);
     assert.ok(result.matrixIntegration.cells.every((cell) => path.isAbsolute(cell.sourceRunDirectory)));
@@ -1340,7 +1340,7 @@ test(`coordinator aggregate canonicalizes ${releaseSelection?.modelId ?? 'defaul
         else delete core.releaseSelection;
       }
       assert.throws(() => validateCoordinatorAggregate({ ...core, aggregateDigest: sha256Canonical(core) }),
-        /model mismatch|model protocol identity|canonical paid-plan order/);
+        mutation === 'selection' ? /fixed authority budget/ : /model mismatch|model protocol identity|canonical paid-plan order/);
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1439,12 +1439,13 @@ for (const mutation of ['legacy-model', 'wrong-endpoint', 'legacy-server-model']
   });
 }
 
-test('3.8 default placement stays four cells with the historical sample ceiling', () => {
+test('3.8 full matrix preserves non-AEC ceilings and binds its exact AEC allowance', () => {
   const selection = { modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'workspace.cn-beijing.maas.aliyuncs.com' };
   const cells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
   const assignments = defaultSingleWorkerAssignments(workers(), selection);
   assert.deepEqual(assignments.map(cell => cell.cellId), cells.map(cell => cell.cellId));
   assert.equal(assignments.length, 4);
-  assert.equal(cells.reduce((total, cell) => total + cell.maxExternalAudioSamples, 0), SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES);
+  assert.equal(cells.reduce((total, cell) => total + cell.maxExternalAudioSamples, 0), 10_807_135);
+  assert.deepEqual(cells.map(cell => cell.maxExternalAudioSamples), [2_877_045, 2_173_045, 2_880_000, 2_877_045]);
   assert.throws(() => defaultSingleWorkerAssignments(workers(), { modelId: selection.modelId }), /explicit Beijing workspace endpoint/);
 });

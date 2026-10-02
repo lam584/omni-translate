@@ -38,6 +38,7 @@ pub(super) struct CaptureClockObservation {
     /// started. Pending attempts never become timing epochs.
     pub(super) render_timeline_epoch: Option<u64>,
     pub(super) render_discontinuity_count: u64,
+    pub(super) render_hard_reset_generation: u64,
     /// Reason attached to the most recently published render discontinuity.
     /// A drained/refilled WASAPI buffer invalidates the external delay hint,
     /// but it does not change the render device/session authority and must not
@@ -102,6 +103,7 @@ pub(super) struct AecDelayEstimator {
     last_render_timeline_epoch: Option<u64>,
     render_submitted_frames_by_epoch: BTreeMap<u64, u64>,
     last_render_discontinuity_count: Option<u64>,
+    last_render_hard_reset_generation: Option<u64>,
     capture_discontinuity_episode_active: bool,
     stable_clean_capture_frames: u64,
     reset_count: u64,
@@ -120,6 +122,7 @@ impl AecDelayEstimator {
             last_render_timeline_epoch: None,
             render_submitted_frames_by_epoch: BTreeMap::new(),
             last_render_discontinuity_count: None,
+            last_render_hard_reset_generation: None,
             capture_discontinuity_episode_active: false,
             stable_clean_capture_frames: 0,
             reset_count: 0,
@@ -163,11 +166,16 @@ impl AecDelayEstimator {
         let published_render_discontinuity = self
             .last_render_discontinuity_count
             .is_some_and(|previous| previous != observation.render_discontinuity_count);
+        // A later underrun may replace the diagnostic last-reason, but cannot
+        // erase an unconsumed device/owner/session hard boundary.
+        let published_hard_reset = observation.render_hard_reset_generation
+            != self.last_render_hard_reset_generation.unwrap_or(0);
         let render_position_discontinuity = self.render_position_discontinuity(observation);
         let render_clock_discontinuity =
-            published_render_discontinuity || render_position_discontinuity;
-        let render_boundary_requires_aec_reset = published_render_discontinuity
-            && observation.render_discontinuity_reason != Some("wasapi-render-underrun");
+            published_render_discontinuity || published_hard_reset || render_position_discontinuity;
+        let render_boundary_requires_aec_reset = published_hard_reset
+            || (published_render_discontinuity
+                && observation.render_discontinuity_reason != Some("wasapi-render-underrun"));
         let capture_padding_invalid = observation
             .capture_padding_frames
             .is_some_and(|padding| padding > observation.capture_buffer_frames);
@@ -268,6 +276,7 @@ impl AecDelayEstimator {
             }
         }
         self.last_render_discontinuity_count = Some(observation.render_discontinuity_count);
+        self.last_render_hard_reset_generation = Some(observation.render_hard_reset_generation);
 
         let packet_age_ms = if observation.timestamp_error {
             None
@@ -425,6 +434,7 @@ mod tests {
             render_submitted_frames: None,
             render_timeline_epoch: None,
             render_discontinuity_count: 0,
+            render_hard_reset_generation: 0,
             render_discontinuity_reason: None,
             data_discontinuity: false,
             timestamp_error: false,
@@ -598,6 +608,38 @@ mod tests {
         // official WebRTC delay formula.
         assert_eq!(estimate.capture_padding_frames, Some(1_921));
         assert_eq!(estimate.delay_ms, 10.0);
+    }
+
+    #[test]
+    fn hard_boundary_followed_by_underrun_cannot_erase_pending_aec_reset() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut initial = observation(0, 1_000_000, 1_100_000, 0);
+        initial.render_discontinuity_count = 4;
+        assert!(!estimator.observe_capture(initial).aec_reset_required);
+        let mut coalesced = observation(480, 1_100_000, 1_300_000, 0);
+        coalesced.render_discontinuity_count = 6;
+        coalesced.render_hard_reset_generation = 1;
+        coalesced.render_discontinuity_reason = Some("wasapi-render-underrun");
+        let reset = estimator.observe_capture(coalesced);
+        assert!(reset.aec_reset_required);
+        assert_eq!(reset.aec_reset_reason, Some("wasapi-render-session-discontinuity"));
+        let mut later_underrun = observation(960, 1_200_000, 1_400_000, 0);
+        later_underrun.render_discontinuity_count = 7;
+        later_underrun.render_hard_reset_generation = 1;
+        later_underrun.render_discontinuity_reason = Some("wasapi-render-underrun");
+        let next = estimator.observe_capture(later_underrun);
+        assert!(next.delay_reset_required);
+        assert!(!next.aec_reset_required, "one consumed hard boundary must not reset adaptation twice");
+    }
+
+    #[test]
+    fn first_capture_observes_a_preexisting_hard_boundary_even_after_underrun() {
+        let mut estimator = AecDelayEstimator::new(48_000, 2);
+        let mut first = observation(0, 1_000_000, 1_100_000, 0);
+        first.render_discontinuity_count = 2;
+        first.render_hard_reset_generation = 1;
+        first.render_discontinuity_reason = Some("wasapi-render-underrun");
+        assert!(estimator.observe_capture(first).aec_reset_required);
     }
 
     #[test]

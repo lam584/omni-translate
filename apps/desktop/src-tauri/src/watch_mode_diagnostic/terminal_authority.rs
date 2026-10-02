@@ -14,6 +14,8 @@ pub(super) struct StrictPaidTerminalConfig {
     pub(super) identity: ExpectedInputCompleteIdentity,
     pub(super) producer: TerminalProducerIdentity,
     pub(super) input_complete_path: String,
+    pub(super) completion_policy: Option<String>,
+    pub(super) media_complete_path: Option<String>,
     pub(super) terminal_authority_path: String,
     pub(super) report_path: String,
     pub(super) input_completion_watchdog: Duration,
@@ -33,7 +35,7 @@ pub(super) struct TerminalProducerIdentity {
     pub(super) launch_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct InputCompleteMarker {
     pub(super) artifact_kind: String,
@@ -85,6 +87,8 @@ pub(super) struct TerminalAuthority {
     pub(super) source_head_commit: String,
     pub(super) runtime_bundle_digest: String,
     pub(super) launch_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) completion_policy: Option<String>,
     pub(super) status: String,
     pub(super) started_at_unix_ms: u64,
     pub(super) completed_at_unix_ms: u64,
@@ -100,6 +104,7 @@ pub(super) struct TerminalAuthorityRecorder {
     producer: TerminalProducerIdentity,
     started_at_unix_ms: u64,
     events: Vec<TerminalAuthorityEvent>,
+    completion_policy: Option<String>,
 }
 
 impl TerminalAuthorityRecorder {
@@ -113,10 +118,18 @@ impl TerminalAuthorityRecorder {
             producer,
             started_at_unix_ms,
             events: Vec::new(),
+            completion_policy: None,
         }
     }
 
-    pub(super) fn push(&mut self, stage: &str, observed_at_unix_ms: u64, detail: Value) {
+    pub(super) fn set_completion_policy(&mut self, policy: Option<String>) { self.completion_policy = policy; }
+
+    pub(super) fn push(&mut self, stage: &str, observed_at_unix_ms: u64, mut detail: Value) {
+        if self.completion_policy.is_some() {
+            detail["runMarker"] = Value::String(self.identity.run_marker.clone());
+            detail["cellId"] = Value::String(self.identity.cell_id.clone());
+            detail["leaseId"] = Value::String(self.identity.lease_id.clone());
+        }
         self.events.push(TerminalAuthorityEvent {
             sequence: self.events.len() as u64 + 1,
             stage: stage.to_string(),
@@ -173,7 +186,8 @@ impl TerminalAuthorityRecorder {
             .max(self.producer.started_at_unix_ms);
         TerminalAuthority {
             artifact_kind: "watch-mode-evidence-driven-terminal".to_string(),
-            schema_version: 3,
+            schema_version: if self.completion_policy.is_some() { 4 } else { 3 },
+            completion_policy: self.completion_policy,
             run_marker: self.identity.run_marker,
             cell_id: self.identity.cell_id,
             lease_id: self.identity.lease_id,

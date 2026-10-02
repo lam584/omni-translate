@@ -334,7 +334,10 @@ test('real distributed CLI bootstraps independently of the source checkout and c
 });
 
 test('real worker launches the rehashed distributed executable and creates a missing phase root', { skip: process.platform !== 'win32' }, async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-worker-launch-'));
+  // The isolated checkout itself is long on Windows. Keep this real
+  // CreateProcess fixture on the workspace volume but below MAX_PATH, so the
+  // assertion measures the rehashed executable rather than path-length ENOENT.
+  const root = fs.mkdtempSync(path.join(repoRoot, 'artifacts', 'd-'));
   const source = path.join(root, 'source');
   const binaryPath = 'target/release/omni-physical-output-probe.exe';
   // Node is deliberately not an audio probe: its bad-option diagnostic proves

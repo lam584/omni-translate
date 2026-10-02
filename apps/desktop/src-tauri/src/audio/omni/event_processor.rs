@@ -1,4 +1,8 @@
+mod playback_admission;
+
 use super::*;
+#[cfg(test)]
+use super::protocol::OmniPlaybackReceiveOutcome;
 
 pub(super) struct OmniAudioOutputState {
     pub(super) pending_audio_delta_count: u64,
@@ -42,70 +46,6 @@ pub(super) struct OmniReadinessState {
 
 impl OmniEventProcessor {
     const BRIDGE_STREAM_BATCH_SAMPLES: usize = OMNI_OUTPUT_SAMPLE_RATE_HZ as usize;
-
-    fn record_stream_enqueue_rejection<R: tauri::Runtime>(
-        app: &AppHandle<R>,
-        outcome: &OmniPlaybackEnqueueOutcome,
-        cue_id: &str,
-        created_at_ms: u64,
-        detail: &str,
-    ) {
-        let report = &app.state::<AudioStateStore>().watch_session_report;
-        let observed_queue_age_ms = unix_ms().saturating_sub(created_at_ms);
-        match outcome {
-            OmniPlaybackEnqueueOutcome::Overflow {
-                reason: OmniPlaybackOverflowReason::RealtimeBudget,
-                projected_start_delay_ms,
-                ..
-            } => report.record_session_issue(
-                "output",
-                "native-playback-stream-stale-dropped",
-                "warning",
-                &format!(
-                    "{detail} cueId={cue_id} predictedStartMs={projected_start_delay_ms} observedQueueAgeMs={observed_queue_age_ms} reason=stream-start-expired"
-                ),
-            ),
-            OmniPlaybackEnqueueOutcome::Overflow {
-                reason: OmniPlaybackOverflowReason::QueueFull,
-                projected_start_delay_ms,
-                ..
-            } => report.record_session_issue(
-                "output",
-                "native-playback-stream-overflow",
-                "error",
-                &format!(
-                    "{detail} cueId={cue_id} predictedStartMs={projected_start_delay_ms} observedQueueAgeMs={observed_queue_age_ms} reason=queue-full"
-                ),
-            ),
-            OmniPlaybackEnqueueOutcome::Stopped => report.record_session_issue(
-                "output",
-                "native-playback-stream-stopped",
-                "warning",
-                detail,
-            ),
-            _ => {}
-        }
-    }
-
-    fn enqueue_playback_command<R: tauri::Runtime>(
-        app: &AppHandle<R>,
-        playback_queue: &OmniPlaybackQueue,
-        command: impl FnOnce(
-            Option<crate::bridge::ipc::BridgeTranslationSinkOwner>,
-        ) -> OmniPlaybackCommand,
-    ) -> OmniPlaybackEnqueueOutcome {
-        let _submission_reservation = app.try_state::<AudioStateStore>().map(|audio_state| {
-            audio_state
-                .translation_playback_quiescence()
-                .wait_for_restart_barrier()
-        });
-        let bridge_owner = app
-            .try_state::<crate::bridge::state::BridgeStateStore>()
-            .and_then(|state| {
-                crate::bridge::ipc::BridgeTranslationSinkOwner::from_snapshot(&state.snapshot())
-            });
-        playback_queue.enqueue(command(bridge_owner))
-    }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn process_session_ready<R: tauri::Runtime>(
@@ -215,6 +155,9 @@ impl OmniEventProcessor {
         cue_id: Option<&str>,
         playback_queue: &OmniPlaybackQueue,
     ) -> OmniAudioOutputState {
+        let delta_received_at = Instant::now();
+        let delta_received_at_ms = unix_ms();
+        let delta_received_qpc_100ns = crate::audio::engine::aec_timing::qpc_now_100ns();
         let OmniAudioOutputState {
             mut pending_audio_delta_count,
             mut pending_audio_delta_base64_bytes,
@@ -263,7 +206,38 @@ impl OmniEventProcessor {
                             config.virtual_mic_output_enabled,
                             config.bridge_playback_enabled,
                         );
-                        if output_route.write_to_bridge_playback && !pending_audio_stream_aborted {
+                        if output_route.play_to_speaker && pending_audio_stream_cue_id.is_some()
+                            && pending_audio_response_id.as_deref().zip(evt["response_id"].as_str())
+                                .is_some_and(|(owner, incoming)| owner != incoming) {
+                            let active = pending_audio_stream_cue_id.as_deref().expect("active native stream");
+                            playback_queue.abort_stream(active, pending_audio_stream_chunk_index,
+                                pending_audio_stream_created_at_ms.unwrap_or(delta_received_at_ms));
+                            pending_audio_stream_aborted = true; pending_audio_buffer.clear();
+                            audio_state.watch_session_report.record_session_issue("output",
+                                "native-playback-stream-response-owner-changed", "error",
+                                "A new provider response attempted to append PCM to an active desktop response stream.");
+                            let _ = audio_state.record_strict_watch_renderer_failure(active, "native-response-owner-changed");
+                        }
+                        if output_route.play_to_speaker && !output_route.write_to_virtual_mic && config.enabled
+                            && !pending_audio_stream_aborted && !samples.is_empty() {
+                            if let Err(error) = playback_queue.record_desktop_audio_delta(cue_id,
+                                pending_audio_response_id.as_deref().unwrap_or(""), delta_received_at_ms,
+                                delta_received_qpc_100ns, samples.iter().any(|sample| *sample != 0)) {
+                                pending_audio_stream_aborted = true;
+                                pending_audio_buffer.clear();
+                                playback_queue.abort_stream(cue_id, pending_audio_stream_chunk_index,
+                                    pending_audio_stream_created_at_ms.unwrap_or(delta_received_at_ms));
+                                audio_state.watch_session_report.record_session_issue("output",
+                                    "native-desktop-timeline-write-failed", "error", &error);
+                                if let Err(failure) = playback_queue.fail_desktop_evidence(&audio_state, cue_id,
+                                    pending_audio_response_id.as_deref().unwrap_or(""), &error) {
+                                    let _ = diag_log(app, "omni", "error", failure);
+                                }
+                            }
+                        }
+                        if (output_route.write_to_bridge_playback
+                            || (output_route.play_to_speaker && !output_route.write_to_virtual_mic && config.enabled))
+                            && !pending_audio_stream_aborted {
                             if pending_audio_stream_cue_id.as_deref().is_some_and(|active| active != cue_id) {
                                 let active = pending_audio_stream_cue_id.take().unwrap();
                                 playback_queue.abort_stream(
@@ -279,10 +253,19 @@ impl OmniEventProcessor {
                                     "output",
                                     "native-playback-stream-overlap",
                                     "error",
-                                    "A second native audio cue started before the active Bridge playback stream ended.",
+                                    "A second native audio cue started before the active native playback stream ended.",
                                 );
                             } else {
-                                while pending_audio_buffer.len() >= Self::BRIDGE_STREAM_BATCH_SAMPLES
+                                // Desktop deltas must reach the renderer immediately, including a
+                                // sub-800ms first delta whose 1000ms startup timer runs there.
+                                let batch_samples = if output_route.write_to_bridge_playback {
+                                    Self::BRIDGE_STREAM_BATCH_SAMPLES
+                                } else {
+                                    (OMNI_OUTPUT_SAMPLE_RATE_HZ as usize / 10)
+                                        .min(pending_audio_buffer.len())
+                                        .max(1)
+                                };
+                                while pending_audio_buffer.len() >= batch_samples
                                     && !pending_audio_stream_aborted
                                 {
                                     // The realtime budget measures time after a stream is
@@ -291,9 +274,9 @@ impl OmniEventProcessor {
                                     // recording the timestamp before that point incorrectly
                                     // treats provider generation time as queue age.
                                     let created_at_ms = *pending_audio_stream_created_at_ms
-                                        .get_or_insert_with(unix_ms);
+                                        .get_or_insert_with(|| if output_route.play_to_speaker { delta_received_at_ms } else { unix_ms() });
                                     let tail = pending_audio_buffer
-                                        .split_off(Self::BRIDGE_STREAM_BATCH_SAMPLES);
+                                        .split_off(batch_samples);
                                     let raw = std::mem::replace(&mut pending_audio_buffer, tail);
                                     let stream_state = if pending_audio_stream_cue_id.is_none() {
                                         omni_bridge_protocol::TranslationStreamState::Start
@@ -311,7 +294,7 @@ impl OmniEventProcessor {
                                             cue_id: cue_id.to_string(),
                                             response_id: pending_audio_response_id.clone(),
                                             sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
-                                            queued_at: Instant::now(),
+                                            queued_at: if output_route.play_to_speaker { delta_received_at } else { Instant::now() },
                                             created_at_ms,
                                             estimated_duration_ms: chunk_duration_ms,
                                             chunk_index: pending_audio_stream_chunk_index,
@@ -400,6 +383,8 @@ impl OmniEventProcessor {
         cue_id: Option<&str>,
         _direction: &str,
     ) -> OmniAudioOutputState {
+        let audio_done_at_ms = unix_ms();
+        let audio_done_qpc_100ns = crate::audio::engine::aec_timing::qpc_now_100ns();
         let OmniAudioOutputState {
             mut pending_audio_delta_count,
             mut pending_audio_delta_base64_bytes,
@@ -410,6 +395,20 @@ impl OmniEventProcessor {
             mut pending_audio_stream_created_at_ms,
             mut pending_audio_stream_aborted,
         } = state;
+        if let Err(error) = playback_queue.record_desktop_audio_done(pending_audio_response_id.as_deref().unwrap_or(""), audio_done_at_ms, audio_done_qpc_100ns) {
+            pending_audio_stream_aborted = true; pending_audio_buffer.clear();
+            if let Some(active) = pending_audio_stream_cue_id.as_deref() {
+                playback_queue.abort_stream(active, pending_audio_stream_chunk_index,
+                    pending_audio_stream_created_at_ms.unwrap_or(audio_done_at_ms));
+            }
+            app.state::<AudioStateStore>().watch_session_report.record_session_issue("output",
+                "native-desktop-timeline-write-failed", "error", &error);
+            let failed_cue = pending_audio_stream_cue_id.as_deref().or(cue_id).unwrap_or("");
+            if let Err(failure) = playback_queue.fail_desktop_evidence(&app.state::<AudioStateStore>(), failed_cue,
+                pending_audio_response_id.as_deref().unwrap_or(""), &error) {
+                let _ = diag_log(app, "omni", "error", failure);
+            }
+        }
         if let Some(stream_cue_id) = pending_audio_stream_cue_id.take() {
             let created_at_ms = pending_audio_stream_created_at_ms.unwrap_or_else(unix_ms);
             if !pending_audio_buffer.is_empty() && !pending_audio_stream_aborted {
@@ -1260,6 +1259,81 @@ mod audio_done_tests {
             );
             assert_eq!(state.pending_translated_text, snapshot);
         }
+    }
+
+    #[test]
+    fn desktop_delta_is_queued_before_audio_done_and_done_only_sends_end() {
+        let app=app(); let handle=app.handle().clone(); let store=handle.state::<AudioStateStore>();
+        store.register_omni_speech_config(OmniSpeechConfig::from_config(&json!({
+            "speech":{"enabled":true,"provider":"omni-native"},
+            "devices":{"outputSpeechEnabled":true,"feedbackLoopPrevention":"aec"}
+        })));
+        let queue=OmniPlaybackQueue::new(32);
+        let mut state=buffered_audio();
+        state.pending_audio_buffer.clear(); state.pending_audio_response_id=None;
+        state.pending_audio_delta_count=0; state.pending_audio_delta_base64_bytes=0;
+        let samples=vec![33;19_200];
+        state=OmniEventProcessor::process_audio_delta(state,&handle,
+            &json!({"delta":base64_encode_i16(&samples),"response_id":"response-desktop"}),
+            "inbound",Some("cue-desktop"),&queue);
+        assert_eq!(state.pending_audio_stream_cue_id.as_deref(),Some("cue-desktop"));
+        assert!(state.pending_audio_buffer.is_empty());
+        assert_eq!(queue.pending_cue_ids().len(),8,"800ms is already queued, without audio.done");
+        state=OmniEventProcessor::process_audio_done(state,&handle,&queue,Some("cue-desktop"),"inbound");
+        assert!(state.pending_audio_buffer.is_empty()); assert!(state.pending_audio_stream_cue_id.is_none());
+        let mut actual=Vec::new(); let mut ends=0;
+        for index in 0..9 {
+            let OmniPlaybackReceiveOutcome::Command{command,..}=queue.recv_timeout(Duration::ZERO) else {panic!("command {index}")};
+            let OmniPlaybackCommand::Stream{samples,stream_state,chunk_index,..}=command else {panic!("Desktop done must not enqueue whole Play")};
+            assert_eq!(chunk_index,index);
+            if stream_state==omni_bridge_protocol::TranslationStreamState::End {ends+=1;assert!(samples.is_empty());}
+            else {actual.extend(samples);}
+        }
+        assert_eq!(ends,1); assert_eq!(actual,samples);
+        let timeline=queue.desktop_timeline("response-desktop").expect("typed timeline");
+        assert!(timeline.first_audio_delta_at_ms>0); assert!(timeline.audio_done_at_ms.is_some());
+        assert!(timeline.render_start_at_ms.is_none(),"offline queue does not invent physical renderStart");
+    }
+
+    #[test]
+    fn desktop_short_tail_routes_start_chunk_end_not_whole_play() {
+        let app=app(); let handle=app.handle().clone(); let store=handle.state::<AudioStateStore>();
+        store.register_omni_speech_config(OmniSpeechConfig::from_config(&json!({
+            "speech":{"enabled":true}, "devices":{"outputSpeechEnabled":true,"feedbackLoopPrevention":"aec"}
+        })));
+        let queue=OmniPlaybackQueue::new(8); let mut state=buffered_audio();
+        state.pending_audio_buffer.clear(); state.pending_audio_response_id=None;
+        state=OmniEventProcessor::process_audio_delta(state,&handle,
+            &json!({"delta":base64_encode_i16(&[11;17]),"response_id":"response-short"}),
+            "inbound",Some("cue-short"),&queue);
+        assert_eq!(queue.pending_cue_ids(),["cue-short"]);
+        OmniEventProcessor::process_audio_done(state,&handle,&queue,Some("cue-short"),"inbound");
+        let OmniPlaybackReceiveOutcome::Command{command:OmniPlaybackCommand::Stream{samples,stream_state,..},..}=queue.recv_timeout(Duration::ZERO)
+            else {panic!("Start")};
+        assert_eq!(samples,vec![11;17]); assert_eq!(stream_state,omni_bridge_protocol::TranslationStreamState::Start);
+        let OmniPlaybackReceiveOutcome::Command{command:OmniPlaybackCommand::Stream{samples,stream_state,..},..}=queue.recv_timeout(Duration::ZERO)
+            else {panic!("End")};
+        assert!(samples.is_empty()); assert_eq!(stream_state,omni_bridge_protocol::TranslationStreamState::End);
+    }
+
+    #[test]
+    fn desktop_response_owner_change_aborts_without_merging_pcm() {
+        let app=app(); let handle=app.handle().clone(); let store=handle.state::<AudioStateStore>();
+        store.register_omni_speech_config(OmniSpeechConfig::from_config(&json!({
+            "speech":{"enabled":true},"devices":{"outputSpeechEnabled":true,"feedbackLoopPrevention":"aec"}
+        })));
+        let queue=OmniPlaybackQueue::new(8); let mut state=buffered_audio();
+        state.pending_audio_buffer.clear(); state.pending_audio_response_id=None;
+        state=OmniEventProcessor::process_audio_delta(state,&handle,
+            &json!({"delta":base64_encode_i16(&[11;240]),"response_id":"response-owner"}),
+            "inbound",Some("cue-owner"),&queue);
+        state=OmniEventProcessor::process_audio_delta(state,&handle,
+            &json!({"delta":base64_encode_i16(&[99;240]),"response_id":"response-next"}),
+            "inbound",Some("cue-owner"),&queue);
+        assert!(state.pending_audio_stream_aborted); assert!(state.pending_audio_buffer.is_empty());
+        let OmniPlaybackReceiveOutcome::Command{command:OmniPlaybackCommand::Stream{samples,stream_state,..},..}=queue.recv_timeout(Duration::ZERO)
+            else {panic!("Abort")};
+        assert!(samples.is_empty()); assert_eq!(stream_state,omni_bridge_protocol::TranslationStreamState::Abort);
     }
 
 }

@@ -184,6 +184,13 @@ impl ResponseLedger {
         })
     }
 
+    /// Read-only typed bindings established by the production lineage reducer.
+    pub(super) fn input_response_bindings(&self) -> Vec<(String, String)> {
+        self.lineages.iter().filter_map(|lineage| {
+            Some((lineage.source_item_id.clone()?, lineage.response_id.clone()?))
+        }).collect()
+    }
+
     pub(super) fn clear(&mut self) {
         self.lineages.clear();
     }
@@ -295,6 +302,19 @@ mod tests {
                 None,
             )
             .is_none());
+    }
+
+
+    #[test]
+    fn typed_input_response_bindings_exclude_unanswered_inputs_and_keep_terminals() {
+        let mut ledger = ResponseLedger::default();
+        ledger.record_source("cue-a", Some("input-a"));
+        ledger.record_source("cue-b", Some("input-b"));
+        assert!(ledger.input_response_bindings().is_empty());
+        ledger.bind_response(Some("response-a"), None, None, Some("cue-b")).unwrap();
+        assert_eq!(ledger.input_response_bindings(), vec![("input-a".into(), "response-a".into())]);
+        ledger.complete_response(Some("response-a"));
+        assert_eq!(ledger.input_response_bindings(), vec![("input-a".into(), "response-a".into())]);
     }
 
     #[test]

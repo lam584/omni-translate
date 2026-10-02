@@ -27,6 +27,46 @@ function Write-WatchModeInputCompleteMarker {
   return $completedAtUnixMs
 }
 
+function Write-WatchModeMediaCompleteMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$RunMarker,
+    [Parameter(Mandatory = $true)][string]$CellId, [Parameter(Mandatory = $true)][string]$LeaseId,
+    [Parameter(Mandatory = $true)][string]$WorkspaceRoot, [Parameter(Mandatory = $true)]$Playback,
+    [Parameter(Mandatory = $true)][string]$CompletionPolicy
+  )
+  if ($CompletionPolicy -cne 'aec-output-quiescent-v2') {
+    throw 'media-complete is only valid for the versioned AEC open-input policy'
+  }
+  $canonicalMediaSha256 = 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f'
+  if ($Playback.passed -ne $true -or [string]$Playback.mediaSha256 -cne $canonicalMediaSha256 -or
+      [int64]$Playback.injectorProcessId -le 0 -or [string]::IsNullOrWhiteSpace([string]$Playback.endpointId) -or
+      [int64]$Playback.startedAtMs -le 0 -or [int64]$Playback.finishedAtMs -lt [int64]$Playback.startedAtMs) {
+    throw 'media-complete requires successful canonical, identity-bound physical media playback'
+  }
+  $referencePath = [string]$Playback.referencePcmPath
+  if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) { throw 'media-complete requires retained transformed source PCM' }
+  $referenceBytes = (Get-Item -LiteralPath $referencePath).Length
+  if ($referenceBytes -ne (2013045 * 2)) { throw 'media-complete source reference frames differ from the canonical signed AEC cell' }
+  $maxSamples = [int64]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES
+  if ($maxSamples -ne 2880000) { throw 'AEC open-input observation must use its exact 180-second signed sample ceiling' }
+  $sourceText = Get-Content -LiteralPath (Join-Path $WorkspaceRoot 'scripts/testing/fixtures/watch-mode-en-original.txt') -Raw -Encoding UTF8
+  $segments = @($sourceText.Trim() -split '\r?\n\s*\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  if ($segments.Count -ne 6) { throw 'media-complete requires all six canonical English source segments' }
+  # This event never closes capture, fences Provider input or creates input-complete.
+  # The production typed lifecycle owns output drain and the two-second confirmation.
+  Write-OmniImmutableJson -LiteralPath $Path -Value ([pscustomobject]@{
+    schemaVersion = 2; artifactKind = 'watch-mode-media-complete'; runMarker = $RunMarker
+    cellId = $CellId; leaseId = $LeaseId; mediaSha256 = $canonicalMediaSha256
+    playbackProcessId = [int64]$Playback.injectorProcessId; playbackEndpointId = [string]$Playback.endpointId
+    mediaPlaybackStartedAtUnixMs = [int64]$Playback.startedAtMs
+    mediaPlaybackCompletedAtUnixMs = [int64]$Playback.finishedAtMs
+    authoritativeTransformedReferenceFrames = [int64]($referenceBytes / 2)
+    boundedCaptureGraceFrames = [int64]($maxSamples - ($referenceBytes / 2))
+    maxExternalAudioSamples = $maxSamples; expectedSourceSegments = $segments
+  })
+  return [int64]$Playback.finishedAtMs
+}
+
 function Write-WatchModeFailedInputCompleteMarker {
   param(
     [Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$RunMarker,
@@ -59,4 +99,4 @@ function Test-WatchModeExpectedFailedInputTerminalError {
   return $Message -cmatch $pattern
 }
 
-Export-ModuleMember -Function @('Write-WatchModeInputCompleteMarker', 'Write-WatchModeFailedInputCompleteMarker', 'Test-WatchModeExpectedFailedInputTerminalError')
+Export-ModuleMember -Function @('Write-WatchModeMediaCompleteMarker', 'Write-WatchModeInputCompleteMarker', 'Write-WatchModeFailedInputCompleteMarker', 'Test-WatchModeExpectedFailedInputTerminalError')

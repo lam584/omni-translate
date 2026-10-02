@@ -158,7 +158,8 @@ function Invoke-WatchModeRun {
               $playbackStep = Invoke-Step -State $state "play watch-mode media" -Phase playback {
                 Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir $workspaceRoot $PlaybackSeconds `
                   -RestartQuietWindowAfterSeconds ([int]$restartQuietWindow.afterSeconds) `
-                  -RestartQuietWindowSeconds ([int]$restartQuietWindow.durationSeconds)
+                  -RestartQuietWindowSeconds ([int]$restartQuietWindow.durationSeconds) `
+                  -AecClosedLoopEvidence:($CompletionPolicy -ceq 'aec-output-quiescent-v2')
               } -ContinueOnError
           }
           if ($StrictPaidAuthority) {
@@ -187,11 +188,19 @@ function Invoke-WatchModeRun {
               }
               throw "input-complete cannot be signaled because media playback failed"
             }
+            if ($CompletionPolicy -ceq 'aec-output-quiescent-v2') {
+              Invoke-Step -State $state "signal identity-bound media completion; keep AEC input open" -Phase playback {
+                Write-WatchModeMediaCompleteMarker -Path $MediaCompletePath -RunMarker $runMarker `
+                  -CellId $MatrixCellId -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
+                  -WorkspaceRoot $workspaceRoot -Playback $playbackStep.data -CompletionPolicy $CompletionPolicy
+              } | Out-Null
+            } else {
             Invoke-Step -State $state "signal identity-bound input completion" -Phase playback {
               Write-WatchModeInputCompleteMarker -Path $InputCompletePath -RunMarker $runMarker `
                 -CellId $MatrixCellId -LeaseId ([string]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID) `
                 -Playback $playbackStep.data
             } | Out-Null
+            }
           }
           $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
           $reportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `

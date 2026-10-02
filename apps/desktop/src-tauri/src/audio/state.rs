@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -27,6 +26,9 @@ mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
 mod echo_backend;
+mod echo_render_clock;
+use echo_render_clock::EchoRenderClock;
+pub(crate) use echo_render_clock::EchoRenderClockSnapshot;
 pub(crate) use echo_backend::EchoRenderBoundary;
 mod ignored_fragment;
 mod source_finality;
@@ -66,45 +68,16 @@ pub(crate) use playback_quiescence::{
     TranslationPlaybackAuthority, TranslationPlaybackQuiescence,
     TranslationPlaybackQuiescenceSnapshot,
 };
-pub(crate) use watch_terminal_lifecycle::StrictWatchTerminalLifecycleSnapshot;
+pub(crate) use watch_terminal_lifecycle::{
+    StrictWatchTerminalLifecycleSnapshot, StrictWatchOpenInputSnapshot, StrictWatchOpenInputPhase,
+    StrictWatchProviderAppendEvidence,
+};
 use translation_lifecycle::cue_revision;
 pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
 }
 
-#[derive(Default)]
-struct EchoRenderClock {
-    last_player_position: Option<Duration>,
-    last_submitted_frames: Option<u64>,
-    last_endpoint_padding_frames: Option<u32>,
-    /// Actual physical PCM prefix inserted ahead of the current reference.
-    /// Zero during all normal/non-diagnostic playback.
-    last_physical_prefix_offset_frames: Option<u32>,
-    /// Frames between the render observation and the first sample of the
-    /// reference frame most recently passed to AEC3. Unlike endpoint padding,
-    /// this excludes the reference frame itself.
-    last_reference_lead_frames: Option<u32>,
-    last_observed_at: Option<Instant>,
-    discontinuity_count: u64,
-    last_discontinuity_reason: Option<&'static str>,
-    render_authority_endpoint_id: Option<String>,
-    render_authority_renderer_instance_id: Option<String>,
-    render_authority_owner_generation: Option<u64>,
-    render_timeline_epoch: Option<u64>,
-    active_render_sessions: BTreeMap<u64, (String, String, u64, bool, Option<Duration>, Option<u64>)>,
-}
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct EchoRenderClockSnapshot {
-    pub(crate) player_position: Option<Duration>,
-    pub(crate) submitted_frames: Option<u64>,
-    pub(crate) endpoint_padding_frames: Option<u32>,
-    pub(crate) reference_lead_frames: Option<u32>,
-    pub(crate) timeline_epoch: Option<u64>,
-    pub(crate) last_observed_at: Option<Instant>,
-    pub(crate) discontinuity_count: u64,
-    pub(crate) last_discontinuity_reason: Option<&'static str>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OmniSessionLifecycle {

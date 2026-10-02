@@ -34,11 +34,12 @@ import {
   assertCellExternalProviderBudget,
   writeMatrixExternalProviderBudget,
 } from './watch-mode-external-provider-budget.mjs';
-import { LIVE_LLM_CELLS, createBalancedReleasePlan, normalizeReleaseSelection, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
+import { LIVE_LLM_CELLS, AEC_ITERATION_EXECUTION_SCOPE, AEC_ITERATION_MANIFEST_KIND, AEC_ITERATION_MANIFEST_SCHEMA_VERSION, MATRIX_EXECUTION_SCOPE, createBalancedReleasePlan, normalizeReleaseSelection, liveCellsForReleasePlan } from './watch-mode-balanced-release-plan.mjs';
 import {
   SHARD_CELL_RESULT_FILE,
   SHARD_EXECUTION_PLAN_FILE,
   atomicWriteJson,
+  aecThresholdFreezeBytes,
   canonicalJson,
   createWorkerReadinessRequest,
   currentShardOrchestrationImplementationHashes,
@@ -47,6 +48,7 @@ import {
   strictFailureIdentityProjection,
   validateShardCellResult,
   validateShardManifest,
+  verifySignedExecutionPlan,
 } from './watch-mode-shard-authority.mjs';
 import {
   COORDINATOR_FIRST_WAVE_STAGGER_MS,
@@ -101,6 +103,9 @@ import {
   deriveWatchProductionProviderPreflightBudgetMs,
   deriveWatchProductionRemoteCellTimeoutMs,
 } from './watch-mode-release-timeout-budget.mjs';
+
+export {AEC_ITERATION_MANIFEST_SCHEMA_VERSION, AEC_ITERATION_MANIFEST_KIND};
+export const AEC_ITERATION_CANONICAL_FILE = 'watch-mode-aec-c03-iteration-verified.json';
 
 export const PRODUCTION_COORDINATOR_RUNNER_ID =
   'scripts/testing/run-watch-mode-live-production-coordinator.mjs';
@@ -1064,7 +1069,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   const workerIds = new Set();
   const vmUuids = new Set();
   const sshHostKeys = new Set();
-  const workers = config.workers.map((worker, workerIndex) => {
+  let workers = config.workers.map((worker, workerIndex) => {
     exactKeys(worker, [
       'workerId',
       'transport',
@@ -1131,7 +1136,19 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
       deviceProfileInstances,
     };
   });
-  const assignments = workers.length === 1
+  const iteration = selection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  if (iteration) {
+    const selectedWorker = workers.find(w => w.workerId === selection.aecWorker);
+    if (!selectedWorker) throw new Error('AEC c03 selected fixed worker is missing from production config');
+    workers = [selectedWorker];
+  }
+  const assignments = iteration
+    ? liveCellsForReleasePlan(releasePlan).map(cell => {
+      const profiles = workers[0].deviceProfileInstances.filter(p => p.deviceClass === cell.deviceClass);
+      if (profiles.length !== 1) throw new Error('AEC c03 worker must bind exactly one default-speaker profile');
+      return {cellId: cell.cellId, workerId: selection.aecWorker, waveIndex: 0, deviceProfileInstanceId: profiles[0].instanceId};
+    })
+    : workers.length === 1
     ? defaultSingleWorkerAssignments(workers, selection)
     : workers.length === 2
       ? defaultTwoWorkerAssignments(workers, selection)
@@ -1150,7 +1167,7 @@ export function validateProductionWorkerConfig(config, { configDirectory = repoR
   if (assignedProfiles.length !== liveCellsForReleasePlan(releasePlan).length) {
     throw new Error('production worker assignments must bind every fixed cell to one profile');
   }
-  const preflightExecutor = workers.find((worker) => worker.workerId === config.providerPreflightExecutor.workerId);
+  const preflightExecutor = workers.find((worker) => worker.workerId === (iteration ? selection.aecWorker : config.providerPreflightExecutor.workerId));
   if (!preflightExecutor
     || (workers.length === 4 && preflightExecutor.transport.kind !== 'ssh')) {
     throw new Error('four-worker production provider preflight executor must be one explicitly configured SSH worker');
@@ -1602,7 +1619,9 @@ export async function runProductionEvidenceVerifier({
         manifestPath,
         { strict: true },
       ),
-      ...(releaseSelection?.modelId === 'qwen3.8-livetranslate-flash-realtime'
+      ...(releaseSelection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE
+        ? ['--execution-scope', AEC_ITERATION_EXECUTION_SCOPE, '--aec-worker', releaseSelection.aecWorker] : []),
+      ...(releaseSelection?.modelId === 'qwen3.8-livetranslate-flash-realtime' && releaseSelection.executionScope !== AEC_ITERATION_EXECUTION_SCOPE
         ? ['--latency-thresholds', 'audioToRenderFirstSeconds=20,audioToRenderFinalSeconds=60']
         : []),
     ],
@@ -1626,6 +1645,72 @@ export async function runProductionEvidenceVerifier({
     );
   }
   return result;
+}
+
+export function writeAecIterationManifest(options, {writeManifest = writeMatrixRunManifest} = {}) {
+  const selection = normalizeReleaseSelection(options.releaseSelection);
+  if (selection?.executionScope !== AEC_ITERATION_EXECUTION_SCOPE) throw new Error('AEC manifest requires explicit signed iteration scope');
+  const plan = createBalancedReleasePlan(selection);
+  const paid = liveCellsForReleasePlan(plan);
+  if (options.runDirectories?.length !== 1 || options.releaseCells?.length !== 1
+      || canonicalJson(options.releaseCells) !== canonicalJson(paid)) throw new Error('AEC manifest requires exactly the signed c03 cell');
+  const staged = writeManifest(options);
+  const fullPlan = createBalancedReleasePlan({modelId: selection.modelId, endpointHost: selection.endpointHost, region: selection.region});
+  const manifest = {...staged.manifest,
+    schemaVersion: AEC_ITERATION_MANIFEST_SCHEMA_VERSION, artifactKind: AEC_ITERATION_MANIFEST_KIND,
+    executionScope: AEC_ITERATION_EXECUTION_SCOPE, aecWorker: selection.aecWorker,
+    releaseEligible: false, matrixVerification: 'not-run',
+    notRunCellIds: liveCellsForReleasePlan(fullPlan).filter(c => c.cellId !== paid[0].cellId).map(c => c.cellId),
+    authority: {...staged.manifest.authority, executionScope: AEC_ITERATION_EXECUTION_SCOPE},
+  };
+  const manifestPath = path.join(path.dirname(staged.manifestPath), 'watch-mode-aec-c03-iteration-' + options.shardExecution.executionId + '.json');
+  atomicWriteJson(manifestPath, manifest);
+  // The generic writer is reused only for individual receipt construction; its
+  // matrix-named staging manifest must never be discoverable as matrix success.
+  if (path.resolve(staged.manifestPath) !== path.resolve(manifestPath)) fs.unlinkSync(staged.manifestPath);
+  return {manifestPath, manifest};
+}
+
+export async function publishSuccessfulAecIteration({outputRoot, manifestPath, verifiedAt,
+  currentProvenance, currentRuntimeBinaryHashes}) {
+  const root = path.resolve(outputRoot);
+  if (path.dirname(path.resolve(manifestPath)) !== root) throw new Error('AEC canonical manifest must be directly in its isolated evidence root');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const selection = normalizeReleaseSelection(manifest.releaseSelection);
+  if (selection?.executionScope !== AEC_ITERATION_EXECUTION_SCOPE
+      || manifest.artifactKind !== AEC_ITERATION_MANIFEST_KIND
+      || manifest.schemaVersion !== AEC_ITERATION_MANIFEST_SCHEMA_VERSION
+      || manifest.executionScope !== selection.executionScope || manifest.aecWorker !== selection.aecWorker
+      || manifest.releaseEligible !== false || manifest.matrixVerification !== 'not-run'
+      || manifest.cells?.length !== 1 || manifest.collectAll?.failed?.length !== 0
+      || manifest.collectAll?.passed?.length !== 1) throw new Error('AEC publication requires one passed c03, never a release matrix');
+  const {verifyStrictAecIterationAuthority, validateStrictAecIterationVerificationReceipt} = await import('./verify-watch-mode-evidence.mjs');
+  const authority = verifyStrictAecIterationAuthority({manifestPath, manifest, evidenceRoot: root,
+    currentProvenance, currentRuntimeBinaryHashes, workspaceRoot: repoRoot, now: verifiedAt.getTime(),
+    expectedAecWorker: selection.aecWorker});
+  const verification = validateStrictAecIterationVerificationReceipt({receiptPath: manifestPath + '.aec-verified.json',
+    manifestPath, manifest, currentProvenance, implementationHashes: authority.implementationHashes,
+    paidImplementationHashes: authority.paidImplementationHashes, runtimeBinaryHashes: currentRuntimeBinaryHashes});
+  const planPath = resolveAuthorityPath(root, manifest.shardExecution?.plan?.path, 'AEC signed plan');
+  const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+  verifySignedExecutionPlan(plan, {now: verifiedAt, currentProvenance, currentRuntimeBinaryHashes});
+  if (canonicalJson(plan.releaseSelection) !== canonicalJson(selection)
+      || plan.cells[0].cellId !== manifest.cells[0].cellId || plan.cells[0].workerId !== selection.aecWorker) {
+    throw new Error('AEC canonical publication is not bound to its signed one-cell plan');
+  }
+  const canonicalPath = path.join(root, AEC_ITERATION_CANONICAL_FILE);
+  const receiptAt = Date.parse(verification.receipt.verifiedAt);
+  if (!Number.isFinite(receiptAt) || receiptAt < Date.parse(manifest.generatedAt) || receiptAt > verifiedAt.getTime()) {
+    throw new Error('AEC publication verification timestamp is outside the source/publication window');
+  }
+  const verificationAuthority = fileAuthorityEntry(verification.receiptPath, path.basename(verification.receiptPath));
+  const sourceAuthority = fileAuthorityEntry(manifestPath, path.basename(manifestPath));
+  const verified = {...manifest, verification: 'passed', verifiedAt: verification.receipt.verifiedAt,
+    sourceManifest: sourceAuthority.path, sourceManifestBytes: sourceAuthority.bytes, sourceManifestSha256: sourceAuthority.sha256,
+    verificationReceiptPath: verificationAuthority.path, verificationReceiptBytes: verificationAuthority.bytes,
+    verificationReceiptSha256: verificationAuthority.sha256};
+  atomicWriteJson(canonicalPath, verified, {overwrite: true});
+  return {canonicalPath, manifest: verified};
 }
 
 function performFinalEvidenceStaging(payload, operations = {}) {
@@ -1683,6 +1768,7 @@ function performFinalEvidenceStaging(payload, operations = {}) {
       approvedModels: releasePlan.models,
       modelProtocolProfileIdentity: releaseCells[index].modelProtocolProfileIdentity,
       providerIdentity: payload.plan.providerIdentity,
+      releaseSelection,
     },
   ));
   const matrixBudget = (
@@ -1690,6 +1776,7 @@ function performFinalEvidenceStaging(payload, operations = {}) {
   )(payload.evidenceOutputRoot, rawBudgets, {
     fileName: `watch-mode-external-provider-budget-${payload.plan.executionId}.json`,
     expectedCells: releaseCells,
+    releaseSelection,
   });
   const budgetAuthority = fileAuthorityEntry(
     matrixBudget.filePath,
@@ -1701,7 +1788,11 @@ function performFinalEvidenceStaging(payload, operations = {}) {
     ledgerBytes: budgetAuthority.bytes,
     ledgerSha256: budgetAuthority.sha256,
   };
-  const manifestResult = (operations.writeMatrixRunManifest ?? writeMatrixRunManifest)({
+  const iteration = releaseSelection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  const writeManifest = iteration
+    ? options => writeAecIterationManifest(options, {writeManifest: operations.writeMatrixRunManifest ?? writeMatrixRunManifest})
+    : (operations.writeMatrixRunManifest ?? writeMatrixRunManifest);
+  const manifestResult = writeManifest({
     outputRoot: payload.evidenceOutputRoot,
     modelList: releasePlan.models,
     feedbackModeList: DEFAULT_FEEDBACK_MODES,
@@ -1728,8 +1819,11 @@ function performCanonicalManifestPublication(payload, operations = {}) {
   if (Number.isNaN(verifiedAt.getTime())) {
     throw new Error('canonical manifest publication requires a valid verifiedAt timestamp');
   }
-  return (operations.publishSuccessfulStrictMatrixManifest
-    ?? publishSuccessfulStrictMatrixManifest)({
+  const selection = normalizeReleaseSelection(payload.releaseSelection);
+  const publish = selection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE
+    ? (operations.publishSuccessfulAecIteration ?? publishSuccessfulAecIteration)
+    : (operations.publishSuccessfulStrictMatrixManifest ?? publishSuccessfulStrictMatrixManifest);
+  return publish({
     outputRoot: payload.evidenceOutputRoot,
     manifestPath: payload.manifestPath,
     verifiedAt,
@@ -3406,6 +3500,16 @@ ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
       signal,
       timeoutMs: PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
     });
+    if (cell.completionPolicy === 'aec-output-quiescent-v2') {
+      const bytes = aecThresholdFreezeBytes(cell, plan.coordinator.publicKeyPem, plan.authority.runtimeBinaryHashes);
+      const localFreeze = path.join(coordinatorExecutionRoot, ...cell.aecThresholdFreeze.artifact.path.split('/'));
+      fs.mkdirSync(path.dirname(localFreeze), {recursive: true});
+      if (!fs.existsSync(localFreeze)) fs.writeFileSync(localFreeze, bytes, {flag: 'wx'});
+      if (!fs.readFileSync(localFreeze).equals(bytes)) throw new Error('coordinator AEC threshold freeze bytes changed');
+      await upload(worker, localFreeze, path.win32.join(remoteRoot, ...cell.aecThresholdFreeze.artifact.path.split('/')), {
+        signal, timeoutMs: PRODUCTION_CELL_LEASE_UPLOAD_TIMEOUT_MS,
+      });
+    }
     remoteLeasePaths.set(lease.leaseId, remoteLeasePath);
     const interactiveCellTimeoutMs = deriveWatchProductionInteractiveCellTimeoutMs(cell);
     const remoteCellTimeoutMs = deriveWatchProductionRemoteCellTimeoutMs(cell);
@@ -4455,6 +4559,7 @@ async function runProductionCoordinatorCore({
   });
   const publicationPayload = {
     evidenceOutputRoot,
+    ...(selection ? {releaseSelection: selection} : {}),
     manifestPath: manifestResult.manifestPath,
     verifiedAt: now().toISOString(),
     currentProvenance: preparation.plan.provenance,
@@ -4496,6 +4601,13 @@ async function runProductionCoordinatorCore({
 }
 
 export async function runProductionCoordinator(options) {
+  const selection = normalizeReleaseSelection(options.releaseSelection);
+  if (selection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE) {
+    const base = options.evidenceOutputRoot ?? path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-live');
+    const suffix = path.join('aec-c03-iterations', selection.aecWorker);
+    options = {...options, evidenceOutputRoot: path.resolve(base).endsWith(path.sep + suffix)
+      ? base : path.join(base, suffix)};
+  }
   const deadlineNow = options.deadlineNow ?? Date.now;
   const coordinatorStartedAtMs = deadlineNow();
   const executionId = options.executionId ?? `watch-shard-${crypto.randomUUID()}`;
@@ -4625,6 +4737,8 @@ export function parseProductionCoordinatorCliArgs(argv) {
   const options = parseCliArgs(argv, {
     defaults: {
       model: '',
+      executionScope: MATRIX_EXECUTION_SCOPE,
+      aecWorker: '',
       endpointHost: '',
       region: '',
       workersConfig: '',
@@ -4635,17 +4749,29 @@ export function parseProductionCoordinatorCliArgs(argv) {
       executionId: '',
     },
   });
+  if (![MATRIX_EXECUTION_SCOPE, AEC_ITERATION_EXECUTION_SCOPE].includes(options.executionScope)) throw new Error('--execution-scope is not authorized');
+  const iteration = options.executionScope === AEC_ITERATION_EXECUTION_SCOPE;
+  if (iteration && (!['vm131', 'vm171'].includes(options.aecWorker) || options.model !== 'qwen3.8-livetranslate-flash-realtime')) {
+    throw new Error('AEC c03 iteration requires --aec-worker vm131|vm171 and exact --model qwen3.8-livetranslate-flash-realtime');
+  }
+  if (!iteration && options.aecWorker) throw new Error('--aec-worker requires --execution-scope aec-c03-iteration');
   const explicitSelection = ['model', 'endpointHost', 'region'].some((key) => options[key] !== '');
   if (explicitSelection) {
     if (!options.model) throw new Error('--model is required with endpoint/region selection');
     const plan = createBalancedReleasePlan({
       modelId: options.model,
+      ...(iteration ? {executionScope: options.executionScope, aecWorker: options.aecWorker} : {}),
       ...(options.endpointHost ? { endpointHost: options.endpointHost } : {}),
       ...(options.region ? { region: options.region } : {}),
     });
     if (options.model === 'qwen3.8-livetranslate-flash-realtime') {
-      options.releaseSelection = normalizeReleaseSelection({ modelId: options.model, ...plan.providerEndpoint });
+      options.releaseSelection = normalizeReleaseSelection({ modelId: options.model, ...plan.providerEndpoint,
+        ...(iteration ? {executionScope: options.executionScope, aecWorker: options.aecWorker} : {}),
+      });
     }
+  }
+  if (iteration) {
+    options.evidenceOutputRoot = path.join(options.evidenceOutputRoot, 'aec-c03-iterations', options.aecWorker);
   }
   return options;
 }

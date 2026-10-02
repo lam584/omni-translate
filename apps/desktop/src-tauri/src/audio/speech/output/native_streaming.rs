@@ -1,0 +1,584 @@
+//! One response, one WASAPI client and one AEC authority. No audio.done gate.
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+use super::*;
+use crate::audio::playback_ownership::{DesktopPlaybackOwnership, DesktopPlaybackPermit};
+
+const STARTUP_FRAMES: usize = 48_000 * 800 / 1_000;
+const STARTUP_MAX_WAIT: Duration = Duration::from_millis(1_000);
+const MAX_BUFFERED_FRAMES: usize = 48_000 * 5;
+const BLOCK_FRAMES: usize = 480;
+// Streaming cannot partition using an unknown final response length. Each of
+// the first two diagnostic phases consumes one startup window; nonlinear then
+// consumes the remaining response. Never replay PCM or reset the client.
+const SCENARIO_PHASE_FRAMES: u64 = STARTUP_FRAMES as u64;
+
+/// Typed source/provider/device/ACK milestones for one continuous response.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPlaybackTimeline {
+    pub(crate) cue_id: String,
+    pub(crate) response_id: String,
+    pub(crate) first_audio_delta_at_ms: u64,
+    pub(crate) first_audio_delta_qpc_100ns: Option<u64>,
+    pub(crate) first_audible_audio_delta_at_ms: Option<u64>,
+    pub(crate) first_audible_audio_delta_qpc_100ns: Option<u64>,
+    pub(crate) audio_done_at_ms: Option<u64>,
+    pub(crate) audio_done_qpc_100ns: Option<u64>,
+    pub(crate) render_start_at_ms: Option<u64>,
+    pub(crate) render_start_qpc_100ns: Option<u64>,
+    pub(crate) render_complete_at_ms: Option<u64>,
+    pub(crate) render_complete_qpc_100ns: Option<u64>,
+    pub(crate) renderer_ack_at_ms: Option<u64>,
+    pub(crate) renderer_ack_qpc_100ns: Option<u64>,
+    pub(crate) renderer_ack_receipt_id: Option<String>,
+    pub(crate) continuous_stream_id: Option<String>,
+    pub(crate) render_session_id: Option<u64>,
+    pub(crate) physical_playback_device_id: Option<String>,
+    pub(crate) renderer_instance_id: Option<String>,
+    pub(crate) renderer_owner_generation: Option<u64>,
+    pub(crate) stream_start_count: u32,
+    pub(crate) accepted_source_frames: u64,
+    pub(crate) source_sample_rate_hz: u32,
+    pub(crate) render_sample_rate_hz: u32,
+    pub(crate) rendered_frames: u64,
+    pub(crate) aborted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopStreamActivity { Opened, EndQueued, Completed, Aborted }
+
+/// Both sides of the SAME successful device write, not a reconstructed tap.
+/// Prefix-only writes have an empty reference; they must not count as speech.
+pub(crate) struct DesktopStreamTap<'a> {
+    pub(crate) render_session_id: u64,
+    pub(crate) renderer_owner_generation: u64,
+    pub(crate) renderer_instance_id: &'a str,
+    pub(crate) physical_playback_device_id: &'a str,
+    pub(crate) reference_start_frame: u64,
+    pub(crate) reference_end_frame: u64,
+    pub(crate) physical_start_frame: u64,
+    pub(crate) physical_end_frame: u64,
+    pub(crate) stage: Option<&'static str>,
+    pub(crate) stage_ordinal: Option<u64>,
+    pub(crate) delay_ms: u32,
+    pub(crate) nonlinearity: &'static str,
+    pub(crate) reference_samples: &'a [f32],
+    pub(crate) physical_samples: &'a [f32],
+    pub(crate) submitted_frames: u64,
+    pub(crate) endpoint_padding_frames: u32,
+    pub(crate) physical_prefix_offset_frames: u32,
+    pub(crate) submitted_qpc_100ns: Option<u64>,
+    pub(crate) observed_at: Instant,
+}
+
+pub(crate) enum DesktopStreamingEvent<'a> {
+    Render(SpeakerRenderEvent<'a>),
+    Tap(DesktopStreamTap<'a>),
+    Activity(DesktopStreamActivity),
+}
+
+#[derive(Default)]
+struct StreamPcmQueue {
+    reference: VecDeque<f32>,
+    previous: Option<f32>,
+    ended: bool,
+    accepted_source_frames: u64,
+    submitted_source_frames: u64,
+}
+
+impl StreamPcmQueue {
+    fn buffered_frames(&self) -> usize { self.reference.len() / 2 }
+    fn can_accept(&self, source_frames: usize) -> bool {
+        !self.ended && self.buffered_frames().saturating_add(source_frames.saturating_mul(2))
+            <= MAX_BUFFERED_FRAMES
+    }
+    fn push(&mut self, samples: &[i16]) -> Result<(), String> {
+        if !self.can_accept(samples.len()) {
+            return Err("native desktop stream is ended or exceeds its five-second PCM bound".into());
+        }
+        // Stateful 24k->48k linear interpolation: retain exactly one input
+        // sample across deltas. Chunk boundaries never duplicate/drop a frame.
+        for sample in samples {
+            let next = *sample as f32 / i16::MAX as f32;
+            if let Some(previous) = self.previous.replace(next) {
+                let interpolated = previous + (next - previous) * 0.5;
+                self.reference.extend([interpolated, interpolated, next, next]);
+            } else { self.reference.extend([next, next]); }
+        }
+        self.accepted_source_frames += samples.len() as u64;
+        Ok(())
+    }
+    fn end(&mut self) -> Result<(), String> {
+        if self.ended { return Err("duplicate native desktop End".into()); }
+        if let Some(last) = self.previous.take() { self.reference.extend([last; 2]); }
+        self.ended = true;
+        Ok(())
+    }
+    fn should_start(&self, elapsed: Duration) -> bool {
+        self.buffered_frames() > 0 && (self.accepted_source_frames >= (STARTUP_FRAMES / 2) as u64
+            || elapsed >= STARTUP_MAX_WAIT || self.ended)
+    }
+    fn take_reference(&mut self, max_frames: usize, allow_partial: bool) -> Vec<f32> {
+        let count = self.buffered_frames().min(max_frames);
+        if count < BLOCK_FRAMES && !self.ended && !allow_partial { return Vec::new(); }
+        self.reference.drain(..count * 2).collect()
+    }
+}
+
+#[derive(Default)]
+struct ScenarioStage {
+    index: usize,
+    started_at_ms: u64,
+    end_submit_frame: u64,
+    reference_frames: u64,
+    physical_frames: u64,
+    changed_samples: u64,
+    prefix_remaining: usize,
+    prefix_offset: u32,
+}
+
+// Injectable only at the device boundary: tests exercise the production pump,
+// startup policy, submit clock, tap ordering and receipt rules without hardware.
+trait StreamingEndpoint {
+    fn buffer_frames(&self) -> u32;
+    fn padding(&self) -> Result<u32, String>;
+    fn write(&self, frames: usize, bytes: &[u8]) -> Result<(), String>;
+    fn start(&self) -> Result<(), String>;
+    fn stop(&self) -> Result<(), String>;
+    fn reset(&self) -> Result<(), String>;
+}
+impl StreamingEndpoint for endpoint_recovery::PreparedSpeakerRender {
+    fn buffer_frames(&self) -> u32 { self.buffer_frames }
+    fn padding(&self) -> Result<u32, String> { self.audio_client.get_current_padding().map_err(|e| e.to_string()) }
+    fn write(&self, frames: usize, bytes: &[u8]) -> Result<(), String> {
+        self.render_client.write_to_device(frames, bytes, None).map_err(|e| e.to_string())
+    }
+    fn start(&self) -> Result<(), String> { self.audio_client.start_stream().map_err(|e| e.to_string()) }
+    fn stop(&self) -> Result<(), String> { self.audio_client.stop_stream().map_err(|e| e.to_string()) }
+    fn reset(&self) -> Result<(), String> { self.audio_client.reset_stream().map_err(|e| e.to_string()) }
+}
+
+pub(crate) struct NativeDesktopStream {
+    // Explicitly released before the permit (including the COM apartment).
+    prepared: Option<Box<dyn StreamingEndpoint>>,
+    permit: DesktopPlaybackPermit,
+    cue_id: String,
+    renderer_instance_id: String,
+    session_id: u64,
+    endpoint_id: String,
+    queue: StreamPcmQueue,
+    first_audio_at: Option<Instant>,
+    started: bool,
+    terminal: bool,
+    submitted_frames: u64,
+    scenario: Vec<aec_live_scenario::AecLiveScenarioAssignment>,
+    stage: ScenarioStage,
+    deferred: DeferredRenderFrames,
+    underrun: RenderUnderrunTracker,
+}
+
+impl NativeDesktopStream {
+    pub(crate) fn open<F>(device_id: Option<&str>, ownership: &DesktopPlaybackOwnership,
+        cue_id: &str, first_audio_at: Instant, events: &mut F) -> Result<Self, String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        let permit = ownership.acquire(cue_id, "native-omni-stream")?;
+        let prepared = permit.submit(|| {
+            let com_apartment = WasapiComApartment::enter()?;
+            let enumerator = DeviceEnumerator::new().map_err(|e| e.to_string())?;
+            let device = resolve_wasapi_render_device(&enumerator, device_id)?;
+            let endpoint_id = device.get_id().map_err(|e| e.to_string())?;
+            let mut audio_client = device.get_iaudioclient().map_err(|e| e.to_string())?;
+            let format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
+            let buffer_duration_hns = calculate_period_100ns(48_000 * RENDER_BUFFER_MS / 1_000, 48_000);
+            audio_client.initialize_client(&format, &WasapiDirection::Render,
+                &StreamMode::PollingShared { autoconvert: true, buffer_duration_hns }).map_err(|e| e.to_string())?;
+            let render_client = audio_client.get_audiorenderclient().map_err(|e| e.to_string())?;
+            let buffer_frames = audio_client.get_buffer_size().map_err(|e| e.to_string())?;
+            if buffer_frames == 0 { return Err("native desktop endpoint has a zero-frame buffer".into()); }
+            Ok(endpoint_recovery::PreparedSpeakerRender { endpoint_id, audio_client, render_client,
+                buffer_frames, _com_apartment: com_apartment })
+        })?;
+        let scenario = active_aec_live_scenario_assignments(cue_id)?;
+        let mut stream = Self { endpoint_id: prepared.endpoint_id.clone(), prepared: Some(Box::new(prepared)),
+            permit, cue_id: cue_id.into(), renderer_instance_id: format!("desktop-process-{}", std::process::id()),
+            session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: Some(first_audio_at),
+            started: false, terminal: false, submitted_frames: 0, scenario, stage: ScenarioStage::default(),
+            deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default() };
+        events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+            reason: crate::audio::state::EchoRenderBoundary::SessionStarted {
+                session_id: stream.session_id, endpoint_id: &stream.endpoint_id,
+                renderer_instance_id: &stream.renderer_instance_id, owner_generation: stream.permit.generation(),
+            }, observed_at: Instant::now(),
+        }))?;
+        events(DesktopStreamingEvent::Activity(DesktopStreamActivity::Opened))?;
+        if !stream.scenario.is_empty() { stream.start_stage(events)?; }
+        Ok(stream)
+    }
+
+    pub(crate) fn can_accept(&self, source_frames: usize) -> bool { self.queue.can_accept(source_frames) }
+    pub(crate) fn push_pcm(&mut self, samples: &[i16], sample_rate_hz: u32) -> Result<(), String> {
+        self.permit.ensure_active()?;
+        if sample_rate_hz != 24_000 { return Err("native desktop stream requires provider 24k mono PCM".into()); }
+        if self.terminal { return Err("native desktop stream already terminated".into()); }
+        self.queue.push(samples)?;
+        if !samples.is_empty() { self.first_audio_at.get_or_insert_with(Instant::now); }
+        Ok(())
+    }
+    pub(crate) fn end<F>(&mut self, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        self.queue.end()?;
+        events(DesktopStreamingEvent::Activity(DesktopStreamActivity::EndQueued))
+    }
+
+    fn start_stage<F>(&mut self, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        let phase = self.scenario[self.stage.index].phase;
+        self.stage.started_at_ms = crate::shared::time::now_unix_millis();
+        self.stage.prefix_remaining = 48 * phase.delay_ms() as usize;
+        self.stage.prefix_offset = self.stage.prefix_remaining as u32;
+        self.stage.physical_frames = 0;
+        self.stage.reference_frames = 0;
+        self.stage.changed_samples = 0;
+        self.stage_event("started", events)
+    }
+    fn stage_event<F>(&self, status: &'static str, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        let assignment = self.scenario[self.stage.index];
+        events(DesktopStreamingEvent::Render(SpeakerRenderEvent::AecLiveScenarioStage {
+            status, stage: assignment.phase.as_str(), ordinal: assignment.ordinal,
+            delay_ms: assignment.phase.delay_ms(), nonlinearity: assignment.phase.nonlinearity(),
+            reference_frames: self.stage.reference_frames, physical_frames: self.stage.physical_frames,
+            changed_samples: self.stage.changed_samples,
+            changed_ratio: if self.stage.reference_frames == 0 { 0.0 } else {
+                self.stage.changed_samples as f64 / (self.stage.reference_frames * 2) as f64 },
+            started_at_ms: self.stage.started_at_ms,
+            completed_at_ms: if status == "completed" { crate::shared::time::now_unix_millis() } else { 0 },
+        }))
+    }
+
+    /// Nonblocking device pump. Completion is returned only after End and
+    /// same-client padding reaches zero (not merely after writes are accepted).
+    pub(crate) fn poll<F>(&mut self, events: &mut F) -> Result<Option<SpeakerPlaybackReceipt>, String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        if self.terminal { return Err("poll after native desktop terminal".into()); }
+        let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
+        self.permit.ensure_active()?;
+        if !self.started && !self.queue.should_start(self.first_audio_at.map(|t| t.elapsed()).unwrap_or_default()) {
+            return Ok(None);
+        }
+        let padding = prepared.padding()?;
+        let played = self.submitted_frames.saturating_sub(padding as u64);
+        let mut deliberate_stage_transition = false;
+        // Phase transitions are audible/drained physical boundaries, not a
+        // fresh client, receipt or rewind of the cumulative submit position.
+        if !self.scenario.is_empty() && self.stage.index < 2
+            && self.stage.reference_frames >= SCENARIO_PHASE_FRAMES {
+            if played < self.stage.end_submit_frame { return Ok(None); }
+            self.stage_event("completed", events)?;
+            self.stage.index += 1;
+            self.start_stage(events)?;
+            deliberate_stage_transition = true;
+        }
+        let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
+        let available = prepared.buffer_frames().saturating_sub(padding) as usize;
+        if !self.queue.ended && !deliberate_stage_transition
+            && self.underrun.observe(self.started, self.submitted_frames as usize, padding) {
+            events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason: crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"), observed_at: Instant::now(),
+            }))?;
+        }
+        let startup_timed_out = !self.started && self.first_audio_at.is_some_and(|t| t.elapsed() >= STARTUP_MAX_WAIT);
+        let prefix = !self.scenario.is_empty() && self.stage.prefix_remaining > 0;
+        let frames = if prefix { self.stage.prefix_remaining.min(BLOCK_FRAMES) }
+            else { self.queue.buffered_frames().min(BLOCK_FRAMES) };
+        if frames > 0 && available >= frames && (prefix || frames == BLOCK_FRAMES || self.queue.ended || startup_timed_out) {
+            let reference = if prefix { Vec::new() } else { self.queue.take_reference(frames, startup_timed_out) };
+            let physical = if prefix { vec![0.0; frames * 2] } else if !self.scenario.is_empty() && self.stage.index == 2 {
+                reference.iter().map(|s| {
+                    let driven = s.clamp(-1.0, 1.0) * 2.4;
+                    ((driven / (1.0 + driven.abs())) * 1.35).clamp(-0.92, 0.92)
+                }).collect::<Vec<_>>()
+            } else { reference.clone() };
+            let bytes = f32_samples_to_le_bytes(&physical);
+            self.permit.submit(|| prepared.write(frames, &bytes))?;
+            self.submitted_frames += frames as u64;
+            self.queue.submitted_source_frames += (reference.len() / 2) as u64;
+            if !self.scenario.is_empty() {
+                self.stage.prefix_remaining = self.stage.prefix_remaining.saturating_sub(frames);
+                self.stage.reference_frames += (reference.len() / 2) as u64;
+                self.stage.physical_frames += frames as u64;
+                self.stage.changed_samples += physical.iter().zip(&reference).filter(|(a,b)| a.to_bits() != b.to_bits()).count() as u64;
+                self.stage.end_submit_frame = self.submitted_frames;
+            }
+            let observed_at = Instant::now();
+            let submitted_qpc_100ns = crate::audio::engine::aec_timing::qpc_now_100ns();
+            let endpoint_padding_frames = prepared.padding()?;
+            if endpoint_padding_frames as u64 > self.submitted_frames { return Err("native desktop padding exceeds submit clock".into()); }
+            if !self.started {
+                self.permit.submit(|| prepared.start())?;
+                let mut render = |event: SpeakerRenderEvent<'_>| events(DesktopStreamingEvent::Render(event));
+                publish_render_stream_started_and_flush(&mut self.started, self.session_id, &self.endpoint_id,
+                    &self.renderer_instance_id, self.permit.generation(), &mut self.deferred, &mut render)?;
+            }
+            events(DesktopStreamingEvent::Tap(DesktopStreamTap { render_session_id: self.session_id,
+                renderer_owner_generation: self.permit.generation(), renderer_instance_id: &self.renderer_instance_id,
+                physical_playback_device_id: &self.endpoint_id,
+                reference_start_frame: self.queue.submitted_source_frames.saturating_sub((reference.len() / 2) as u64),
+                reference_end_frame: self.queue.submitted_source_frames,
+                physical_start_frame: self.submitted_frames.saturating_sub(frames as u64),
+                physical_end_frame: self.submitted_frames,
+                stage: self.scenario.get(self.stage.index).map(|s| s.phase.as_str()),
+                stage_ordinal: self.scenario.get(self.stage.index).map(|s| s.ordinal),
+                delay_ms: self.scenario.get(self.stage.index).map_or(0, |s| s.phase.delay_ms()),
+                nonlinearity: self.scenario.get(self.stage.index).map_or("none", |s| s.phase.nonlinearity()),
+                reference_samples: &reference, physical_samples: &physical, submitted_frames: self.submitted_frames,
+                endpoint_padding_frames, physical_prefix_offset_frames: self.stage.prefix_offset,
+                submitted_qpc_100ns, observed_at }))?;
+            if !reference.is_empty() {
+                let mut render = |event: SpeakerRenderEvent<'_>| events(DesktopStreamingEvent::Render(event));
+                self.deferred.publish_or_defer(self.started, self.session_id, &reference, 48_000, 2,
+                    audio_frames_to_duration(self.submitted_frames.saturating_sub(endpoint_padding_frames as u64) as usize),
+                    self.submitted_frames, submitted_qpc_100ns, endpoint_padding_frames,
+                    self.stage.prefix_offset, observed_at, &mut render)?;
+            }
+            return Ok(None);
+        }
+        if self.queue.ended && self.queue.buffered_frames() == 0 && padding == 0 {
+            if self.queue.submitted_source_frames != self.queue.accepted_source_frames * 2 {
+                return Err("native desktop receipt frame count does not match admitted PCM".into());
+            }
+            if !self.scenario.is_empty() {
+                if self.stage.index != 2 || self.stage.reference_frames < BLOCK_FRAMES as u64 {
+                    return Err("AEC streaming response too short for all three physical stages".into());
+                }
+                self.stage_event("completed", events)?;
+            }
+            prepared.stop()?;
+            let receipt = SpeakerPlaybackReceipt { rendered_frames: self.queue.submitted_source_frames,
+                output_sample_rate_hz: 48_000, output_channel_count: 2, physical_playback_device_id: self.endpoint_id.clone(),
+                renderer_instance_id: self.renderer_instance_id.clone(), renderer_owner_generation: self.permit.generation() };
+            self.finish(true, events)?;
+            return Ok(Some(receipt));
+        }
+        Ok(None)
+    }
+
+    fn finish<F>(&mut self, completed: bool, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        if self.terminal { return Ok(()); }
+        self.terminal = true;
+        // Always release OS client before reporting terminal quiescence.
+        self.prepared.take();
+        let reservation = if self.scenario.is_empty() { Ok(()) } else { finish_aec_live_scenario_assignments(&self.cue_id, completed) };
+        let boundary = events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+            reason: crate::audio::state::EchoRenderBoundary::SessionEnded { session_id: self.session_id,
+                endpoint_id: &self.endpoint_id, renderer_instance_id: &self.renderer_instance_id,
+                owner_generation: self.permit.generation(), normally_drained: completed, stream_started: self.started },
+            observed_at: Instant::now(),
+        }));
+        let activity = events(DesktopStreamingEvent::Activity(if completed { DesktopStreamActivity::Completed } else { DesktopStreamActivity::Aborted }));
+        reservation.and(boundary).and(activity)
+    }
+    pub(crate) fn abort<F>(&mut self, events: &mut F) -> Result<(), String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        let mut cleanup = Ok(());
+        if let Some(prepared) = &self.prepared {
+            if self.started { cleanup = prepared.stop(); }
+            if let Err(e) = prepared.reset() { cleanup = Err(e); }
+        }
+        if let Err(error) = &cleanup { self.permit.record_cancellation_failure(error); }
+        self.queue.reference.clear(); self.queue.previous = None;
+        let terminal = self.finish(false, events);
+        cleanup.and(terminal)
+    }
+}
+
+impl Drop for NativeDesktopStream {
+    fn drop(&mut self) {
+        if !self.terminal { let _ = self.abort(&mut |_| Ok(())); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn audio_before_done_starts_at_800ms_or_1000ms_max_wait() {
+        let mut q = StreamPcmQueue::default();
+        q.push(&vec![100; 19_200]).unwrap();
+        assert!(q.should_start(Duration::ZERO));
+        assert!(!q.ended);
+        let mut short = StreamPcmQueue::default(); short.push(&[100; 240]).unwrap();
+        assert!(!short.should_start(Duration::from_millis(999)));
+        assert!(short.should_start(Duration::from_millis(1000)));
+    }
+    #[test]
+    fn short_end_flushes_tail_once_without_whole_response_replay() {
+        let mut q = StreamPcmQueue::default(); q.push(&[100; 17]).unwrap();
+        assert!(!q.should_start(Duration::ZERO)); q.end().unwrap();
+        assert!(q.should_start(Duration::ZERO));
+        assert_eq!(q.take_reference(480, false).len(), 17 * 4);
+        assert!(q.take_reference(480, false).is_empty());
+        assert!(q.end().is_err()); assert!(q.push(&[100]).is_err());
+    }
+    #[test]
+    fn delta_partitioning_never_duplicates_or_loses_pcm() {
+        let source = (0..24_037).map(|i| (i % 2000) as i16 - 1000).collect::<Vec<_>>();
+        let mut whole = StreamPcmQueue::default(); whole.push(&source).unwrap(); whole.end().unwrap();
+        let mut split = StreamPcmQueue::default();
+        for delta in source.chunks(137) { split.push(delta).unwrap(); }
+        split.end().unwrap();
+        assert_eq!(split.reference, whole.reference);
+        assert_eq!(split.buffered_frames(), source.len() * 2);
+        assert_eq!(split.reference.into_iter().collect::<Vec<_>>(), speaker_pcm_48k_stereo(&source, 24_000, 1, 100));
+    }
+    #[test]
+    fn ownership_cancellation_prevents_new_submissions_and_releases_permit() {
+        let owner = DesktopPlaybackOwnership::default(); let permit = owner.acquire("cue", "test").unwrap();
+        assert!(owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+        assert!(permit.ensure_active().is_err());
+        assert!(permit.submit(|| Ok::<_,String>(())).is_err());
+        drop(permit);
+        assert!(owner.cancel_and_drain_for_process_exclusion(Duration::from_millis(10)).is_ok());
+    }
+    #[test]
+    fn pcm_queue_is_bounded_and_end_does_not_reopen_it() {
+        let mut q = StreamPcmQueue::default(); q.push(&vec![1; 120_000]).unwrap();
+        assert!(!q.can_accept(2)); assert!(q.push(&[1, 2]).is_err());
+        q.end().unwrap(); assert!(!q.can_accept(0));
+    }
+    #[derive(Default)]
+    struct FakeDeviceState { padding: u32, writes: Vec<Vec<f32>>, starts: u32, stops: u32, resets: u32 }
+    struct FakeEndpoint(std::rc::Rc<std::cell::RefCell<FakeDeviceState>>);
+    impl StreamingEndpoint for FakeEndpoint {
+        fn buffer_frames(&self) -> u32 { 960 }
+        fn padding(&self) -> Result<u32,String> { Ok(self.0.borrow().padding) }
+        fn write(&self, frames: usize, bytes: &[u8]) -> Result<(),String> {
+            let mut s = self.0.borrow_mut();
+            if s.padding as usize + frames > 960 { return Err("fake device overflow".into()); }
+            s.padding += frames as u32;
+            s.writes.push(bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect());
+            Ok(())
+        }
+        fn start(&self) -> Result<(),String> { self.0.borrow_mut().starts += 1; Ok(()) }
+        fn stop(&self) -> Result<(),String> { self.0.borrow_mut().stops += 1; Ok(()) }
+        fn reset(&self) -> Result<(),String> { let mut s=self.0.borrow_mut(); s.resets+=1; s.padding=0; Ok(()) }
+    }
+    fn fake_stream(owner: &DesktopPlaybackOwnership) -> (NativeDesktopStream, std::rc::Rc<std::cell::RefCell<FakeDeviceState>>) {
+        let device = std::rc::Rc::new(std::cell::RefCell::new(FakeDeviceState::default()));
+        (NativeDesktopStream { prepared: Some(Box::new(FakeEndpoint(device.clone()))),
+            permit: owner.acquire("cue-offline", "native-stream-offline").unwrap(), cue_id: "cue-offline".into(),
+            renderer_instance_id: "offline-renderer".into(), endpoint_id: "offline-endpoint".into(),
+            session_id: next_render_session_id(), queue: StreamPcmQueue::default(), first_audio_at: None,
+            started: false, terminal: false, submitted_frames: 0, scenario: Vec::new(),
+            stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(),
+        }, device)
+    }
+    #[test]
+    fn production_pump_renders_before_done_then_drains_exactly_once_in_one_session() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream, device)=fake_stream(&owner);
+        let mut starts=0; let mut complete=0; let mut references=Vec::new(); let mut sessions=Vec::new();
+        let mut callback = |event: DesktopStreamingEvent<'_>| {
+            match event {
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason: crate::audio::state::EchoRenderBoundary::StreamStarted { session_id, .. }, .. }) => {
+                        starts+=1; sessions.push(session_id);
+                    }
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Frame { render_session_id, samples, .. }) => {
+                    sessions.push(render_session_id); references.extend_from_slice(samples);
+                }
+                DesktopStreamingEvent::Activity(DesktopStreamActivity::Completed) => complete+=1,
+                _ => {}
+            }
+            Ok(())
+        };
+        let source = (0..19_200).map(|i| (i%2000) as i16 - 1000).collect::<Vec<_>>();
+        // 800ms startup is measured in audio, not number of deltas or audio.done.
+        for delta in source.chunks(240) { stream.push_pcm(delta, 24_000).unwrap(); }
+        assert!(stream.poll(&mut callback).unwrap().is_none());
+        assert_eq!(device.borrow().starts, 1);
+        assert!(!stream.queue.ended);
+        for _ in 0..20 { device.borrow_mut().padding=0; stream.poll(&mut callback).unwrap(); }
+        stream.end(&mut callback).unwrap();
+        let receipt = loop { device.borrow_mut().padding=0;
+            if let Some(receipt)=stream.poll(&mut callback).unwrap() { break receipt; }
+        };
+        drop(callback);
+        assert_eq!(starts,1); assert_eq!(complete,1);
+        assert!(sessions.iter().all(|s| *s==stream.session_id));
+        assert_eq!(receipt.rendered_frames, 38_400);
+        assert_eq!(references, speaker_pcm_48k_stereo(&source,24_000,1,100));
+        assert_eq!(device.borrow().writes.iter().flatten().copied().collect::<Vec<_>>(), references);
+        assert!(stream.poll(&mut |_| Ok(())).is_err());
+    }
+    #[test]
+    fn short_response_has_no_receipt_until_end_and_real_padding_drain() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.push_pcm(&[12;17],24_000).unwrap();
+        assert!(stream.poll(&mut |_|Ok(())).unwrap().is_none()); assert_eq!(device.borrow().starts,0);
+        stream.end(&mut |_|Ok(())).unwrap();
+        assert!(stream.poll(&mut |_|Ok(())).unwrap().is_none());
+        assert_eq!(device.borrow().padding,34);
+        assert!(stream.poll(&mut |_|Ok(())).unwrap().is_none());
+        device.borrow_mut().padding=0;
+        assert_eq!(stream.poll(&mut |_|Ok(())).unwrap().unwrap().rendered_frames,34);
+        assert_eq!(device.borrow().writes.len(),1);
+    }
+    #[test]
+    fn live_short_start_obeys_max_wait_without_waiting_for_done() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.push_pcm(&[12;240],24_000).unwrap();
+        stream.first_audio_at=Some(Instant::now()-Duration::from_millis(1000));
+        stream.poll(&mut |_|Ok(())).unwrap();
+        // A max-wait timeout also submits a sub-block without synthesizing
+        // provider PCM or waiting for a further delta/audio.done.
+        assert_eq!(device.borrow().starts,1); assert!(!stream.queue.ended);
+    }
+    #[test]
+    fn abort_cancels_device_and_never_issues_a_completion_receipt() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.push_pcm(&vec![1;19_200],24_000).unwrap(); stream.poll(&mut |_|Ok(())).unwrap();
+        assert!(owner.cancel_and_drain_for_process_exclusion(Duration::ZERO).is_err());
+        assert!(stream.poll(&mut |_|Ok(())).is_err());
+        let before=device.borrow().writes.len(); let mut aborted=0;
+        stream.abort(&mut |event| { if matches!(event,DesktopStreamingEvent::Activity(DesktopStreamActivity::Aborted)) { aborted+=1; } Ok(()) }).unwrap();
+        assert_eq!(aborted,1); assert_eq!(device.borrow().writes.len(),before);
+        assert_eq!(device.borrow().resets,1); assert_eq!(device.borrow().stops,1);
+        assert!(stream.push_pcm(&[1],24_000).is_err());
+        drop(stream); owner.cancel_and_drain_for_process_exclusion(Duration::from_millis(10)).unwrap();
+    }
+    #[test]
+    fn physical_three_stage_stream_preserves_linear_reference_and_real_prefixes() {
+        use crate::audio::speech::aec_live_scenario::{AecLiveScenarioAssignment,AecLiveScenarioPhase};
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.scenario=vec![
+            AecLiveScenarioAssignment{ordinal:1,phase:AecLiveScenarioPhase::DoubleTalk},
+            AecLiveScenarioAssignment{ordinal:2,phase:AecLiveScenarioPhase::DynamicDelay},
+            AecLiveScenarioAssignment{ordinal:3,phase:AecLiveScenarioPhase::Nonlinear},
+        ];
+        let mut reference=Vec::new(); let mut physical=Vec::new(); let mut completed=Vec::new();
+        let mut callback=|event: DesktopStreamingEvent<'_>| {
+            match event {
+                DesktopStreamingEvent::Tap(tap) => { reference.extend_from_slice(tap.reference_samples); physical.extend_from_slice(tap.physical_samples); }
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::AecLiveScenarioStage {status:"completed", delay_ms, reference_frames,physical_frames,changed_samples,..}) => {
+                    completed.push((delay_ms,reference_frames,physical_frames,changed_samples));
+                }
+                _=>{}
+            } Ok(())
+        };
+        stream.start_stage(&mut callback).unwrap();
+        let source=vec![10_000;72_000]; stream.push_pcm(&source,24_000).unwrap(); stream.end(&mut callback).unwrap();
+        let receipt=loop { device.borrow_mut().padding=0; if let Some(r)=stream.poll(&mut callback).unwrap(){break r;} };
+        drop(callback);
+        assert_eq!(receipt.rendered_frames,144_000); assert_eq!(device.borrow().starts,1);
+        assert_eq!(reference,speaker_pcm_48k_stereo(&source,24_000,1,100));
+        assert_eq!(physical.len()/2,144_000+11_520);
+        assert_eq!(completed.len(),3); assert_eq!(completed[0].0,0);
+        assert_eq!(completed[1].0,80); assert_eq!(completed[2].0,160);
+        assert_eq!(completed[0].3,0); assert_eq!(completed[1].3,0); assert!(completed[2].3>0);
+        assert_eq!(completed.iter().map(|s|s.1).sum::<u64>(),144_000);
+        assert_eq!(completed.iter().map(|s|s.2).sum::<u64>(),155_520);
+    }
+
+}

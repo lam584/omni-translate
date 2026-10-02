@@ -49,6 +49,73 @@ const MAX_ECHO_RENDER_REFERENCE_LEAD_FRAMES: u64 =
     crate::audio::echo_cancel::TARGET_SAMPLE_RATE_HZ as u64;
 
 impl AudioStateStore {
+    /// Successful WASAPI physical PCM, with session/owner/frame/QPC metadata.
+    pub(crate) fn record_aec_physical_output(&self, samples: &[f32], mut metadata: serde_json::Value) {
+        // Streaming events expose distinct linear-source and physical clocks.
+        // Preserve both, normalize the sidecar span to the successful write.
+        if metadata["physicalStartFrame"].is_u64() && metadata["physicalEndFrame"].is_u64() {
+            metadata["linearReferenceStartFrame"]=metadata["referenceStartFrame"].clone();
+            metadata["linearReferenceEndFrame"]=metadata["referenceEndFrame"].clone();
+            metadata["referenceStartFrame"]=metadata["physicalStartFrame"].clone();
+            metadata["referenceEndFrame"]=metadata["physicalEndFrame"].clone();
+        }
+        if let (Some(submitted),Some(padding))=(metadata["submittedFrames"].as_u64(),metadata["endpointPaddingFrames"].as_u64()) {
+            metadata["playedFrames"]=serde_json::json!(submitted.checked_sub(padding));
+        }
+        self.aec_diagnostic_tap.record_physical(samples, metadata);
+    }
+
+    /// Successful provider send, with original post span and provider session.
+    pub(crate) fn record_aec_provider_input(&self, samples: &[i16], metadata: serde_json::Value) {
+        self.aec_diagnostic_tap.record_provider(samples, metadata);
+    }
+
+    pub(crate) fn aec_provider_lineage_required(&self) -> bool {
+        self.aec_diagnostic_tap.provider_lineage_required()
+    }
+
+    pub(crate) fn dispatch_aec_provider_packet(&self, packet: Option<crate::audio::aec_diagnostic_tap::AecPostPacket>, raw: &[u8]) -> Result<(), String> {
+        self.aec_diagnostic_tap.dispatch_provider_packet(packet, raw)
+    }
+
+    pub(crate) fn bind_aec_provider_receive(&self, raw: &Vec<u8>) -> Result<(), String> {
+        self.aec_diagnostic_tap.bind_provider_receive(raw)
+    }
+
+    pub(crate) fn aec_provider_packet(&self, raw: &Vec<u8>) -> Result<Option<crate::audio::aec_diagnostic_tap::AecPostPacket>, String> {
+        self.aec_diagnostic_tap.provider_packet(raw)
+    }
+
+    pub(crate) fn validate_aec_provider_wire(&self, packet: Option<&crate::audio::aec_diagnostic_tap::AecPostPacket>, raw: &[u8], wire: &[i16], rate: u32) -> Result<(), String> {
+        self.aec_diagnostic_tap.validate_provider_wire(packet, raw, wire, rate)
+    }
+
+    pub(crate) fn record_aec_provider_input_from_packet(&self, wire: &[i16], raw: &Vec<u8>,
+        packet: &crate::audio::aec_diagnostic_tap::AecPostPacket, session: &str, rate: u32, sent_qpc: u64) -> Result<(), String> {
+        if let Some(metadata) = self.aec_diagnostic_tap.commit_provider_packet(wire, raw, packet, session, rate, sent_qpc)? {
+            self.record_aec_provider_input(wire, metadata);
+        }
+        Ok(())
+    }
+
+    /// Typed stage/provider lifecycle, never a caller-supplied quality score.
+    pub(crate) fn record_aec_lifecycle(&self, mut metadata: serde_json::Value) {
+        if metadata["kind"]=="stage-lifecycle" {
+            let clock=self.echo_render_clock.lock().expect("echo render clock poisoned");
+            if let (Some(session),Some(end),Some(frames))=(clock.render_timeline_epoch,clock.last_submitted_frames,metadata["physicalFrames"].as_u64()) {
+                if let Some((_,_,owner,true,_,_))=clock.active_render_sessions.get(&session) {
+                    metadata["renderSessionId"]=serde_json::json!(session);
+                    metadata["ownerGeneration"]=serde_json::json!(owner);
+                    metadata["continuityId"]=serde_json::json!(clock.discontinuity_count);
+                    metadata["physicalEndFrame"]=serde_json::json!(end);
+                    metadata["physicalStartFrame"]=serde_json::json!(end.checked_sub(frames));
+                }
+            }
+            metadata["qpc100ns"]=serde_json::json!(crate::audio::engine::aec_timing::qpc_now_100ns());
+        }
+        self.aec_diagnostic_tap.record_lifecycle(metadata);
+    }
+
     pub(crate) fn aec_diagnostic_tap_enabled(&self) -> bool {
         self.aec_diagnostic_tap.enabled()
     }
@@ -105,8 +172,7 @@ impl AudioStateStore {
             let Some((_, _, owner_generation, true, last_player_position, last_submitted_frames)) =
                 clock.active_render_sessions.get(&render_session_id)
             else {
-                clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
-                clock.last_discontinuity_reason = Some("wasapi-render-frame-session-mismatch");
+                clock.publish_discontinuity("wasapi-render-frame-session-mismatch");
                 return Err(format!(
                     "render frame does not belong to started session {render_session_id}"
                 ));
@@ -167,8 +233,7 @@ impl AudioStateStore {
             *last_player_position = Some(player_position);
             *last_submitted_frames = Some(submitted_frames);
             if position_regressed {
-                clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
-                clock.last_discontinuity_reason = Some("wasapi-render-position-regressed");
+                clock.publish_discontinuity("wasapi-render-position-regressed");
             }
             clock.last_reference_lead_frames = Some(reference_lead_frames);
             clock.last_player_position = Some(player_position);
@@ -193,6 +258,15 @@ impl AudioStateStore {
             .echo_render_clock
             .lock()
             .expect("echo render clock poisoned");
+        let lifecycle=match reason {
+            EchoRenderBoundary::SessionStarted{session_id,endpoint_id,renderer_instance_id,owner_generation} =>
+                serde_json::json!({"status":"session-started","renderSessionId":session_id,"endpointId":endpoint_id,"rendererInstanceId":renderer_instance_id,"ownerGeneration":owner_generation}),
+            EchoRenderBoundary::StreamStarted{session_id,endpoint_id,renderer_instance_id,owner_generation} =>
+                serde_json::json!({"status":"stream-started","renderSessionId":session_id,"endpointId":endpoint_id,"rendererInstanceId":renderer_instance_id,"ownerGeneration":owner_generation}),
+            EchoRenderBoundary::SessionEnded{session_id,endpoint_id,renderer_instance_id,owner_generation,normally_drained,stream_started} =>
+                serde_json::json!({"status":"session-ended","renderSessionId":session_id,"endpointId":endpoint_id,"rendererInstanceId":renderer_instance_id,"ownerGeneration":owner_generation,"normallyDrained":normally_drained,"streamStarted":stream_started}),
+            EchoRenderBoundary::DeviceFault(reason) => serde_json::json!({"status":"device-fault","reason":reason}),
+        };
         let reason = match reason {
             EchoRenderBoundary::SessionStarted {
                 session_id,
@@ -277,10 +351,15 @@ impl AudioStateStore {
             }
             EchoRenderBoundary::DeviceFault(reason) => Some(reason),
         };
+        let mut lifecycle=lifecycle;
+        lifecycle["kind"]=serde_json::json!("render-lifecycle");
+        lifecycle["qpc100ns"]=serde_json::json!(crate::audio::engine::aec_timing::qpc_now_100ns());
+        lifecycle["continuityId"]=serde_json::json!(clock.discontinuity_count);
+        lifecycle["valid"]=serde_json::json!(reason.is_none());
+        self.aec_diagnostic_tap.record_lifecycle(lifecycle);
         if let Some(reason) = reason {
             clear_render_timing(&mut clock, observed_at);
-            clock.discontinuity_count = clock.discontinuity_count.saturating_add(1);
-            clock.last_discontinuity_reason = Some(reason);
+            clock.publish_discontinuity(reason);
         }
         Ok(())
     }
@@ -298,6 +377,7 @@ impl AudioStateStore {
             timeline_epoch: clock.render_timeline_epoch,
             last_observed_at: clock.last_observed_at,
             discontinuity_count: clock.discontinuity_count,
+            hard_reset_generation: clock.hard_reset_generation,
             last_discontinuity_reason: clock.last_discontinuity_reason,
         }
     }
@@ -329,6 +409,12 @@ impl AudioStateStore {
         delay_samples: usize,
         metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<EchoCancellationResult, String> {
+        self.process_echo_capture_with_provenance(captured, delay_samples, metadata).map(|(result, _)| result)
+    }
+
+    pub(crate) fn process_echo_capture_with_provenance(
+        &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
+    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
         const AEC_FRAME_SAMPLES: usize = 480 * 2;
         let render_epoch = self
             .echo_render_clock
@@ -373,16 +459,18 @@ impl AudioStateStore {
         }
         processed.extend_from_slice(&captured[processed.len()..]);
         let result = EchoCancellationResult { samples: processed };
-        if let Some(metadata) = metadata {
-            self.aec_diagnostic_tap
-                .record_capture(captured, &result.samples, metadata);
-        } else if self.aec_diagnostic_tap.enabled() {
-            self.aec_diagnostic_tap.abort("AEC capture processed without packet metadata");
-        }
+        let provenance = if let Some(metadata) = metadata {
+            self.aec_diagnostic_tap.record_capture_with_provenance(captured, &result.samples, metadata)
+        } else {
+            if self.aec_diagnostic_tap.enabled() {
+                self.aec_diagnostic_tap.abort("AEC capture processed without packet metadata");
+            }
+            None
+        };
         // Keep native processing and tap admission in one total order, also
         // shared by reset/render and the bounded finalization fence.
         drop(canceller_guard);
-        Ok(result)
+        Ok((result, provenance))
     }
 
     #[cfg(test)]
@@ -1110,6 +1198,19 @@ mod tests {
         let clock = store.echo_render_clock_snapshot();
         assert_eq!(clock.reference_lead_frames, Some(3_840));
     }
+    #[test]
+    fn soft_underrun_does_not_overwrite_hard_boundary_generation() {
+        let store = AudioStateStore::new();
+        store.mark_echo_render_discontinuity(EchoRenderBoundary::DeviceFault("wasapi-render-device-invalidated"), Instant::now()).unwrap();
+        let hard = store.echo_render_clock_snapshot();
+        assert_eq!(hard.hard_reset_generation, 1);
+        store.mark_echo_render_discontinuity(EchoRenderBoundary::DeviceFault("wasapi-render-underrun"), Instant::now()).unwrap();
+        let soft = store.echo_render_clock_snapshot();
+        assert_eq!(soft.discontinuity_count, hard.discontinuity_count + 1);
+        assert_eq!(soft.hard_reset_generation, hard.hard_reset_generation);
+        assert_eq!(soft.last_discontinuity_reason, Some("wasapi-render-underrun"));
+    }
+
 }
 
 fn clear_render_timing(clock: &mut EchoRenderClock, observed_at: Instant) {
@@ -1119,4 +1220,6 @@ fn clear_render_timing(clock: &mut EchoRenderClock, observed_at: Instant) {
     clock.last_physical_prefix_offset_frames = None;
     clock.last_reference_lead_frames = None;
     clock.last_observed_at = Some(observed_at);
+
+
 }

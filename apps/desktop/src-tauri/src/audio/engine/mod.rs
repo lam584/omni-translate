@@ -469,30 +469,6 @@ pub(crate) fn emit_audio_snapshot<R: tauri::Runtime>(
 /// users outside the session page unaware of a dead capture chain. Push an
 /// error-level runtime notification (source `audio-engine`) so the global
 /// toast host can surface it; the id embeds the error code for dedupe.
-fn notify_route_worker_error<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    direction: &str,
-    message: &str,
-    error_code: Option<&str>,
-) {
-    let Some(runtime_state) = app.try_state::<RuntimeStateStore>() else {
-        return;
-    };
-    let text = match error_code {
-        Some(code) => format!("音频链路已中断（{direction}）: {message} [{code}]"),
-        None => format!("音频链路已中断（{direction}）: {message}"),
-    };
-    let _ = emit_runtime_notification(
-        app,
-        &runtime_state,
-        crate::runtime::contracts::RuntimeNotification::error(
-            &format!("audio-engine-{direction}-{}", error_code.unwrap_or("worker-error")),
-            "audio-engine",
-            &text,
-            ms_marker(unix_ms()),
-        ),
-    );
-}
 
 fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device, String> {
     let direction = spec.wasapi_direction();
@@ -576,6 +552,10 @@ fn find_device_by_id(
 include!("input_completion.rs");
 include!("provider_input_fence.rs");
 include!("route_worker.rs");
+mod worker_error;
+use worker_error::notify_route_worker_error;
+mod capture_dispatch;
+use capture_dispatch::{process_captured_chunk, process_captured_chunk_with_provenance, should_push_placeholder_cue};
 include!("workers.rs");
 include!("capture_timing.rs");
 include!("warm_route.rs");

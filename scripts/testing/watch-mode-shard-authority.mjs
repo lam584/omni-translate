@@ -5,6 +5,7 @@ import path from 'node:path';
 import { repoRoot } from '../lib/testing-common.mjs';
 import {
   BALANCED_RELEASE_PLAN,
+  AEC_ITERATION_EXECUTION_SCOPE,
   createBalancedReleasePlan,
   liveCellsForReleasePlan,
   normalizeReleaseSelection,
@@ -12,6 +13,7 @@ import {
   LIVE_LLM_CELLS,
   PROVIDER_INPUT_SAMPLE_RATE_HZ,
 } from './watch-mode-balanced-release-plan.mjs';
+import { AEC_CLOSED_LOOP_THRESHOLDS, AEC_CLOSED_LOOP_PROFILE, canonicalAecFreezePayload, AEC_CLOSED_LOOP_REQUIRED_ARTIFACTS, createAecClosedLoopManifest } from './watch-mode-aec-closed-loop-evidence.mjs';
 import { rebuildReportFromDirectory } from './watch-mode-report.mjs';
 import {
   assertWatchModelProtocolIdentity,
@@ -115,6 +117,14 @@ export const SHARD_ORCHESTRATION_IMPLEMENTATION_FILES = Object.freeze([
 import { fixedFourWorkerAssignments, fourWorkerDispatchSchedule } from './watch-mode-four-worker-plan.mjs';
 
 function assertFourWorkerPlan(plan) {
+  if (plan.releaseSelection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE) {
+    if (plan.workers.length !== 1 || plan.workers[0].workerId !== plan.releaseSelection.aecWorker
+        || plan.cells.length !== 1 || plan.cells[0].workerId !== plan.releaseSelection.aecWorker
+        || plan.cells[0].waveIndex !== 0 || plan.dispatchSchedule !== undefined) {
+      throw new Error('AEC c03 iteration requires the one signed fixed worker and wave zero');
+    }
+    return;
+  }
   if (plan.workers.length !== 4) return;
   const expected = fixedFourWorkerAssignments(plan.workers, createBalancedReleasePlan(plan.releaseSelection));
   const actual = plan.cells.map((cell) => ({
@@ -391,6 +401,7 @@ function approvedCellProjection(cell) {
     localPlaybackDrainTimeoutSeconds: cell.localPlaybackDrainTimeoutSeconds,
     reportWriteTimeoutSeconds: cell.reportWriteTimeoutSeconds,
     cellHardWatchdogSeconds: cell.cellHardWatchdogSeconds,
+    ...(cell.completionPolicy ? { completionPolicy: cell.completionPolicy, aecQualityGates: structuredClone(cell.aecQualityGates) } : {}),
     authoritativeTransformedReferenceFrames: cell.authoritativeTransformedReferenceFrames,
     inputSampleRateHz: cell.inputSampleRateHz,
     mediaSha256: cell.mediaSha256,
@@ -407,8 +418,8 @@ function approvedCellProjection(cell) {
 
 function assertExactPaidCells(cells, releasePlan = BALANCED_RELEASE_PLAN) {
   const approvedCells = liveCellsForReleasePlan(releasePlan);
-  if (!Array.isArray(cells) || cells.length !== SHARD_MATRIX_CELL_COUNT || approvedCells.length !== SHARD_MATRIX_CELL_COUNT) {
-    throw new Error(`shard execution plan requires exactly ${SHARD_MATRIX_CELL_COUNT} paid cells`);
+  if (!Array.isArray(cells) || cells.length !== approvedCells.length) {
+    throw new Error(`shard execution plan requires exactly ${approvedCells.length} paid cells in the signed scope`);
   }
   for (let index = 0; index < approvedCells.length; index += 1) {
     if (canonicalJson(approvedCellProjection(cells[index])) !== canonicalJson(approvedCellProjection(approvedCells[index]))) {
@@ -569,8 +580,8 @@ function assertBoundPrerequisites(plan) {
     });
     if (
       !Array.isArray(plan.providerPreflightLeaseReservations)
-      || plan.providerPreflightLeaseReservations.length !== SHARD_MATRIX_CELL_COUNT
-    ) throw new Error(`execution plan must bind exactly ${SHARD_MATRIX_CELL_COUNT} provider preflight lease reservations`);
+      || plan.providerPreflightLeaseReservations.length !== approvedCells.length
+    ) throw new Error(`execution plan must bind exactly ${approvedCells.length} provider preflight lease reservations`);
     plan.providerPreflightLeaseReservations.forEach((entry, index) => {
       opaqueAuthority(entry, `provider preflight lease reservation authority ${index}`, (value) => {
         if (
@@ -696,8 +707,12 @@ export function createWorkerReadinessRequest({
   const normalizedWorkers = normalizeWorkers(workers ?? []);
   for (const worker of normalizedWorkers) worker.vmIdentityDigest = sha256Canonical(worker.vmIdentity);
   assertWorkers(normalizedWorkers);
+  if (selection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE
+      && (normalizedWorkers.length !== 1 || normalizedWorkers[0].workerId !== selection.aecWorker)) {
+    throw new Error('AEC worker readiness must bind only the selected fixed worker');
+  }
   if (!Array.isArray(assignments) || assignments.length !== approvedCells.length) {
-    throw new Error(`worker readiness request requires all ${SHARD_MATRIX_CELL_COUNT} fixed cell assignments`);
+    throw new Error(`worker readiness request requires all ${approvedCells.length} fixed signed-scope cell assignments`);
   }
   const assigned = assignments.map((assignment, cellIndex) => {
     const approved = approvedCells[cellIndex];
@@ -756,6 +771,10 @@ export function validateWorkerReadinessRequest(request, expected = {}) {
     throw new Error('worker readiness request runtime bundle digest mismatch');
   }
   assertWorkers(request.workers);
+  if (selection?.executionScope === AEC_ITERATION_EXECUTION_SCOPE
+      && (request.workers.length !== 1 || request.workers[0].workerId !== selection.aecWorker)) {
+    throw new Error('AEC worker readiness must bind only the selected fixed worker');
+  }
   for (const worker of request.workers) {
     if (worker.vmIdentityDigest !== sha256Canonical(worker.vmIdentity)) {
       throw new Error(`worker readiness request VM identity digest mismatch for ${worker.workerId}`);
@@ -797,6 +816,33 @@ export function validateWorkerReadinessRequest(request, expected = {}) {
     }
   }
   return request;
+}
+
+export function aecThresholdFreezeBytes(cell, publicKeyPem, runtimeBinaryHashes) {
+  assertAuthorityInventory(runtimeBinaryHashes, 'AEC frozen runtime authority');
+  const expected = {schemaVersion: 1, kind: 'aec-threshold-freeze', profile: AEC_CLOSED_LOOP_PROFILE,
+    identity: {runMarker: cell.runMarker, cellId: cell.cellId, leaseId: cell.leaseId},
+      thresholds: AEC_CLOSED_LOOP_THRESHOLDS, runtimeBinaryHashes: sortedInventory(runtimeBinaryHashes)};
+  const freeze = cell.aecThresholdFreeze;
+  const doc = freeze?.document;
+  if (canonicalJson(doc?.payload) !== canonicalJson(expected) || Object.keys(doc ?? {}).sort().join(',') !== 'payload,signatureBase64') {
+    throw new Error('AEC signed threshold freeze payload/identity mismatch');
+  }
+  const signature = Buffer.from(String(doc.signatureBase64), 'base64');
+  if (signature.length !== 64 || signature.toString('base64') !== doc.signatureBase64
+      || !crypto.verify(null, canonicalAecFreezePayload(expected), publicKeyPem, signature)) {
+    throw new Error('AEC signed threshold freeze signature mismatch');
+  }
+  const bytes = Buffer.from(canonicalJson(doc) + '\n', 'utf8');
+  const expectedPath = 'runs/c' + String(cell.cellIndex + 1).padStart(2, '0') + '/aec-threshold-freeze.json';
+  if (freeze.artifact?.path !== expectedPath || freeze.artifact?.bytes !== bytes.length
+      || freeze.artifact?.sha256 !== crypto.createHash('sha256').update(bytes).digest('hex')) {
+    throw new Error('AEC signed threshold freeze byte/path authority mismatch');
+  }
+  return bytes;
+}
+function aecPlanRunMarker(executionId, cell) {
+  return 'watch_mode_diagnostic.run_id=' + sha256Canonical({executionId, cellId: cell.cellId, leaseId: cell.leaseId}).slice(0, 32);
 }
 
 export function createSignedExecutionPlan({
@@ -895,6 +941,19 @@ export function createSignedExecutionPlan({
       maxExternalAudioSamples: approvedCell.maxExternalAudioSamples,
     };
   });
+  for (const cell of plannedCells) {
+    if (cell.completionPolicy !== 'aec-output-quiescent-v2') continue;
+    cell.runMarker = aecPlanRunMarker(executionId, cell);
+    const payload = {schemaVersion: 1, kind: 'aec-threshold-freeze', profile: AEC_CLOSED_LOOP_PROFILE,
+      identity: {runMarker: cell.runMarker, cellId: cell.cellId, leaseId: cell.leaseId},
+      thresholds: AEC_CLOSED_LOOP_THRESHOLDS, runtimeBinaryHashes: sortedInventory(runtimeBinaryHashes)};
+    const document = {payload, signatureBase64: crypto.sign(null, canonicalAecFreezePayload(payload), privateKeyPem).toString('base64')};
+    const bytes = Buffer.from(canonicalJson(document) + '\n', 'utf8');
+    cell.aecThresholdFreeze = {document, artifact: {
+      path: 'runs/c' + String(cell.cellIndex + 1).padStart(2, '0') + '/aec-threshold-freeze.json',
+      bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    }};
+  }
   const waveIndices = [...new Set(plannedCells.map((cell) => cell.waveIndex))].sort((a, b) => a - b);
   if (waveIndices.some((value, index) => value !== index)) throw new Error('shard waves must be contiguous from zero');
   const waves = waveIndices.map((waveIndex) => ({
@@ -952,8 +1011,8 @@ export function createSignedExecutionPlan({
     budget: {
       allocationMode: 'immutable-disjoint-cell-leases',
       inputSampleRateHz: SHARD_INPUT_SAMPLE_RATE_HZ,
-      cellMaxExternalAudioSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
-      matrixMaxExternalAudioSamples: SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+      cellMaxExternalAudioSamples: releasePlan.externalProviderBudget.cellMaxInputSamples,
+      matrixMaxExternalAudioSamples: releasePlan.paidProviderInputSampleCeiling,
       allocatedExternalAudioSamples: plannedCells.reduce(
         (sum, cell) => sum + cell.maxExternalAudioSamples,
         0,
@@ -1019,6 +1078,12 @@ export function verifySignedExecutionPlan(plan, {
   const leases = new Set();
   const workerWaveSlots = new Set();
   for (const [index, cell] of plan.cells.entries()) {
+    if (cell.completionPolicy === 'aec-output-quiescent-v2') {
+      if (cell.runMarker !== aecPlanRunMarker(plan.executionId, cell)) throw new Error('AEC signed runMarker differs from its execution/lease identity');
+      aecThresholdFreezeBytes(cell, plan.coordinator.publicKeyPem, plan.authority.runtimeBinaryHashes);
+    } else if (cell.aecThresholdFreeze !== undefined || cell.runMarker !== undefined) {
+      throw new Error('non-AEC cell cannot carry AEC freeze authority');
+    }
     if (Number(cell.cellIndex) !== index) throw new Error(`shard execution cell ${index} has invalid cellIndex`);
     if (cellIds.has(cell.cellId)) throw new Error(`duplicate shard cell ${cell.cellId}`);
     cellIds.add(cell.cellId);
@@ -1082,10 +1147,10 @@ export function verifySignedExecutionPlan(plan, {
   if (
     plan.budget?.allocationMode !== 'immutable-disjoint-cell-leases'
     || Number(plan.budget.inputSampleRateHz) !== SHARD_INPUT_SAMPLE_RATE_HZ
-    || Number(plan.budget.cellMaxExternalAudioSamples) !== SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES
-    || Number(plan.budget.matrixMaxExternalAudioSamples) !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-    || Number(plan.budget.allocatedExternalAudioSamples) !== SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
-    || Number(plan.budget.cellCount) !== SHARD_MATRIX_CELL_COUNT
+    || Number(plan.budget.cellMaxExternalAudioSamples) !== releasePlan.externalProviderBudget.cellMaxInputSamples
+    || Number(plan.budget.matrixMaxExternalAudioSamples) !== releasePlan.paidProviderInputSampleCeiling
+    || Number(plan.budget.allocatedExternalAudioSamples) !== releasePlan.paidProviderInputSampleCeiling
+    || Number(plan.budget.cellCount) !== approvedCells.length
     || plan.budget.reclaimPolicy !== 'never-within-execution'
     || plan.budget.retryPolicy !== 'new-execution-required'
   ) throw new Error('shard execution plan budget is not the fixed fail-closed LiveTranslate allocation');
@@ -2244,10 +2309,22 @@ export function buildShardCellResult({
   if (cell.feedbackLoopPrevention === 'virtual-driver') {
     assertVirtualDriverAuthority(resolvedRunDirectory, plan);
   }
+  // Derive the manifest on the worker before hashing raw artifacts. The final
+  // verifier only reconstructs an already inventoried artifact; it never adds
+  // files to a sealed result or treats a caller-provided quality score as proof.
+  if (cell.completionPolicy === 'aec-output-quiescent-v2' && resultVerdict === 'passed') {
+    const manifest = createAecClosedLoopManifest(resolvedRunDirectory, {
+      cell: {runMarker: cell.runMarker, cellId: cell.cellId, leaseId: lease.leaseId},
+      freezePublicKey: plan.coordinator.publicKeyPem,
+    });
+    if (!manifest.passed) throw new Error('AEC pre-inventory reconstruction failed: ' + manifest.violations.join('; '));
+  }
   const artifacts = collectRunArtifactInventory(resolvedRunDirectory);
   for (const required of [
     'report.json',
     'physical-playback-device.json',
+    ...(cell.completionPolicy === 'aec-output-quiescent-v2' && resultVerdict === 'passed'
+      ? ['media-complete.json', ...AEC_CLOSED_LOOP_REQUIRED_ARTIFACTS, 'aec-desktop-playback-timeline.jsonl', 'aec-desktop-playback-timeline-terminal.json'] : []),
     PROVIDER_INPUT_BUDGET_LEDGER_FILE,
     PROVIDER_INPUT_BUDGET_JOURNAL_FILE,
     PROVIDER_INPUT_BUDGET_LEASE_FILE,

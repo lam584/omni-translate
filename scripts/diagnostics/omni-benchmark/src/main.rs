@@ -11,6 +11,7 @@ mod gemini;
 mod manifest;
 mod batch;
 mod pcm_cli;
+mod aec_cli;
 
 use config::{parse_args, print_usage, CliMode};
 use runner::run_benchmark;
@@ -20,7 +21,7 @@ fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(result) = pcm_cli::try_run(&arguments) {
+    if let Some(result) = aec_cli::try_run(&arguments).or_else(|| pcm_cli::try_run(&arguments)) {
         if let Err(error) = result {
             eprintln!("PCM analysis failed: {error}");
             std::process::exit(1);

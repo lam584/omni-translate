@@ -16,10 +16,10 @@ const enums = {
 };
 const requestFields = new Set([
   'schemaVersion', 'runMode', 'authorityMode', 'feedbackMode', 'desktop', 'driverPolicy',
-  'physicalContentMode', 'model', 'media', 'physicalDevice', 'timeouts', 'paths', 'matrix',
+  'physicalContentMode', 'model', 'media', 'physicalDevice', 'timeouts', 'paths', 'matrix', 'completionPolicy',
 ]);
 const pathFields = new Set([
-  'outputRoot', 'runtimeRoot', 'workerReadinessReceipt', 'inputComplete', 'terminalAuthority',
+  'outputRoot', 'runtimeRoot', 'workerReadinessReceipt', 'inputComplete', 'terminalAuthority', 'mediaComplete',
 ]);
 
 function object(value, label) {
@@ -57,6 +57,8 @@ export function validateWatchModeRunRequest(input) {
   request.runMode = enumValue(request.runMode, enums.runMode, 'runMode');
   request.authorityMode = enumValue(request.authorityMode, enums.authorityMode, 'authorityMode');
   request.feedbackMode = enumValue(request.feedbackMode, enums.feedbackMode, 'feedbackMode');
+  request.completionPolicy = enumValue(request.completionPolicy ?? 'media-input-complete-v1',
+    new Set(['media-input-complete-v1', 'aec-output-quiescent-v2']), 'completionPolicy');
   request.desktop = object(request.desktop, 'desktop');
   request.desktop.launchMode = enumValue(request.desktop.launchMode, enums.launchMode, 'desktop.launchMode');
   request.desktop.elevation = enumValue(request.desktop.elevation, enums.elevation, 'desktop.elevation');
@@ -150,6 +152,7 @@ export function validateWatchModeRunRequest(input) {
   request.paths.outputRoot = nonEmpty(request.paths.outputRoot, 'paths.outputRoot');
   request.paths.runtimeRoot = nonEmpty(request.paths.runtimeRoot, 'paths.runtimeRoot');
   request.paths.inputComplete = nonEmpty(request.paths.inputComplete, 'paths.inputComplete', { optional: true });
+  request.paths.mediaComplete = nonEmpty(request.paths.mediaComplete, 'paths.mediaComplete', { optional: true });
   request.paths.terminalAuthority = nonEmpty(request.paths.terminalAuthority, 'paths.terminalAuthority', { optional: true });
   request.matrix = object(request.matrix ?? {}, 'matrix');
   request.matrix.cellId = nonEmpty(request.matrix.cellId, 'matrix.cellId', { optional: true });
@@ -171,6 +174,24 @@ export function validateWatchModeRunRequest(input) {
     ) {
       throw new Error(`${request.authorityMode} requires live + managed + native + local-canonical`);
     }
+  }
+  if (request.completionPolicy === 'aec-output-quiescent-v2') {
+    if (request.authorityMode !== 'strict-paid' || request.feedbackMode !== 'echo-cancel'
+        || !request.paths.mediaComplete || request.paths.mediaComplete === request.paths.inputComplete
+        || path.basename(request.paths.mediaComplete.replaceAll('\\', '/')) !== 'media-complete.json'
+        || path.dirname(request.paths.mediaComplete.replaceAll('\\', '/')) !== path.dirname(request.paths.inputComplete?.replaceAll('\\', '/') ?? '')
+        || request.timeouts.inputCompletionWatchdogSeconds !== 180
+        || request.timeouts.providerFinishTimeoutSeconds !== 15
+        || request.timeouts.localPlaybackDrainTimeoutSeconds !== 120
+        || request.timeouts.cellHardWatchdogSeconds !== 325) {
+      throw new Error('aec-output-quiescent-v2 requires strict echo-cancel, separate canonical media completion, and unchanged watchdogs');
+    }
+  } else if (request.paths.mediaComplete) {
+    throw new Error('mediaComplete is reserved for aec-output-quiescent-v2');
+  }
+  if (request.authorityMode === 'strict-paid' && request.feedbackMode === 'echo-cancel'
+      && request.completionPolicy !== 'aec-output-quiescent-v2') {
+    throw new Error('strict AEC requires aec-output-quiescent-v2; media completion cannot close input');
   }
   if (request.authorityMode === 'strict-paid') {
     const expectedRestartAfterSeconds = request.feedbackMode === 'process-exclusion' ? 90 : 0;
@@ -220,6 +241,8 @@ export function buildLiveWatchModeRunRequest(options, {
     runMode: 'live',
     authorityMode,
     feedbackMode,
+    completionPolicy: options.completionPolicy ?? (authorityMode === 'strict-paid' && feedbackMode === 'echo-cancel'
+      ? 'aec-output-quiescent-v2' : 'media-input-complete-v1'),
     desktop: { launchMode: 'managed', elevation: options.allowElevatedDesktopLaunch ? 'allow' : 'forbid' },
     driverPolicy: feedbackMode === 'virtual-driver'
       ? (options.allowDriverRepair ? 'repair-if-needed' : 'probe-only')
@@ -275,6 +298,8 @@ export function buildLiveWatchModeRunRequest(options, {
       runtimeRoot,
       workerReadinessReceipt,
       inputComplete: options.inputCompletePath ?? null,
+      mediaComplete: options.mediaCompletePath ?? (authorityMode === 'strict-paid' && feedbackMode === 'echo-cancel'
+        ? path.join(options.inputCompletePath ? path.dirname(options.inputCompletePath) : options.outputRoot, 'media-complete.json') : null),
       terminalAuthority: options.terminalAuthorityPath ?? null,
     },
     matrix: {

@@ -1105,6 +1105,7 @@ test('run context keeps the paid input ceiling separate from local playback drai
 
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
   assert.deepEqual(JSON.parse(probe.stdout.trim()), {
+    completionPolicy: '',
     sessionWatchdogSeconds: 180,
     inputCompletionWatchdogSeconds: 180,
     processExclusionRestartAfterSeconds: 0,

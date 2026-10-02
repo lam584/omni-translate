@@ -393,56 +393,26 @@ async fn run_evidence_driven_capture(
     config: &StrictPaidTerminalConfig,
     mut recorder: TerminalAuthorityRecorder,
 ) -> Result<TerminalAuthorityRecorder, StrictCaptureFailure> {
-    let marker = match wait_for_input_complete_marker(
-        &config.input_complete_path,
-        &config.identity,
-        config.input_completion_watchdog,
-    )
-    .await
-    {
-        Ok(marker) => marker,
-        Err(error) => {
-            let code = if std::path::Path::new(&config.input_complete_path).exists() {
-                "input-complete-invalid"
-            } else {
-                "input-complete-timeout"
-            };
-            return Err(strict_capture_failure(recorder, code, error));
+    let marker = if config.completion_policy.is_some() {
+        match super::open_input_drain::await_open_input_quiescence(&app, config, &mut recorder).await {
+            Ok(marker) => marker,
+            Err(error) => {
+                let code = if error.starts_with("runner-input-failed:") { "runner-input-failed" } else { "aec-open-input-drain-failed" };
+                return Err(strict_capture_failure(recorder, code, error));
+            },
+        }
+    } else {
+        match wait_for_input_complete_marker(&config.input_complete_path, &config.identity, config.input_completion_watchdog).await {
+            Ok(marker) => marker,
+            Err(error) => {
+                let code = if std::path::Path::new(&config.input_complete_path).exists() { "input-complete-invalid" } else { "input-complete-timeout" };
+                return Err(strict_capture_failure(recorder, code, error));
+            }
         }
     };
-    let Some(media_playback_completed_at_unix_ms) =
-        marker.media_playback_completed_at_unix_ms
-    else {
-        return Err(strict_capture_failure(
-            recorder,
-            "input-complete-invalid",
-            "input-complete marker is missing mediaPlaybackCompletedAtUnixMs",
-        ));
-    };
-    recorder.push(
-        if marker.disposition == "completed" {
-            "mediaPlaybackCompleted"
-        } else {
-            "mediaPlaybackFailed"
-        },
-        media_playback_completed_at_unix_ms,
-        json!({
-            "authority": "runner-input-complete-marker",
-            "disposition": marker.disposition,
-            "failureReason": marker.failure_reason,
-            "authoritativeTransformedReferenceFrames": marker.authoritative_transformed_reference_frames,
-            "boundedCaptureGraceFrames": marker.bounded_capture_grace_frames,
-            "maxExternalAudioSamples": marker.max_external_audio_samples,
-        }),
-    );
-    recorder.push(
-        "inputCompleteSignaled",
-        marker.signaled_at_unix_ms,
-        json!({
-            "authority": "runner-immutable-input-complete-marker",
-            "markerCompletedAtUnixMs": marker.completed_at_unix_ms,
-        }),
-    );
+    if let Err(error) = super::aec_terminal_events::append_input_completion_events(config, &mut recorder, &marker) {
+        return Err(strict_capture_failure(recorder, "input-complete-invalid", error));
+    }
     let runner_failure = marker.failure_reason.clone();
     let provider_app = app.clone();
     let (provider_result_tx, provider_result_rx) = std::sync::mpsc::sync_channel(1);
@@ -593,6 +563,11 @@ async fn run_evidence_driven_capture(
         ));
     }
     append_terminal_lifecycle_events(&mut recorder, &lifecycle);
+    if config.completion_policy.is_some() {
+        if let Err(error) = super::aec_terminal_events::append_aec_terminal_events(&app, config, &mut recorder, &lifecycle) {
+            return Err(strict_capture_failure(recorder, "aec-post-finish-output-rejected", error));
+        }
+    }
     recorder.push(
         "localPlaybackQuiescent",
         unix_ms_now(),
@@ -824,11 +799,12 @@ fn schedule_evidence_driven_capture(app: &AppHandle, config: StrictPaidTerminalC
     let app = app.clone();
     let exit_after_report = env_flag_enabled("OMNI_WATCH_MODE_EXIT_AFTER_REPORT");
     tauri::async_runtime::spawn(async move {
-        let recorder = TerminalAuthorityRecorder::new(
+        let mut recorder = TerminalAuthorityRecorder::new(
             config.identity.clone(),
             config.producer.clone(),
             unix_ms_now(),
         );
+        recorder.set_completion_policy(config.completion_policy.clone());
         let (authority, succeeded, error_detail) =
             match run_evidence_driven_capture(app.clone(), &config, recorder).await {
                 Ok(recorder) => (recorder.complete(unix_ms_now()), true, None),

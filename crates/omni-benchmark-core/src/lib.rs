@@ -7,6 +7,7 @@ use base64::Engine;
 use serde_json::Value;
 
 pub mod pcm;
+pub mod aec;
 
 const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const TARGET_SAMPLE_RATE: u32 = 16_000;

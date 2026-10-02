@@ -1139,3 +1139,21 @@ test('strict budget CLI selection requires explicit workspace and preserves defa
   assert.throws(() => strictPaidBudgetOptionsForModel(model38, 'dashscope.aliyuncs.com'));
   assert.throws(() => strictPaidBudgetOptionsForModel(MODEL, endpointHost));
 });
+
+
+test('AEC 2,880,000-sample allowance is exact cell projection, never a blanket hard-cap lift', () => {
+  const selection = {modelId: 'qwen3.8-livetranslate-flash-realtime', endpointHost: 'acceptance.cn-beijing.maas.aliyuncs.com', region: 'cn-beijing',
+    executionScope: 'aec-c03-iteration', aecWorker: 'vm131'};
+  const cells = liveCellsForReleasePlan(createBalancedReleasePlan(selection));
+  const base = {cellId: cells[0].cellId, modelId: selection.modelId, modelProtocolProfileIdentity: cells[0].modelProtocolProfileIdentity,
+    feedbackLoopPrevention: 'echo-cancel', providerInputSampleCeiling: 2_880_000, actualProviderInputSamples: 1,
+    auxiliaryExternalAudioSeconds: 0, calls: {}, passed: true, providerSendBoundary: {leaseId: 'exact-c03'}};
+  assert.equal(buildMatrixExternalProviderBudget([base], {expectedCells: cells, releaseSelection: selection}).passed, true);
+  assert.equal(buildMatrixExternalProviderBudget([base], {expectedCells: cells, releaseSelection: selection, matrixInputSampleCeiling: 2_880_001}).passed, false);
+  assert.equal(buildMatrixExternalProviderBudget([{...base, providerInputSampleCeiling: 2_879_999}], {expectedCells: cells, releaseSelection: selection}).passed, false);
+  const forged = structuredClone(cells); forged[0].maxExternalAudioSamples++;
+  assert.equal(buildMatrixExternalProviderBudget([base], {expectedCells: forged, releaseSelection: selection}).passed, false);
+  assert.equal(buildMatrixExternalProviderBudget([base, base], {expectedCells: cells, releaseSelection: selection}).passed, false);
+  assert.throws(() => strictPaidBudgetOptionsForModel(selection.modelId, selection.endpointHost,
+    {...selection, aecWorker: 'vm169'}));
+});

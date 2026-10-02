@@ -1,3 +1,7 @@
+mod closed_loop;
+mod capture_provenance;
+pub(crate) use capture_provenance::AecPostPacket;
+use capture_provenance::PostTapProvenance;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
@@ -19,7 +23,7 @@ const METADATA_FILE: &str = "aec-frame-metadata.jsonl";
 const TERMINAL_FILE: &str = "aec-terminal.json";
 const TERMINAL_PARTIAL_FILE: &str = "aec-terminal.json.partial";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AecCaptureFrameMetadata {
     pub(crate) packet_device_frame_index: u64,
     pub(crate) packet_qpc_100ns: u64,
@@ -133,30 +137,36 @@ struct LiveTap {
     sender: mpsc::SyncSender<TapEvent>,
     shared: Arc<Shared>,
     writer: Mutex<Option<JoinHandle<()>>>,
+    closed_loop: Arc<closed_loop::ClosedLoopTap>,
+    post_provenance: Mutex<PostTapProvenance>,
 }
 
 #[derive(Debug)]
 pub(crate) struct AecDiagnosticTap {
     live: Option<LiveTap>,
     startup_error: Option<String>,
+    lineage_enabled: bool,
 }
 
 impl AecDiagnosticTap {
     pub(crate) fn from_env() -> Self {
-        Self::from_optional_directory(
+        let mut tap = Self::from_optional_directory(
             std::env::var_os(TAP_DIRECTORY_ENV)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
-        )
+        );
+        tap.lineage_enabled = std::env::var("OMNI_WATCH_MODE_COMPLETION_POLICY")
+            .is_ok_and(|policy| policy == "aec-output-quiescent-v2");
+        tap
     }
 
     fn from_optional_directory(directory: Option<PathBuf>) -> Self {
         let Some(directory) = directory else {
-            return Self { live: None, startup_error: None };
+            return Self { live: None, startup_error: None, lineage_enabled: false };
         };
         Self::start(&directory).unwrap_or_else(|error| {
             eprintln!("AEC diagnostic tap unavailable: {error}");
-            Self { live: None, startup_error: Some(error) }
+            Self { live: None, startup_error: Some(error), lineage_enabled: false }
         })
     }
 
@@ -172,6 +182,8 @@ impl AecDiagnosticTap {
     }
 
     fn spawn(files: EvidenceFiles, terminal: File, directory: PathBuf) -> Result<Self, String> {
+        let closed_loop = Arc::new(closed_loop::ClosedLoopTap::start(&directory)?);
+        let writer_closed_loop=Arc::clone(&closed_loop);
         let shared = Arc::new(Shared::default());
         let writer_shared = Arc::clone(&shared);
         let (sender, receiver) = mpsc::sync_channel(TAP_CHANNEL_CAPACITY);
@@ -179,7 +191,15 @@ impl AecDiagnosticTap {
             .name("aec-diagnostic-writer".to_string())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let value = write_events(receiver, files, &writer_shared);
+                    let mut value = write_events(receiver, files, &writer_shared);
+                    writer_closed_loop.close();
+                    match writer_closed_loop.finish(Duration::from_secs(30)) {
+                        Ok(closed)=>{value["closedLoop"]=closed;},
+                        Err(error)=>{
+                            value["complete"]=json!(false); value["status"]=json!("failed");
+                            value["errors"].as_array_mut().expect("terminal errors array").push(json!(error));
+                        }
+                    }
                     commit_terminal(terminal, &directory, value)
                 }));
                 let value = match result {
@@ -195,8 +215,9 @@ impl AecDiagnosticTap {
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            live: Some(LiveTap { sender, shared, writer: Mutex::new(Some(writer)) }),
+            live: Some(LiveTap { sender, shared, writer: Mutex::new(Some(writer)), closed_loop, post_provenance: Mutex::new(PostTapProvenance::default()) }),
             startup_error: None,
+            lineage_enabled: true,
         })
     }
 
@@ -207,7 +228,10 @@ impl AecDiagnosticTap {
     }
 
     pub(crate) fn close_admission(&self) {
-        if let Some(live) = &self.live { live.shared.close(); }
+        if let Some(live) = &self.live {
+            if live.shared.outcome.get().is_none() { let _ = self.validate_provider_drain(); }
+            live.shared.close(); live.closed_loop.close();
+        }
     }
 
     pub(crate) fn abort(&self, reason: &str) {
@@ -217,6 +241,7 @@ impl AecDiagnosticTap {
             // the writer cannot finalize between the fence and the error.
             if let Some(_admission) = live.shared.admit() {
                 live.shared.fail(reason.to_string());
+                live.closed_loop.abort(reason);
             }
         }
     }
@@ -236,7 +261,9 @@ impl AecDiagnosticTap {
             }).to_string());
         };
         let started = Instant::now();
+        if live.shared.outcome.get().is_none() { let _ = self.validate_provider_drain(); }
         live.shared.close();
+        live.closed_loop.close();
         loop {
             if let Some(value) = live.shared.outcome.get() {
                 // Never wait on the handle: the receipt is published after all
@@ -303,14 +330,41 @@ impl AecDiagnosticTap {
         });
     }
 
+    /// Actual successful physical output, never the linear render reference.
+    pub(crate) fn record_physical(&self, samples: &[f32], mut metadata: Value) {
+        if let Some(live)=&self.live {
+            metadata["resetGeneration"]=json!(live.shared.reset_generation.load(Ordering::Acquire));
+            live.closed_loop.record(Some(samples),None,metadata);
+        }
+    }
+
+    /// Actual successfully submitted provider PCM, with exact post provenance.
+    pub(crate) fn record_provider(&self, samples: &[i16], metadata: Value) {
+        if let Some(live)=&self.live {live.closed_loop.record(None,Some(samples),metadata);}
+    }
+
+    pub(crate) fn record_lifecycle(&self, mut metadata: Value) {
+        if let Some(live)=&self.live {
+            metadata["resetGeneration"]=json!(live.shared.reset_generation.load(Ordering::Acquire));
+            live.closed_loop.record(None,None,metadata);
+        }
+    }
+
     pub(crate) fn record_capture(&self, pre: &[f32], post: &[f32], metadata: AecCaptureFrameMetadata) {
-        let Some(live) = &self.live else { return; };
-        let Some(_admission) = live.shared.admit() else { return; };
+        let _ = self.record_capture_with_provenance(pre, post, metadata);
+    }
+
+    pub(crate) fn record_capture_with_provenance(&self, pre: &[f32], post: &[f32], metadata: AecCaptureFrameMetadata) -> Option<AecPostPacket> {
+        let live = self.live.as_ref()?;
+        let _admission = live.shared.admit()?;
+        let sequence = live.shared.sequence.fetch_add(1, Ordering::Relaxed);
+        let reset_generation = live.shared.reset_generation.load(Ordering::Acquire);
+        let packet = self.lineage_enabled.then(|| live.post_provenance.lock().expect("AEC post provenance poisoned")
+            .capture(sequence, post, metadata, reset_generation));
         Self::send(live, TapEvent::Capture {
-            sequence: live.shared.sequence.fetch_add(1, Ordering::Relaxed),
-            reset_generation: live.shared.reset_generation.load(Ordering::Acquire),
-            metadata, pre: pre.to_vec(), post: post.to_vec(),
+            sequence, reset_generation, metadata, pre: pre.to_vec(), post: post.to_vec(),
         });
+        packet
     }
 
     pub(crate) fn record_reset(&self, reason: &str, qpc_100ns: Option<u64>, continuity_id: u64) {
@@ -590,280 +644,4 @@ fn commit_terminal(mut terminal: File, directory: &Path, mut value: Value) -> Va
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn metadata() -> AecCaptureFrameMetadata {
-        AecCaptureFrameMetadata {
-            packet_device_frame_index: 960, packet_qpc_100ns: 200_000,
-            queue_head_device_frame_index: 480, queue_head_qpc_100ns: 100_000,
-            observed_qpc_100ns: Some(300_000), continuity_id: 7, delay_samples: 960,
-            timestamp_error: false, data_discontinuity: false, queue_head_clock_valid: true,
-        }
-    }
-
-    struct Directory(PathBuf);
-
-    impl Directory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("aec-tap-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for Directory {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
-    }
-
-    #[test]
-    fn finish_drains_hashes_four_streams_and_returns_the_committed_terminal() {
-        let dir = Directory::new();
-        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
-        tap.record_reset("route-start", Some(10), 0);
-        tap.record_render(&[0.25, -0.25], 48_000, 2, Some(20), 7, 1, 9, 4, 4, 5, 4, 5, 1);
-        tap.record_capture(&[0.5, -0.5], &[0.0, 0.0], metadata());
-        tap.record_render(&[0.25; 4], 48_000, 2, Some(30), 7, 1, 9, 4, 5, 7, 6, 7, 1);
-        tap.record_capture(&[0.5; 4], &[0.0; 4], metadata());
-        let result = tap.finish(Duration::from_secs(2)).unwrap();
-        assert_eq!(result["countsFinal"], true);
-        for key in ["attemptedEvents", "acceptedEvents", "writtenEvents"] { assert_eq!(result[key], 5); }
-        assert_eq!(result["droppedEvents"], 0);
-        assert_eq!(result["errors"], json!([]));
-        assert_eq!(result["lastWrittenSequence"], 4);
-        assert_eq!(result["sampleCounts"], json!({"render":6,"pre":6,"post":6}));
-        assert_eq!(result["invalidClockEvents"], 0);
-        assert_eq!(result["files"].as_object().unwrap().len(), 4);
-        for file in result["files"].as_object().unwrap().values() {
-            let bytes = std::fs::read(dir.0.join(file["name"].as_str().unwrap())).unwrap();
-            assert_eq!(file["byteLength"], bytes.len() as u64);
-            assert_eq!(file["sha256"], format!("{:x}", Sha256::digest(&bytes)));
-            assert_eq!(file["flushed"], true);
-            assert_eq!(file["synced"], true);
-            assert_eq!(file["unwrittenBufferedBytes"], 0);
-        }
-        let text = std::fs::read_to_string(dir.0.join(METADATA_FILE)).unwrap();
-        assert!(text.ends_with('\n'));
-        let rows: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        for (sequence, row) in rows.iter().enumerate() {
-            assert_eq!(row["sequence"], sequence);
-            assert_eq!(row["resetGeneration"], 1);
-        }
-        assert_eq!(rows[1]["sampleOffset"], 0);
-        assert_eq!(rows[1]["sampleCount"], 2);
-        assert_eq!(rows[1]["schemaVersion"], 3);
-        assert_eq!(rows[1]["renderSessionId"], 1);
-        assert_eq!(rows[1]["ownerGeneration"], 9);
-        assert_eq!(rows[1]["physicalPrefixOffsetFrames"], 4);
-        assert_eq!(rows[1]["referenceStartFrame"], 4);
-        assert_eq!(rows[1]["referenceEndFrame"], 5);
-        assert_eq!(rows[1]["playedFrames"], 4);
-        assert_eq!(rows[3]["referenceStartFrame"], 5);
-        assert_eq!(rows[3]["referenceEndFrame"], 7);
-        assert_eq!(rows[2]["preSampleOffset"], 0);
-        assert_eq!(rows[2]["postSampleCount"], 2);
-        assert_eq!(rows[3]["sampleOffset"], 2);
-        assert_eq!(rows[4]["preSampleOffset"], 2);
-        assert_eq!(rows[4]["postSampleOffset"], 2);
-        assert_eq!(rows[4]["preSampleCount"], 4);
-        let disk: Value = serde_json::from_slice(&std::fs::read(dir.0.join(TERMINAL_FILE)).unwrap()).unwrap();
-        assert_eq!(disk, result);
-        assert!(!dir.0.join(TERMINAL_PARTIAL_FILE).exists());
-        tap.record_reset("too-late", None, 99);
-        tap.abort("late failure outside the closed recording interval");
-        assert_eq!(tap.finish(Duration::ZERO).unwrap(), result);
-        assert!(AecDiagnosticTap::start(&dir.0).is_err());
-    }
-
-    #[test]
-    fn close_waits_for_inflight_sender_before_claiming_final_counts() {
-        let dir = Directory::new();
-        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
-        let live = tap.live.as_ref().unwrap();
-        let admission = live.shared.admit().unwrap();
-        let timeout: Value = serde_json::from_str(&tap.finish(Duration::from_millis(10)).unwrap_err()).unwrap();
-        assert_eq!(timeout["status"], "timeout");
-        assert_eq!(timeout["countsFinal"], false);
-        assert!(!dir.0.join(TERMINAL_FILE).exists());
-        assert!(live.shared.admit().is_none());
-        let sequence = live.shared.sequence.fetch_add(1, Ordering::Relaxed);
-        live.shared.reset_generation.store(1, Ordering::Release);
-        AecDiagnosticTap::send(live, TapEvent::Reset {
-            sequence, reset_generation: 1, qpc_100ns: None, continuity_id: 0, reason: "in-flight".into(),
-        });
-        drop(admission);
-        assert_eq!(tap.finish(Duration::from_secs(2)).unwrap()["writtenEvents"], 1);
-    }
-
-    #[test]
-    fn invalid_clocks_are_preserved_and_counted_but_not_health_gated() {
-        let dir = Directory::new();
-        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
-        let mut frame = metadata();
-        frame.timestamp_error = true;
-        frame.queue_head_clock_valid = false;
-        frame.data_discontinuity = true;
-        tap.record_capture(&[0.0; 2], &[0.0; 2], frame);
-        let result = tap.finish(Duration::from_secs(2)).unwrap();
-        assert_eq!(result["invalidClockEvents"], 1);
-        let row: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(METADATA_FILE)).unwrap()).unwrap();
-        for key in ["packetQpc100ns", "packetDeviceFrameIndex", "queueHeadQpc100ns"] { assert!(row[key].is_null()); }
-        assert_eq!(row["rawPacketQpc100ns"], frame.packet_qpc_100ns);
-        assert_eq!(row["rawPacketDeviceFrameIndex"], frame.packet_device_frame_index);
-    }
-
-    struct FaultSink { fail_write: bool, fail_flush: bool, fail_sync: bool }
-
-    impl Write for FaultSink {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if self.fail_write { Err(io::Error::other("injected write")) } else { Ok(bytes.len()) }
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            if self.fail_flush { Err(io::Error::other("injected flush")) } else { Ok(()) }
-        }
-    }
-
-    impl EvidenceSink for FaultSink {
-        fn sync_all(&mut self) -> io::Result<()> {
-            if self.fail_sync { Err(io::Error::other("injected sync")) } else { Ok(()) }
-        }
-    }
-
-    #[test]
-    fn four_sinks_finalize_even_on_write_flush_or_sync_failure() {
-        for failure in 0..3 {
-            let dir = Directory::new();
-            let mut files = EvidenceFiles::open(&dir.0).unwrap();
-            files.pre = EvidenceFile::new(PRE_FILE, FaultSink {
-                fail_write: failure == 0, fail_flush: failure == 1, fail_sync: failure == 2,
-            });
-            let tap = AecDiagnosticTap::spawn(files, exclusive(dir.0.join(TERMINAL_PARTIAL_FILE)).unwrap(), dir.0.clone()).unwrap();
-            tap.record_capture(&[0.5; 2], &[0.0; 2], metadata());
-            let result: Value = serde_json::from_str(&tap.finish(Duration::from_secs(2)).unwrap_err()).unwrap();
-            assert_eq!(result["complete"], false);
-            assert_eq!(result["countsFinal"], true);
-            assert!(!result["errors"].as_array().unwrap().is_empty());
-            assert_eq!(result["files"]["post"]["synced"], true);
-            assert_eq!(result["files"]["metadata"]["synced"], true);
-            if failure == 0 {
-                assert_eq!(result["files"]["pre"]["byteLength"], 0);
-                assert_eq!(result["files"]["pre"]["unwrittenBufferedBytes"], 8);
-                assert_eq!(result["files"]["pre"]["sha256"], format!("{:x}", Sha256::digest([])));
-            }
-        }
-    }
-
-    #[test]
-    fn malformed_or_out_of_order_events_cannot_get_complete_terminal() {
-        for out_of_order in [false, true] {
-            let dir = Directory::new();
-            let shared = Shared::default();
-            shared.sequence.store(1, Ordering::Relaxed);
-            shared.accepted_events.store(1, Ordering::Relaxed);
-            let (sender, receiver) = mpsc::channel();
-            sender.send(TapEvent::Render {
-                sequence: if out_of_order { 1 } else { 0 }, reset_generation: 0,
-                qpc_100ns: None, continuity_id: 0, render_session_id: 1, owner_generation: 1,
-                physical_prefix_offset_frames: 0, reference_start_frame: 0, reference_end_frame: 1,
-                played_frames: 0, submitted_frames: 1, endpoint_padding_frames: 1, sample_rate_hz: 48_000, channel_count: 2,
-                samples: if out_of_order { vec![0.0; 2] } else { vec![0.0] },
-            }).unwrap();
-            shared.close();
-            let result = write_events(receiver, EvidenceFiles::open(&dir.0).unwrap(), &shared);
-            assert_eq!(result["complete"], false, "out_of_order={out_of_order}");
-        }
-    }
-
-    #[test]
-    fn disabled_tap_has_no_writer_or_admission_and_cannot_claim_completion() {
-        let tap = AecDiagnosticTap::from_optional_directory(None);
-        assert!(!tap.enabled());
-        assert!(tap.live.is_none());
-        tap.record_render(&[0.0; 2], 48_000, 2, None, 0, 1, 1, 0, 0, 1, 0, 1, 1);
-        tap.record_capture(&[0.0; 2], &[0.0; 2], metadata());
-        tap.record_reset("disabled", None, 0);
-        let result: Value = serde_json::from_str(&tap.finish(Duration::ZERO).unwrap_err()).unwrap();
-        assert_eq!(result["status"], "disabled");
-        assert_eq!(result["complete"], false);
-    }
-
-    #[test]
-    fn full_channel_and_disconnected_writer_never_claim_complete() {
-        let dir = Directory::new();
-        let shared = Arc::new(Shared::default());
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let tap = AecDiagnosticTap {
-            live: Some(LiveTap { sender, shared: shared.clone(), writer: Mutex::new(None) }), startup_error: None,
-        };
-        tap.record_reset("accepted", None, 0);
-        tap.record_reset("full", None, 0);
-        tap.close_admission();
-        let result = write_events(receiver, EvidenceFiles::open(&dir.0).unwrap(), &shared);
-        assert_eq!(result["attemptedEvents"], 2);
-        assert_eq!(result["acceptedEvents"], 1);
-        assert_eq!(result["writtenEvents"], 1);
-        assert_eq!(result["droppedEvents"], 1);
-        assert_eq!(result["complete"], false);
-
-        let (sender, receiver) = mpsc::sync_channel(1);
-        drop(receiver);
-        let tap = AecDiagnosticTap {
-            live: Some(LiveTap { sender, shared: Arc::new(Shared::default()), writer: Mutex::new(None) }), startup_error: None,
-        };
-        tap.record_reset("disconnected", None, 0);
-        let shared = &tap.live.as_ref().unwrap().shared;
-        assert!(!tap.enabled());
-        assert_eq!(shared.dropped_events.load(Ordering::Acquire), 1);
-        assert!(shared.failure.get().unwrap().contains("disconnected"));
-    }
-
-    struct BlockingSyncSink { entered: mpsc::Sender<()>, release: mpsc::Receiver<()> }
-
-    impl Write for BlockingSyncSink {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { Ok(bytes.len()) }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
-    }
-
-    impl EvidenceSink for BlockingSyncSink {
-        fn sync_all(&mut self) -> io::Result<()> {
-            self.entered.send(()).unwrap();
-            self.release.recv().unwrap();
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn blocking_os_sync_cannot_make_finish_or_drop_join_the_writer() {
-        let dir = Directory::new();
-        let mut files = EvidenceFiles::open(&dir.0).unwrap();
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        files.pre = EvidenceFile::new(PRE_FILE, BlockingSyncSink { entered: entered_tx, release: release_rx });
-        let tap = AecDiagnosticTap::spawn(files, exclusive(dir.0.join(TERMINAL_PARTIAL_FILE)).unwrap(), dir.0.clone()).unwrap();
-        let shared = tap.live.as_ref().unwrap().shared.clone();
-        let started = Instant::now();
-        let timeout = tap.finish(Duration::from_millis(20)).unwrap_err();
-        assert!(timeout.contains("timeout"));
-        assert!(started.elapsed() < Duration::from_secs(2));
-        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(shared.outcome.get().is_none());
-        assert!(!dir.0.join(TERMINAL_FILE).exists());
-        let started = Instant::now();
-        drop(tap);
-        assert!(started.elapsed() < Duration::from_secs(2));
-        release_tx.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while shared.outcome.get().is_none() && Instant::now() < deadline { thread::sleep(Duration::from_millis(1)); }
-        assert!(shared.outcome.get().is_some());
-    }
-
-    #[test]
-    fn terminal_commit_conflict_never_overwrites_or_returns_success() {
-        let dir = Directory::new();
-        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
-        std::fs::write(dir.0.join(TERMINAL_FILE), b"existing receipt").unwrap();
-        let error = tap.finish(Duration::from_secs(2)).unwrap_err();
-        assert!(error.contains("terminal commit"));
-        assert_eq!(std::fs::read(dir.0.join(TERMINAL_FILE)).unwrap(), b"existing receipt");
-    }
-}
+mod tests;

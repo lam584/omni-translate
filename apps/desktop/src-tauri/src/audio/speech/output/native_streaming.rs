@@ -278,6 +278,20 @@ impl NativeDesktopStream {
     /// same-client padding reaches zero (not merely after writes are accepted).
     pub(crate) fn poll<F>(&mut self, events: &mut F) -> Result<Option<SpeakerPlaybackReceipt>, String>
     where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
+        // Match the established WASAPI renderer: admit two real 10ms blocks
+        // BEFORE Start, not merely 800ms into the software queue. No extra
+        // startup wait, synthetic PCM, client restart or underrun suppression.
+        // Once running, preserve the one-block nonblocking pump contract.
+        for _ in 0..2 {
+            let before = self.submitted_frames;
+            let result = self.poll_step(events)?;
+            if result.is_some() || self.started || self.submitted_frames == before { return Ok(result); }
+        }
+        Ok(None)
+    }
+
+    fn poll_step<F>(&mut self, events: &mut F) -> Result<Option<SpeakerPlaybackReceipt>, String>
+    where F: for<'a> FnMut(DesktopStreamingEvent<'a>) -> Result<(), String> {
         if self.terminal { return Err("poll after native desktop terminal".into()); }
         let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
         self.permit.ensure_active()?;
@@ -329,7 +343,10 @@ impl NativeDesktopStream {
             let submitted_qpc_100ns = crate::audio::engine::aec_timing::qpc_now_100ns();
             let endpoint_padding_frames = prepared.padding()?;
             if endpoint_padding_frames as u64 > self.submitted_frames { return Err("native desktop padding exceeds submit clock".into()); }
-            if !self.started {
+            let prefill_frames = (BLOCK_FRAMES * 2).min(prepared.buffer_frames() as usize);
+            let another_block_fits = prepared.buffer_frames().saturating_sub(endpoint_padding_frames) as usize >= BLOCK_FRAMES;
+            let short_ready = self.queue.buffered_frames() == 0 && (self.queue.ended || startup_timed_out);
+            if !self.started && (endpoint_padding_frames as usize >= prefill_frames || !another_block_fits || short_ready) {
                 self.permit.submit(|| prepared.start())?;
                 let mut render = |event: SpeakerRenderEvent<'_>| events(DesktopStreamingEvent::Render(event));
                 publish_render_stream_started_and_flush(&mut self.started, self.session_id, &self.endpoint_id,
@@ -526,6 +543,54 @@ mod tests {
         assert_eq!(device.borrow().writes.iter().flatten().copied().collect::<Vec<_>>(), references);
         assert!(stream.poll(&mut |_| Ok(())).is_err());
     }
+    #[test]
+    fn startup_prefills_two_real_blocks_before_stream_started_callback() {
+        let owner = DesktopPlaybackOwnership::default();
+        let (mut stream, device) = fake_stream(&owner);
+        stream.push_pcm(&vec![10_000;19_200],24_000).unwrap();
+        let mut padding_at_start = None;
+        let mut callback = |event: DesktopStreamingEvent<'_>| {
+            if matches!(event, DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason: crate::audio::state::EchoRenderBoundary::StreamStarted { .. }, .. })) {
+                padding_at_start = Some(device.borrow().padding);
+            }
+            Ok(())
+        };
+        assert!(stream.poll(&mut callback).unwrap().is_none());
+        assert_eq!(padding_at_start,Some(960));
+        assert_eq!(device.borrow().starts,1);
+        assert_eq!(device.borrow().writes.len(),2);
+        assert_eq!(stream.submitted_frames,960);
+        assert!(!stream.queue.ended);
+    }
+
+    #[test]
+    fn one_device_period_during_start_callback_does_not_empty_the_prefill() {
+        let owner = DesktopPlaybackOwnership::default();
+        let (mut stream, device) = fake_stream(&owner);
+        stream.push_pcm(&vec![10_000;19_200],24_000).unwrap();
+        let mut callback = |event: DesktopStreamingEvent<'_>| {
+            match event {
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason: crate::audio::state::EchoRenderBoundary::StreamStarted { .. }, .. }) => {
+                    // Deterministic endpoint advancement while the caller runs
+                    // its lifecycle callback; this is NOT acoustic evidence.
+                    let mut device = device.borrow_mut();
+                    device.padding = device.padding.saturating_sub(480);
+                }
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason: crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"), .. }) => {
+                    return Err("startup discarded its available second reference block".into());
+                }
+                _ => {}
+            }
+            Ok(())
+        };
+        stream.poll(&mut callback).unwrap();
+        stream.poll(&mut callback).unwrap();
+        assert_eq!(device.borrow().starts,1);
+    }
+
     #[test]
     fn short_response_has_no_receipt_until_end_and_real_padding_drain() {
         let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);

@@ -12,6 +12,7 @@ const RATE = 48_000;
 const TICKS = 10_000_000;
 const MAX_PCM = RATE * 2 * 4 * 300;
 const MAX_TEXT = 64 * 1024 * 1024;
+const CADENCE_CLOCK_BOUND_MICROS = 1000; // Fixed QPC/Instant consistency bound, not an acoustic threshold.
 const CLOCK_BOUND_FRAMES = 48; // Existing same-client QPC/padding bound, not a new quality threshold.
 const PLAN = [['double-talk', 1, 0, 'none'], ['dynamic-delay', 2, 80, 'none'], ['nonlinear', 3, 160, 'soft-clip']];
 const integer = (n) => Number.isSafeInteger(n) && n >= 0;
@@ -175,6 +176,11 @@ function stimulusCustody(root, receipt, events, linearBytes) {
     && receipt.speechSimulation.stageDurationMs === sim.stageDurationMs && receipt.speechSimulation.deadlineMs === sim.deadlineMs
     && receipt.speechSimulation.originalPcmSha256 === request.renderPcmSha256,
   'simulation cadence/phase/deadline request authority missing');
+  const cadence = receipt.speechSimulation.deltaCadence;
+  check(cadence?.schemaVersion === 1 && cadence.policy === 'absolute-sample-clock/v1'
+    && cadence.intervalMs === 100 && integer(cadence.originQpc100ns) && cadence.originQpc100ns > 0
+    && cadence.maximumLatenessMicros === 100000 && cadence.singleAdmissionPerPump === true,
+  'absolute sample clock v1 delta cadence contract missing/invalid');
   const original = inputFile(request.renderPcmPath, request.renderPcmSha256, 24000 * 2 * 180);
   check(original.length % (2400 * 2) === 0 && receipt.sourcePcmFrames === original.length / 2
     && receipt.render.sourcePcmFrames === original.length / 2, 'original PCM frames cropped or repeated');
@@ -194,11 +200,27 @@ function stimulusCustody(root, receipt, events, linearBytes) {
       && reference[referenceFrame * 2 + 1] === sample, 'actual linear reference not generated from admitted original PCM deltas');
     referenceFrame += 1;
   };
+  let previousAdmissionMicros = 0; let previousAdmissionQpc = cadence.originQpc100ns;
   for (const [i, e] of deltas.entries()) {
+    // Due times are tied to source samples, never to the previous pump's actual
+    // admission. A late admission may legitimately be followed by a <100ms gap.
+    check(e.cadenceVersion === 1 && integer(e.scheduledOffsetMicros) && e.scheduledOffsetMicros === i * 100000
+      && integer(e.admissionOffsetMicros) && integer(e.latenessMicros)
+      && e.latenessMicros === e.admissionOffsetMicros - e.scheduledOffsetMicros
+      && e.latenessMicros < cadence.maximumLatenessMicros
+      && (i === 0 || e.admissionOffsetMicros > previousAdmissionMicros),
+    'delta absolute sample clock cadence offset/lateness invalid');
+    check(integer(e.admissionQpc100ns) && e.admissionQpc100ns > 0
+      && e.admissionQpc100ns >= cadence.originQpc100ns
+      && (i === 0 || e.admissionQpc100ns > previousAdmissionQpc)
+      && Math.abs((e.admissionQpc100ns - cadence.originQpc100ns) / 10 - e.admissionOffsetMicros) <= CADENCE_CLOCK_BOUND_MICROS,
+    'delta cadence QPC origin/Instant clock mismatch or regression');
+    check(integer(e.intervalMs) && e.intervalMs === Math.floor((e.admissionOffsetMicros - previousAdmissionMicros) / 1000),
+      'delta cadence intervalMs inconsistent with actual admission offsets');
+    previousAdmissionMicros = e.admissionOffsetMicros; previousAdmissionQpc = e.admissionQpc100ns;
     const waiting = e.explicitWaitingSilence;
     check(e.chunkIndex === i && e.frames === 2400 && e.sourceStartFrame === sourceFrame
       && typeof waiting === 'boolean' && e.sourceEndFrame === sourceFrame + (waiting ? 0 : 2400)
-      && integer(e.intervalMs) && (i === 0 || e.intervalMs >= 100)
       && e.afterMediaComplete === (e.sequence > completeEvent.sequence), 'delta order/cadence/source-completion ownership mismatch');
     if (waiting) {
       check(integer(sim.tailStartFrame) && sourceFrame >= sim.tailStartFrame && e.sequence < completeEvent.sequence, 'unjustified waiting silence');

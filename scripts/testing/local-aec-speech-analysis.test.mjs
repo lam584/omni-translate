@@ -72,7 +72,9 @@ function fixture(t, variant = 'good') {
         const start = referenceFrame / 2;
         add({ kind: 'simulated-audio.delta', chunkIndex: start / 2400, sourceStartFrame: start,
           sourceEndFrame: start + 2400, frames: 2400, explicitWaitingSilence: false,
-          afterMediaComplete: physicalFrame >= source.length, intervalMs: start === 0 ? 0 : 100,
+          cadenceVersion: 1, scheduledOffsetMicros: start / 2400 * 100000,
+          admissionOffsetMicros: start / 2400 * 100000, admissionQpc100ns: ORIGIN + start / 2400 * 1000000,
+          latenessMicros: 0, afterMediaComplete: physicalFrame >= source.length, intervalMs: start === 0 ? 0 : 100,
           pcmSha256: sha(originalPcm.subarray(start * 2, (start + 2400) * 2)) });
       }
       const voiced = hasRef && Math.sqrt(phys.reduce((sum, n) => sum + n * n, 0) / phys.length) > 0.001;
@@ -179,7 +181,9 @@ function fixture(t, variant = 'good') {
   const request = { schemaVersion: 2, executionId, outputDirectory: root, physicalDeviceId: ENDPOINT,
     renderPcmPath: stimulusPath, renderPcmSha256: sha(originalPcm), speechSimulation: simulation };
   receipt.sourcePcmSha256 = sha(originalPcm); receipt.sourcePcmFrames = originalPcm.length / 2;
-  receipt.speechSimulation = { ...simulation, originalPcmSha256: sha(originalPcm) };
+  receipt.speechSimulation = { ...simulation, originalPcmSha256: sha(originalPcm),
+    deltaCadence: { schemaVersion: 1, policy: 'absolute-sample-clock/v1', intervalMs: 100,
+      originQpc100ns: ORIGIN, maximumLatenessMicros: 100000, singleAdmissionPerPump: true } };
   Object.assign(receipt.render, { sourcePcmFrames: originalPcm.length / 2,
     acceptedSimulationPcmFrames: originalPcm.length / 2, waitingSilenceSourceFrames: 0 });
   receipt.simulationDeltaCount = originalPcm.length / 4800;
@@ -403,5 +407,87 @@ for (const outerFailure of [true, false]) {
     assert.equal(report.clocks, undefined); assert.deepEqual(report.stages, []);
     assert.deepEqual(fs.readFileSync(path.join(f.root, 'local-aec-source-media-receipt.json')), rawReceipt);
     assert.equal(complete.exitCode, 1); assert.equal(complete.receipt.sourceClockValidationPassed, false);
+  });
+}
+
+// Change timing only: waveform hashes, phases, source clocks and quality gates
+// remain the same passing fixture, so these exercise consumer cadence evidence.
+function retimeDeltas(f, latenessAt, qpcErrorMicros = 0) {
+  let previous = 0;
+  for (const [i, e] of f.events.filter((row) => row.kind === 'simulated-audio.delta').entries()) {
+    const offset = i * 100000 + latenessAt(i);
+    Object.assign(e, { scheduledOffsetMicros: i * 100000, admissionOffsetMicros: offset,
+      admissionQpc100ns: f.receipt.speechSimulation.deltaCadence.originQpc100ns + (offset + qpcErrorMicros) * 10,
+      latenessMicros: offset - i * 100000, intervalMs: Math.floor((offset - previous) / 1000) });
+    previous = offset;
+  }
+  f.reseal();
+}
+
+for (const [name, latenessAt] of [
+  ['persistent 2ms jitter stays on absolute sample clock, not accumulated', () => 2000],
+  ['2ms late delta recovers with a legitimate 98ms interval, not burst', (i) => i === 1 ? 2000 : 0],
+  ['sub-ms offset uses floor of actual gap, not difference of rounded timestamps', (i) => i === 1 ? 1999 : 1],
+  ['last admissible lateness is strictly below 100ms', () => 99999],
+]) {
+  test(name, (t) => {
+    const f = fixture(t); retimeDeltas(f, latenessAt);
+    const report = f.analyze(); assert.equal(report.passed, true, JSON.stringify(report));
+    assert.equal(report.stages.length, 4);
+    assert.deepEqual(report.thresholds, { echoAttenuationDb: 20, sourceGainToleranceDb: 3, sourceCoverage: 0.95,
+      windowMs: 100, minimumEchoWindows: 3, minimumReferenceRms: 0.0001,
+      maximumReferenceCorrelation: 0.98, maximumUnexplainedEnergyRatio: 0.2 });
+  });
+}
+for (const errorMicros of [-1000, 1000]) {
+  test('fixed QPC/Instant 1000us bound includes signed boundary ' + errorMicros, (t) => {
+    const f = fixture(t); retimeDeltas(f, () => 2000, errorMicros);
+    assert.equal(f.analyze().passed, true);
+  });
+}
+
+const invalidCadences = [
+  ['legacy report without cadence contract', (f) => { delete f.receipt.speechSimulation.deltaCadence; }],
+  ['unsupported contract schema', (f, c) => { c.schemaVersion = 2; }],
+  ['relative schedule policy', (f, c) => { c.policy = 'relative-now'; }],
+  ['wrong contract interval', (f, c) => { c.intervalMs = 99; }],
+  ['relaxed lateness budget', (f, c) => { c.maximumLatenessMicros = 100001; }],
+  ['burst-capable contract', (f, c) => { c.singleAdmissionPerPump = false; }],
+  ['absent QPC origin', (f, c) => { delete c.originQpc100ns; }],
+  ['zero QPC origin', (f, c) => { c.originQpc100ns = 0; }],
+  ['unsafe QPC origin', (f, c) => { c.originQpc100ns = Number.MAX_SAFE_INTEGER + 1; }],
+  ['forged QPC origin beyond fixed bound', (f, c) => { c.originQpc100ns -= 10001; }],
+  ['old delta without v1 evidence', (f, c, d) => { delete d[1].cadenceVersion; }],
+  ['wrong delta version', (f, c, d) => { d[1].cadenceVersion = 2; }],
+  ['forged scheduled offset', (f, c, d) => { d[1].scheduledOffsetMicros++; }],
+  ['relative offsets with internally consistent lateness', (f, c, d) => {
+    d[1].scheduledOffsetMicros += 2000; d[1].admissionOffsetMicros += 2000;
+    d[1].admissionQpc100ns += 20000; d[1].intervalMs = 102;
+  }],
+  ['early admission', (f) => { retimeDeltas(f, (i) => i === 1 ? -1 : 0); }],
+  ['100ms lateness fails at boundary', (f) => { retimeDeltas(f, () => 100000); }],
+  ['over 100ms lateness', (f) => { retimeDeltas(f, () => 100001); }],
+  ['missing actual admission offset', (f, c, d) => { delete d[1].admissionOffsetMicros; }],
+  ['fractional actual admission offset', (f, c, d) => { d[1].admissionOffsetMicros += 0.5; }],
+  ['forged lateness', (f, c, d) => { d[1].latenessMicros = 1; }],
+  ['QPC offset over positive consistency bound', (f) => { retimeDeltas(f, () => 2000, 1001); }],
+  ['QPC offset over negative consistency bound', (f) => { retimeDeltas(f, () => 2000, -1001); }],
+  ['QPC regression', (f, c, d) => { d[1].admissionQpc100ns = d[0].admissionQpc100ns - 1; }],
+  ['first QPC precedes origin', (f, c, d) => { d[0].admissionQpc100ns = c.originQpc100ns - 1; }],
+  ['zero admission QPC', (f, c, d) => { d[0].admissionQpc100ns = 0; }],
+  ['missing admission QPC', (f, c, d) => { delete d[1].admissionQpc100ns; }],
+  ['duplicate chunk despite distinct clock', (f, c, d) => { d[1].chunkIndex = d[0].chunkIndex; }],
+  ['duplicate actual admission', (f, c, d) => { d[1].admissionOffsetMicros = d[0].admissionOffsetMicros; }],
+  ['forged adjacent interval', (f, c, d) => { d[1].intervalMs = 101; }],
+  ['forged first interval', (f, c, d) => { d[0].intervalMs = 1; }],
+  ['missing chunk fails exhaustive coverage', (f, c, d) => {
+    f.events.splice(f.events.indexOf(d[1]), 1); f.events.forEach((e, i) => { e.sequence = i; });
+  }],
+];
+for (const [name, mutate] of invalidCadences) {
+  test('v1 cadence rejects ' + name, (t) => {
+    const f = fixture(t), deltas = f.events.filter((e) => e.kind === 'simulated-audio.delta');
+    mutate(f, f.receipt.speechSimulation.deltaCadence, deltas); f.reseal();
+    rejected(f.analyze(), /cadence|clock|delta/u);
   });
 }

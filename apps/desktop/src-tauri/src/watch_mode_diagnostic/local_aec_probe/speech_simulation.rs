@@ -10,6 +10,7 @@ use crate::audio::state::NativeCaptureStartAck;
 #[path = "injector.rs"] mod injector;
 #[path = "owned_collection.rs"] mod owned_collection;
 #[path = "pump_timing.rs"] mod pump_timing;
+#[path = "delta_cadence.rs"] mod delta_cadence;
 #[path = "media_collection.rs"] mod media_collection;
 #[cfg(test)]
 #[path = "tests.rs"] mod tests;
@@ -159,13 +160,15 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         let mut source_evidence_failure = None;
         let outcome = (|| -> Result<(), String> {
             stream.configure_local_aec_speech_simulation(sim.stage_duration_ms, &mut events)?;
+            // Device initialization is not part of the running PCM producer clock.
+            let cadence_origin = Instant::now();
+            let mut cadence = delta_cadence::DeltaCadence::new(cadence_origin, crate::audio::engine::aec_timing::qpc_now_100ns())?;
+            report["speechSimulation"]["deltaCadence"] = cadence.contract();
             let mut cursor = 0_usize;
-            let mut next_delta = started;
             let mut ended = false;
             let mut stream_receipt = None;
             let mut waiting_silence_frames = 0_usize;
             let mut accepted_delta_count = 0_u64;
-            let mut delta_clock = started;
             let mut drain = drain::CaptureDrain::default();
             let silence = vec![0_i16; sim.chunk_frames];
             loop {
@@ -197,22 +200,28 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                         report["sourceMediaComplete"] = receipt; media_complete_flag.set(true);
                     }
                 }
-                if !ended && now >= next_delta && stream.can_accept(sim.chunk_frames) {
+                if !ended && cadence.due(now) && stream.can_accept(sim.chunk_frames) {
                     pump_timing::measure(&timing, pump_timing::Part::DeltaAdmission, || {
                     let waiting = sim.tail_start_frame.is_some_and(|tail| cursor >= tail) && !media_complete_flag.get();
                     if cursor < samples.len() || waiting {
                         let source = if waiting { silence.as_slice() } else { &samples[cursor..cursor+sim.chunk_frames] };
                         stream.push_pcm(source, contract::PCM_RATE)?;
+                        let admitted_at = Instant::now();
+                        let admission = cadence.admitted(admitted_at, crate::audio::engine::aec_timing::qpc_now_100ns())?;
+                        if admission.index != accepted_delta_count { return Err("delta sample-clock admission identity mismatch".into()); }
                         let bytes: Vec<_> = source.iter().flat_map(|s| s.to_le_bytes()).collect();
                         evidence.borrow_mut().record(json!({"kind":"simulated-audio.delta","chunkIndex":accepted_delta_count,
                             "sourceStartFrame":cursor,"sourceEndFrame":cursor+if waiting {0}else{sim.chunk_frames},
                             "pcmSha256":format!("{:x}",Sha256::digest(bytes)),"frames":sim.chunk_frames,
                             "explicitWaitingSilence":waiting,"afterMediaComplete":media_complete_flag.get(),
-                            "intervalMs":now.saturating_duration_since(delta_clock).as_millis()}))?;
-                        delta_clock = now; accepted_delta_count += 1;
+                            "intervalMs":admission.interval_ms,"cadenceVersion":1,
+                            "scheduledOffsetMicros":admission.scheduled_offset_micros,
+                            "admissionOffsetMicros":admission.admission_offset_micros,
+                            "admissionQpc100ns":admission.admission_qpc_100ns,
+                            "latenessMicros":admission.lateness_micros}))?;
+                        accepted_delta_count += 1;
                         if waiting { waiting_silence_frames += sim.chunk_frames; } else { cursor += sim.chunk_frames; }
-                        // No burst catch-up after scheduler stalls: record real delta cadence.
-                        next_delta = now + Duration::from_millis(sim.chunk_interval_ms);
+                        // One admission per pump; OS polling jitter never reanchors the sample clock.
                     }
                     if cursor == samples.len() && !waiting {
                         stream.end(&mut events)?; ended = true;

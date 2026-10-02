@@ -41,25 +41,29 @@ impl RawClockTrace {
         let clock = render.audio_clock.as_ref().ok_or("source clock missing")?;
         let frequency = clock.get_frequency().map_err(error_text)?;
         let before = self.independent_qpc()?;
-        let reading = clock.get_position().map_err(error_text);
+        let (hresult, reading) = clock.get_position_with_status();
         let after = self.independent_qpc()?;
         let raw = reading.map(|(position, qpc)| (position, frequency, qpc));
         let padding = render.current_padding_frames();
-        let _strict_result = strict.observe_raw_clock(raw.clone(), submitted, padding.clone());
-        self.record(raw, submitted, padding, before, after, strict.validation_failure())
+        // Keep unsuccessful/slow native reads as raw evidence, never a trusted source anchor.
+        let strict_raw = if hresult == 0 { raw.clone() } else {
+            Err(format!("source clock accuracy/status unavailable: HRESULT {hresult}"))
+        };
+        let _strict_result = strict.observe_raw_clock(strict_raw, submitted, padding.clone());
+        self.record(raw, submitted, padding, (before, after), Some(hresult), strict.validation_failure())
     }
     fn record(&mut self, raw: Result<(u64,u64,u64),String>, submitted: usize, padding: Result<usize,String>,
-        before: u64, after: u64, strict_failure: Option<&str>) -> Result<(), String> {
+        call_qpc: (u64, u64), hresult: Option<i32>, strict_failure: Option<&str>) -> Result<(), String> {
         self.last_clock = raw.as_ref().ok().map(|v| (v.0,v.1));
         let value = serde_json::json!({"schemaVersion":1,"artifactKind":"aec-source-playback-clock-raw-diagnostic",
             "scope":"diagnostic-only-not-c03","releaseEligible":false,"aecQualityAcceptance":false,
             "sequence":self.sequence,"processId":std::process::id(),"endpointId":self.endpoint,"sampleRateHz":self.rate,
             "clockPosition":raw.as_ref().ok().map(|v|v.0),"clockFrequency":raw.as_ref().ok().map(|v|v.1),
             "qpc100ns":raw.as_ref().ok().map(|v|v.2),"nativeApiError":raw.as_ref().err(),
-            "callStartQpc100ns":before,"callEndQpc100ns":after,"independentQpcFrequency":self.qpc_frequency,
+            "callStartQpc100ns":call_qpc.0,"callEndQpc100ns":call_qpc.1,"independentQpcFrequency":self.qpc_frequency,
             "submittedFrames":submitted,"paddingFrames":padding.as_ref().ok(),"paddingError":padding.as_ref().err(),
-            // wasapi 0.24 discards successful HRESULT accuracy distinctions. Do not invent S_OK.
-            "rawClockHresult":serde_json::Value::Null,"rawClockAccuracyAvailable":false,
+            // Native typed vtable returns the actual HRESULT, including S_FALSE and errors.
+            "rawClockHresult":hresult,"rawClockAccuracyAvailable":hresult.is_some(),
             "strictValidationFailure":strict_failure});
         serde_json::to_writer(&mut self.writer, &value).map_err(|e|format!("write raw clock diagnostic: {e}"))?;
         self.writer.write_all(b"\n").map_err(|e|format!("write raw clock diagnostic newline: {e}"))?;
@@ -97,7 +101,7 @@ mod tests {
         let samples=[(48,384000,10_001_250),(48,384000,10_002_238),(48,384000,10_011_251),(38448,384000,11_001_250)];
         for (i,sample) in samples.into_iter().enumerate() {
             let raw=Ok(sample); let _=clock.observe_raw_clock(raw.clone(),960,Ok(144));
-            trace.record(raw,960,Ok(144),sample.2-10,sample.2+10,clock.validation_failure()).unwrap();
+            trace.record(raw,960,Ok(144),(sample.2-10,sample.2+10),None,clock.validation_failure()).unwrap();
             if i>=2 { assert!(clock.validation_failure().is_some()); }
         }
         trace.finish().unwrap(); assert!(clock.finish().is_err());
@@ -119,8 +123,22 @@ mod tests {
     #[test]
     fn raw_api_errors_are_written_as_unknown_not_a_fake_clock_reading() {
         let dir=tempfile::tempdir().unwrap();let mut trace=RawClockTrace::open(&dir.path().join("s.pcm"),"endpoint",48000,10_000_000).unwrap();
-        trace.record(Err("native query failed".into()),10,Err("padding failed".into()),1,2,Some("native query failed")).unwrap();trace.finish().unwrap();
+        trace.record(Err("native query failed".into()),10,Err("padding failed".into()),(1,2),None,Some("native query failed")).unwrap();trace.finish().unwrap();
         let row:serde_json::Value=serde_json::from_str(std::fs::read_to_string(&trace.path).unwrap().trim()).unwrap();
         assert!(row["clockPosition"].is_null());assert_eq!(row["nativeApiError"],"native query failed");assert_eq!(row["paddingError"],"padding failed");assert_eq!(row["releaseEligible"],false);
     }
+    #[test]
+    fn native_hresult_is_retained_without_reclassifying_s_false_or_failure_as_s_ok() {
+        let dir=tempfile::tempdir().unwrap();let mut trace=RawClockTrace::open(&dir.path().join("s.pcm"),"endpoint",48000,10_000_000).unwrap();
+        for status in [0_i32,1_i32,-2147024891_i32] {
+            let raw=if status<0 { Err("native GetPosition failed".into()) } else { Ok((48,384000,10001250)) };
+            trace.record(raw,960,Ok(144),(10001240,10001260),Some(status),None).unwrap();
+        }
+        trace.finish().unwrap();
+        let rows:Vec<serde_json::Value>=std::fs::read_to_string(&trace.path).unwrap().lines().map(|l|serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(rows[0]["rawClockHresult"],0);assert_eq!(rows[1]["rawClockHresult"],1);
+        assert_eq!(rows[2]["rawClockHresult"],-2147024891_i32);assert!(rows[2]["clockPosition"].is_null());
+        for row in rows { assert_eq!(row["rawClockAccuracyAvailable"],true);assert_eq!(row["aecQualityAcceptance"],false); }
+    }
+
 }

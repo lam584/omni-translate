@@ -305,3 +305,26 @@ test("CLI security bounds: rejects unknown flags, enforces 32MB limit, no symlin
   const linked = path.join(tmpDir, "junction"); fs.symlinkSync(data, linked, process.platform === "win32" ? "junction" : "dir");
   assert.throws(() => execFileSync(process.execPath, [scriptPath, "--trace", path.join(linked, "trace.jsonl")], { encoding: "utf-8" }), /symlink|reparse|symbolic/i);
 });
+
+
+test('native HRESULT is never fabricated from successful QPC bracket membership', () => {
+  const row = (sequence, status) => ({ schemaVersion: 1, artifactKind: ARTIFACT_KIND, sequence,
+    clockPosition: 384000 * (sequence + 1), clockFrequency: 384000,
+    qpc100ns: 100000000 + sequence * 10000000,
+    callStartQpc100ns: 100000000 + sequence * 10000000 - 10,
+    callEndQpc100ns: 100000000 + sequence * 10000000 + 10,
+    rawClockAccuracyAvailable: true, rawClockHresult: status });
+  const report = analyzeSourceClockTrace([row(0, 0), row(1, 1)]);
+  assert.equal(report.nativeStatusCounts.sOk, 1); assert.equal(report.nativeStatusCounts.sFalse, 1);
+  assert.equal(report.independentQpcBracketCounts.within, 2);
+  assert.equal(report.diagnosticPassedWithoutErrors, false); assert.equal(report.formalSourceClockAcceptance, false);
+  assert.match(report.stickyFailureReason, /precise S_OK/);
+  for (const status of [undefined, null, '0', 0.5, 2147483648, -2147483649]) {
+    const d = analyzeSourceClockTrace([row(0, status)]);
+    assert.equal(d.nativeStatusCounts.sOk, 0); assert.equal(d.diagnosticPassedWithoutErrors, false);
+  }
+  const failed = analyzeSourceClockTrace([row(0, -2147024891)]);
+  assert.equal(failed.nativeStatusCounts.failed, 1); assert.equal(failed.formalSourceClockAcceptance, false);
+  const unknown = row(0, null); unknown.rawClockAccuracyAvailable = false;
+  assert.equal(analyzeSourceClockTrace([unknown]).nativeStatusCounts.missingOrMalformed, 1);
+});

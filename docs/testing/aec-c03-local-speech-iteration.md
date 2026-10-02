@@ -135,3 +135,30 @@ wasapi wrapper does not expose successful HRESULT accuracy distinctions, so
 `rawClockHresult=null` and `rawClockAccuracyAvailable=false` are honest unknowns.
 No S_OK is invented. The independent offline diagnostic analyzer computes clock
 facts only and never grants acoustic, Provider or release acceptance.
+
+
+## Native clock precision discrimination (vm171)
+
+The full original-English diagnostic from frozen commit a90836af preserved
+12,586 same-client observations and the natural endpoint crossing. Its nominal
+position/frequency span was 125.8152708333 seconds; the corresponding QPC span
+was 125.5673205 seconds. The fixed-origin interval is infeasible at the frozen
+1 ms bound. This is diagnostic evidence, not an AEC or device-fault verdict.
+
+An independent middle-held-out check now evaluates every consecutive triple,
+with exact rational threshold decisions and the original clock-frequency units.
+Replaying the unchanged raw trace produces 39 errors above 1 ms in 12,583
+triples, including a 12.876 ms terminal error. Thus merely interpolating the
+old sparse clock observations is not an accepted replacement mapping. The
+new report is separately sealed; historical trace and receipt are not changed.
+Passing this interpolation check would not prove native clock accuracy either.
+
+For the next diagnostic, the injector reads GetPosition via the actual render
+client's typed native IAudioClock vtable, retaining the exact signed HRESULT.
+S_FALSE, failure, unknown status and observed S_OK remain distinct; independent
+QPC bracket membership is not substituted for a missing HRESULT. Only S_OK
+can supply a strict source-clock observation. Diagnostic tracing can retain
+other statuses but cannot produce a successful c03 receipt. No production AEC
+quality threshold or fixed-origin validation is relaxed by this observability
+change. A replacement mapping still requires its own proven contract across
+the producer, desktop consumer and independent analyzer.

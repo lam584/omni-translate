@@ -1,3 +1,4 @@
+import { describeSourceClockInterpolation } from './source-clock-interpolation-diagnostic.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -274,8 +275,14 @@ export function analyzeSourceClockTrace(records) {
       if (row.releaseEligible !== undefined && row.releaseEligible !== false) {
         rowErrors.push("Row releaseEligible must be false in raw diagnostic trace");
       }
-      if (row.rawClockAccuracyAvailable !== undefined && row.rawClockAccuracyAvailable !== false) {
-        // currently WASAPI wrapper drops accuracy
+      if (row.rawClockAccuracyAvailable === true) {
+        if (!Number.isInteger(row.rawClockHresult) || row.rawClockHresult < -2147483648 || row.rawClockHresult > 2147483647) {
+          rowErrors.push("native clock HRESULT must be an actual signed 32-bit status");
+        } else if (row.rawClockHresult !== 0) {
+          rowErrors.push("native clock did not return precise S_OK: HRESULT " + row.rawClockHresult);
+        }
+      } else if (row.rawClockHresult != null) {
+        rowErrors.push("native clock status contradicts unavailable accuracy metadata");
       }
     }
 
@@ -320,6 +327,10 @@ export function analyzeSourceClockTrace(records) {
       originQpc,
       callDuration100ns,
       callDurationAnomaly,
+      qpcWithinNativeCallBracket: callStartVal !== null && callEndVal !== null && parsedQpc !== null
+        ? callStartVal <= parsedQpc && parsedQpc <= callEndVal : null,
+      rawClockHresult: row.rawClockAccuracyAvailable === true && Number.isInteger(row.rawClockHresult)
+        && row.rawClockHresult >= -2147483648 && row.rawClockHresult <= 2147483647 ? row.rawClockHresult : null,
       rawClockAccuracyAvailable: row.rawClockAccuracyAvailable === true,
       hasErrors: rowErrors.length > 0,
       errors: rowErrors
@@ -501,6 +512,20 @@ export function analyzeSourceClockTrace(records) {
     intersectionInterval,
     frontModelPredictionError,
     callDurationAnomalies,
+    localInterpolationDiagnostic: describeSourceClockInterpolation(parsedRecords),
+    nativeStatusCounts: {
+      sOk: parsedRecords.filter((r) => r.rawClockHresult === 0).length,
+      sFalse: parsedRecords.filter((r) => r.rawClockHresult === 1).length,
+      failed: parsedRecords.filter((r) => r.rawClockHresult < 0).length,
+      unexpectedSuccess: parsedRecords.filter((r) => r.rawClockHresult > 1).length,
+      missingOrMalformed: parsedRecords.filter((r) => r.rawClockHresult == null).length
+    },
+    independentQpcBracketCounts: {
+      within: parsedRecords.filter((r) => r.qpcWithinNativeCallBracket === true).length,
+      outside: parsedRecords.filter((r) => r.qpcWithinNativeCallBracket === false).length,
+      unknown: parsedRecords.filter((r) => r.qpcWithinNativeCallBracket == null).length,
+      bracketMembershipIsNotClockAccuracyProof: true
+    },
     accuracyStatusMissing: accuracyMissingCount > 0,
     accuracyMissingCount,
     naturalDrainReached,

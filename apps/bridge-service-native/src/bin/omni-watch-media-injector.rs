@@ -29,8 +29,7 @@ mod injector {
     use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
-        initialize_mta, AudioClient, AudioClock, AudioRenderClient, Device, DeviceEnumerator, Direction,
-        Handle, SampleType, StreamMode, WaveFormat,
+        initialize_mta, Device, DeviceEnumerator, Direction, SampleType, WaveFormat,
     };
 
     const TARGET_CHANNELS: usize = 2;

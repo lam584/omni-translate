@@ -110,3 +110,11 @@ A standalone source-clock probe is diagnostic only: it cannot certify c03,
 Provider lifecycle, real-time translation, AEC suppression or matrix acceptance.
 Keep its receipt, original English asset identity, binary hash and rejected
 observations separate from local acoustic simulation results.
+
+The frozen vm171 five-point diagnostic still fails the first-anchor rule. Its
+1.266 ms origin span does not by itself prove a device or QPC fault: a feasible
+unknown fixed-origin interval remains. This fact never turns the run green. A
+separate frozen counterexample accumulates 0.1 ms error per adjacent interval
+until it violates the 1 ms global bound, preventing a consecutive-only check
+from replacing global validation. More complete diagnostic evidence is needed
+before changing any alignment model or mapping rule.

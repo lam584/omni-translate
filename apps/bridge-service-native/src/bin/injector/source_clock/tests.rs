@@ -289,3 +289,54 @@ fn accepted_flush_failure_during_rejection_still_persists_the_offending_sample()
     assert!(clock.finish().is_err());
     assert_eq!(accepted.rows().len(), 2);
 }
+
+#[test]
+fn frozen_vm171_five_points_reject_first_anchor_without_certifying_clock_fault() {
+    // Exact raw values from diagnostic-b70ad2f0; never an acceptance calibration.
+    let readings = [
+        (40, 3_066_304_583_946),
+        (3_864, 3_066_304_675_778),
+        (7_712, 3_066_304_779_540),
+        (11_544, 3_066_304_879_188),
+        (15_392, 3_066_304_971_078),
+    ];
+    let origins: Vec<u64> = readings.iter().map(|(p, q)| source_clock_origin(*p, 384_000, *q).unwrap()).collect();
+    let low = origins.iter().map(|o| o - 10_000).max().unwrap();
+    let high = origins.iter().map(|o| o + 10_000).min().unwrap();
+    // A feasible unknown-origin interval is a diagnostic fact, NOT a green gate.
+    assert!(low <= high);
+    assert_eq!(origins[0].abs_diff(origins[4]), 12_660);
+    let (mut clock, accepted, failed) = harness();
+    for (position, qpc) in readings.iter().take(4) {
+        clock.observe_sample(sample(*position, 384_000, *qpc)).unwrap();
+    }
+    let before = anchor(&clock);
+    assert!(clock.observe_sample(sample(readings[4].0, 384_000, readings[4].1)).is_err());
+    assert_eq!(anchor(&clock), before);
+    assert_eq!(accepted.rows().len(), 4);
+    assert_eq!(failed.rows().len(), 1);
+    assert!(clock.finish().is_err());
+}
+
+#[test]
+fn small_consecutive_clock_errors_cannot_replace_the_global_origin_gate() {
+    let (mut clock, accepted, failed) = harness();
+    let mut previous_origin = None;
+    for index in 0_u64..=11 {
+        let position = 40 + 3_840 * index;
+        let qpc = 10_001_250 + 99_000 * index;
+        let origin = source_clock_origin(position, 384_000, qpc).unwrap();
+        if let Some(previous) = previous_origin {
+            // Only 0.1 ms per interval, but the error accumulates without bound.
+            assert_eq!(origin.abs_diff(previous), 1_000);
+        }
+        previous_origin = Some(origin);
+        let result = clock.observe_sample(sample(position, 384_000, qpc));
+        if index <= 10 { assert!(result.is_ok()); } else { assert!(result.is_err()); }
+    }
+    assert_eq!(accepted.rows().len(), 11);
+    let rejected = failed.rows();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0]["sequence"], 11);
+    assert!(clock.finish().is_err());
+}

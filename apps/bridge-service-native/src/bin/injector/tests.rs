@@ -356,3 +356,76 @@
         // No behavior change in the normal media tool.
         assert!(validate_diagnostic_trace_options(false,true,false,true).is_ok());
     }
+
+    #[test]
+    fn full_media_with_good_clock_has_separate_success_receipts() {
+        let mut result = InjectorResult::failed("initial".to_string().into());
+        result.source_clock_raw_trace_path = Some("raw.jsonl".into());
+        result.record_playback_receipt(true, false, Some(Ok(())), None);
+        assert!(result.passed && result.media_playback_complete && result.natural_render_drained);
+        assert_eq!(result.source_clock_validation_passed, Some(true));
+        assert_eq!(result.source_clock_validation_error, None);
+        assert!(!result.diagnostic_only);
+        assert_eq!(result.detail, None);
+        let receipt = serde_json::to_value(result).unwrap();
+        assert_eq!(receipt["mediaPlaybackComplete"], true);
+        assert_eq!(receipt["sourceClockValidationPassed"], true);
+        assert!(receipt["sourceClockValidationError"].is_null());
+    }
+
+    #[test]
+    fn full_media_with_failed_clock_never_becomes_quality_success() {
+        let error = "source render clock origin drift exceeds frozen 1ms bound";
+        let mut result = InjectorResult::failed("initial".to_string().into());
+        result.source_clock_raw_trace_path = Some("raw.jsonl".into());
+        result.record_playback_receipt(true, false, Some(Err(error.into())), None);
+        assert!(!result.passed && !result.diagnostic_only);
+        assert!(result.media_playback_complete && result.natural_render_drained);
+        assert_eq!(result.source_clock_validation_passed, Some(false));
+        assert_eq!(result.source_clock_validation_error.as_deref(), Some(error));
+        assert_eq!(result.detail.as_deref(), Some(error));
+        let receipt = serde_json::to_value(result).unwrap();
+        assert_eq!(receipt["mediaPlaybackComplete"], true);
+        assert_eq!(receipt["sourceClockValidationPassed"], false);
+        assert_eq!(receipt["sourceClockValidationError"], error);
+        assert_eq!(receipt["passed"], false);
+        assert_eq!(receipt["diagnosticOnly"], false);
+    }
+
+    #[test]
+    fn incomplete_or_failed_playback_cannot_issue_physical_completion() {
+        for physical_complete in [false, true] {
+            for error in ["render underrun", "native API failure", "original deadline expired",
+                "write raw observation failed", "sync accepted evidence failed"] {
+                let mut result = InjectorResult::failed("initial".to_string().into());
+                result.record_playback_receipt(physical_complete, false, Some(Ok(())), Some(error.into()));
+                assert!(!result.passed && !result.media_playback_complete && !result.natural_render_drained);
+                assert_eq!(result.source_clock_validation_passed, Some(true));
+                assert_eq!(result.detail.as_deref(), Some(error));
+            }
+        }
+        let mut result = InjectorResult::failed("initial".to_string().into());
+        result.record_playback_receipt(false, false, Some(Ok(())), None);
+        assert!(!result.media_playback_complete && !result.passed);
+        assert!(result.detail.is_some());
+    }
+
+    #[test]
+    fn diagnostic_flag_prevents_success_even_with_full_media_and_good_clock() {
+        let mut result = InjectorResult::failed("initial".to_string().into());
+        result.record_playback_receipt(true, true, Some(Ok(())), None);
+        assert!(!result.passed && result.diagnostic_only);
+        assert!(result.media_playback_complete && result.natural_render_drained);
+        assert_eq!(result.source_clock_validation_passed, Some(true));
+        assert!(result.detail.unwrap().contains("diagnostic-only"));
+    }
+
+    #[test]
+    fn ordinary_playback_without_48k_reference_keeps_clock_receipt_not_applicable() {
+        let mut result = InjectorResult::failed("initial".to_string().into());
+        result.record_playback_receipt(true, false, None, None);
+        assert!(result.passed && result.media_playback_complete && !result.diagnostic_only);
+        assert_eq!(result.source_clock_validation_passed, None);
+        assert_eq!(result.source_clock_validation_error, None);
+        assert_eq!(result.detail, None);
+    }

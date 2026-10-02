@@ -373,3 +373,35 @@ test('source preceding real native Start readiness cannot pass acoustic analysis
   ready.readyAtMs=101; f.write('local-aec-ready.json',Buffer.from(JSON.stringify(ready)));
   rejected(f.analyze(),/source started before/u);
 });
+
+for (const outerFailure of [true, false]) {
+  test(`physically complete failed source-clock collection cannot enter formal reconstruction (outer failure ${outerFailure})`, (t) => {
+    const f = fixture(t), complete = f.receipt.sourceMediaComplete;
+    const error = 'source IAudioClock drift/false onset';
+    // Complete PCM, quiet drain and terminal seals are left intact. Neither
+    // physical completion nor a forged healthy outer status overrides exit1
+    // and the original failed source-clock receipt. No metric executable runs:
+    // sourceTimeline rejects before reconstruction and metric execution.
+    f.receipt.status = outerFailure ? 'failed' : 'completed';
+    f.receipt.failure = outerFailure ? error : null;
+    Object.assign(complete, { passed: false, exitCode: 1, mediaPlaybackComplete: true,
+      sourceEvidenceValidationPassed: false, sourceEvidenceValidationError: error });
+    Object.assign(complete.receipt, { passed: false, mediaPlaybackComplete: true,
+      naturalRenderDrained: true, diagnosticOnly: false, sourceClockValidationPassed: false,
+      sourceClockValidationError: error, detail: error });
+    const rawReceipt = Buffer.from(JSON.stringify(complete.receipt) + '\n');
+    f.write('local-aec-source-media-receipt.json', rawReceipt); complete.sha256 = sha(rawReceipt);
+    f.reseal();
+    const report = f.analyze();
+    assert.equal(f.receipt.tap.complete, true);
+    assert.equal(f.receipt.capture.countsFinal, true);
+    assert.equal(f.receipt.captureDrain.captureRemainedOpen, true);
+    assert.equal(complete.receipt.mediaPlaybackComplete, true);
+    assert.equal(complete.receipt.naturalRenderDrained, true);
+    rejected(report, /same-run native-owned source injector receipt missing/u);
+    assert.equal(report.status, 'indeterminate');
+    assert.equal(report.clocks, undefined); assert.deepEqual(report.stages, []);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, 'local-aec-source-media-receipt.json')), rawReceipt);
+    assert.equal(complete.exitCode, 1); assert.equal(complete.receipt.sourceClockValidationPassed, false);
+  });
+}

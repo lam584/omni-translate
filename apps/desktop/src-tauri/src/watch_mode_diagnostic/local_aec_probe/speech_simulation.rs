@@ -7,6 +7,7 @@ use crate::audio::state::NativeCaptureStartAck;
 #[path = "drain.rs"] mod drain;
 #[path = "evidence.rs"] mod evidence;
 #[path = "injector.rs"] mod injector;
+#[path = "media_collection.rs"] mod media_collection;
 #[cfg(test)]
 #[path = "tests.rs"] mod tests;
 
@@ -145,6 +146,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         let started = Instant::now();
         let mut stream = NativeDesktopStream::open(Some(&request.physical_device_id), store.desktop_playback_ownership(),
             &request.execution_id, started, &mut events)?;
+        let mut source_evidence_failure = None;
         let outcome = (|| -> Result<(), String> {
             stream.configure_local_aec_speech_simulation(sim.stage_duration_ms, &mut events)?;
             let mut cursor = 0_usize;
@@ -161,7 +163,13 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
                 if now >= deadline { return Err("local AEC media/output/capture quiescence deadline exceeded".into()); }
                 let route = healthy_capture(&store, &request.physical_device_id)?;
                 if !media_complete_flag.get() {
-                    if let Some(receipt) = injector.poll_complete(request)? {
+                    if let Some(collected) = injector.poll_complete(request)? {
+                        if let Some(error) = collected.evidence_failure {
+                            source_evidence_failure.get_or_insert(error);
+                            report["sourceEvidenceValidationPassed"] = json!(false);
+                            report["sourceEvidenceValidationError"] = json!(source_evidence_failure);
+                        }
+                        let receipt = collected.bound;
                         evidence.borrow_mut().record(json!({"kind":"source-media-complete","boundReceipt":receipt}))?;
                         report["sourceInjector"]["exitCode"] = receipt["exitCode"].clone();
                         report["sourceInjector"]["receiptSha256"] = receipt["sha256"].clone();
@@ -222,7 +230,7 @@ pub(super) fn run(app: &tauri::AppHandle, request: &ProbeRequest, report: &mut V
         let stopped = injector.stop_and_join();
         report["sourceInjectorCleanupError"] = json!(stopped.as_ref().err());
         report["sourceInjector"]["cleanupError"] = json!(stopped.as_ref().err());
-        outcome.and(stopped)
+        media_collection::finish_collection(outcome.and(stopped), source_evidence_failure)
     });
     let sealed = evidence.borrow_mut().finish();
     match sealed {

@@ -1,6 +1,7 @@
 //! Child custody: no shell, no credential inheritance, no Provider invocation.
 use super::super::*;
-use super::contract::{MediaStarted, validate_media_complete};
+use super::contract::MediaStarted;
+use super::media_collection::{CollectedMedia, collect_media_complete};
 use std::process::{Child, Command, Stdio};
 
 const RECEIPT_FILE: &str = "local-aec-source-media-receipt.json";
@@ -65,15 +66,14 @@ impl InjectorChild {
             process_id: child.id(), started_at_ms };
         Ok(Self { child, _executable: executable, _source: source, start, receipt_path, source_pcm_path, exited: false })
     }
-    pub(super) fn poll_complete(&mut self, request: &ProbeRequest) -> Result<Option<Value>, String> {
+    pub(super) fn poll_complete(&mut self, request: &ProbeRequest) -> Result<Option<CollectedMedia>, String> {
         let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? else { return Ok(None); };
         self.exited = true;
-        if !status.success() { return Err(format!("real source injector failed: {status}")); }
         let bytes = read_bounded(&self.receipt_path, MAX_REQUEST_BYTES)?;
         let marker = json!({"executionId":request.execution_id,"sourceMediaReceiptSha256":format!("{:x}",Sha256::digest(&bytes))});
-        let marker_bytes = serde_json::to_vec(&marker).map_err(|e| e.to_string())?;
         let now = crate::shared::time::now_unix_millis();
-        let mut result = validate_media_complete(request, &self.start, &marker_bytes, &bytes, now)?;
+        let mut collected = collect_media_complete(request, &self.start, &bytes, now, status.code())?;
+        let result = &mut collected.bound;
         let sim = request.speech_simulation.as_ref().ok_or("missing speechSimulation")?;
         if result["receipt"]["mediaPath"] != sim.source_wav_path.to_string_lossy().as_ref()
             || result["receipt"]["sourcePcm48kMonoPath"] != self.source_pcm_path.to_string_lossy().as_ref() {
@@ -91,8 +91,28 @@ impl InjectorChild {
         if result["receipt"]["sourceClockMetadataPath"] != clock_path.to_string_lossy().as_ref() {
             return Err("source actual clock sidecar path mismatch".into());
         }
-        let clock_bytes = read_bounded(&clock_path, 8*1024*1024)?;
-        let clock_end = validate_source_clock(&clock_bytes, &result["receipt"], source_frames)?;
+        let clock_bytes = read_clock_journal(&clock_path, collected.evidence_failure.is_some())?;
+        let clock_validation = validate_source_clock(&clock_bytes, &result["receipt"], source_frames);
+        result["sourceClockIndependentValidationPassed"] = json!(clock_validation.is_ok());
+        let mut clock_rejection = None;
+        let clock_end = match clock_validation {
+            Ok(end) => end,
+            Err(error) => {
+                result["sourceClockIndependentValidationError"] = json!(error);
+                clock_rejection = Some(error);
+                Value::Null
+            }
+        };
+        let raw_path = request.output_directory.join("aec-source-playback-clock-raw-diagnostic.jsonl");
+        if result["receipt"]["sourceClockRawTracePath"] != raw_path.to_string_lossy().as_ref() {
+            return Err("source raw clock sidecar path mismatch".into());
+        }
+        let raw_bytes = read_bounded(&raw_path, 32*1024*1024)?;
+        let raw_end = validate_raw_clock_collection(&raw_bytes, &result["receipt"], source_frames)?;
+        result["sourceClockRawMetadataPath"] = json!(raw_path);
+        result["sourceClockRawSha256"] = json!(format!("{:x}",Sha256::digest(&raw_bytes)));
+        result["sourceClockRawBytes"] = json!(raw_bytes.len());
+        result["sourceClockPhysicalEnd"] = raw_end;
         result["sourceClockMetadataPath"] = json!(clock_path);
         result["sourceClockSha256"] = json!(format!("{:x}",Sha256::digest(&clock_bytes)));
         result["sourceClockEnd"] = clock_end;
@@ -105,13 +125,16 @@ impl InjectorChild {
         result["sourceWavSha256"] = json!(sim.source_wav_sha256);
         result["injectorExecutableSha256"] = json!(sim.injector_executable_sha256);
         result["exitCode"] = json!(status.code());
-        result["passed"] = result["receipt"]["passed"].clone();
+        result["sourceEvidenceValidationPassed"] = json!(collected.evidence_failure.is_none());
+        result["sourceEvidenceValidationError"] = json!(collected.evidence_failure);
+        result["passed"] = json!(collected.evidence_failure.is_none());
         result["endpointId"] = result["receipt"]["endpointId"].clone();
         result["processId"] = result["receipt"]["processId"].clone();
         result["spawnedByNative"] = json!(true);
         result["providerCalls"] = json!(0);
+        if let Some(error) = clock_rejection { collected.reject_evidence(error); }
         exclusive_json(&request.output_directory.join(super::contract::COMPLETE_FILE), &marker)?;
-        Ok(Some(result))
+        Ok(Some(collected))
     }
     pub(super) fn stop_and_join(&mut self) -> Result<(), String> {
         if self.exited { return Ok(()); }
@@ -122,6 +145,54 @@ impl InjectorChild {
 }
 impl Drop for InjectorChild {
     fn drop(&mut self) { let _ = self.stop_and_join(); }
+}
+
+// Only a rejected-evidence collection can seal an empty accepted journal. It
+// still fails the independent strict validator and never authorizes success.
+fn read_clock_journal(path: &Path, allow_empty: bool) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path).map_err(|e|e.to_string())?;
+    let meta = file.metadata().map_err(|e|e.to_string())?;
+    if !meta.is_file() || meta.len()>8*1024*1024 || (!allow_empty && meta.len()==0) {
+        return Err("source accepted clock journal size/type invalid".into());
+    }
+    let bytes = read_limited(file,8*1024*1024)?;
+    if bytes.len() as u64 != meta.len() { return Err("source clock journal changed during read".into()); }
+    Ok(bytes)
+}
+
+// Identity/full physical endpoint validation is separate from clock alignment
+// quality. A failed origin check remains failed; these raw rows only prove what
+// the same native client observed while completing the unchanged source.
+fn validate_raw_clock_collection(bytes: &[u8], receipt: &Value, source_frames: u64) -> Result<Value, String> {
+    let text=std::str::from_utf8(bytes).map_err(|e|e.to_string())?;
+    if !text.ends_with('\n') { return Err("source raw clock journal is truncated".into()); }
+    let mut count=0_u64;let mut last=Value::Null;
+    for line in text.lines() {
+        let row:Value=serde_json::from_str(line).map_err(|e|e.to_string())?;
+        if row["schemaVersion"]!=1 || row["artifactKind"]!="aec-source-playback-clock-raw-diagnostic"
+            || row["scope"]!="diagnostic-only-not-c03" || row["aecQualityAcceptance"]!=false || row["releaseEligible"]!=false
+            || row["sequence"]!=count || row["endpointId"]!=receipt["endpointId"] || row["processId"]!=receipt["processId"]
+            || row["sampleRateHz"]!=48000 || row["submittedFrames"].as_u64().is_none_or(|n|n>source_frames) {
+            return Err("source raw clock collection identity/order/ownership mismatch".into());
+        }
+        if row["rawClockHresult"].as_i64().is_none_or(|status|status<0)
+            || !row["nativeApiError"].is_null() || !row["paddingError"].is_null()
+            || !row["observationError"].is_null() {
+            return Err("source raw collection contains a fatal native observation".into());
+        }
+        count+=1;last=row;
+    }
+    let frequency=last["clockFrequency"].as_u64().filter(|n|*n>0).ok_or("source raw terminal frequency missing")?;
+    let position=last["clockPosition"].as_u64().ok_or("source raw terminal position missing")?;
+    if count<2 || last["rawClockHresult"]!=0 || last["rawClockAccuracyAvailable"]!=true
+        || last["qpc100ns"].as_u64().is_none_or(|qpc|qpc==0)
+        || !last["nativeApiError"].is_null() || !last["observationError"].is_null()
+        || last["paddingFrames"]!=0 || last["submittedFrames"].as_u64()!=Some(source_frames)
+        || (position as u128)*48_000 < (source_frames as u128)*(frequency as u128) {
+        return Err("source raw clock has not reliably crossed full PCM with zero padding".into());
+    }
+    Ok(json!({"recordCount":count,"terminal":last,"sourceFrames":source_frames,
+        "physicalPlaybackObserved":true,"alignmentQualityAcceptance":false}))
 }
 
 /// Independently seal the injector's ACTUAL IAudioClock journal. Wall/process
@@ -189,6 +260,36 @@ mod tests {
         assert!(validate_source_clock(&bytes(bad),&receipt,48000).is_err());
         let mut bad=good;bad["endpointId"]=json!("different");
         assert!(validate_source_clock(&bytes(bad),&receipt,48000).is_err());
+    }
+
+    #[test]
+    fn rejected_source_clock_journal_may_be_sealed_empty_but_never_accepted() {
+        let dir=tempfile::tempdir().unwrap();let file=dir.path().join("clock.jsonl");fs::write(&file,b"").unwrap();
+        assert!(read_clock_journal(&file,false).is_err());assert_eq!(read_clock_journal(&file,true).unwrap(),Vec::<u8>::new());
+        assert!(validate_source_clock(b"",&json!({}),48000).is_err());
+    }
+    #[test]
+    fn raw_source_end_supports_collection_only_and_rejects_false_endpoint_or_padding() {
+        let receipt=json!({"endpointId":"endpoint","processId":1234});
+        let record=|sequence:u64,position:u64,padding:u64|json!({"schemaVersion":1,
+            "artifactKind":"aec-source-playback-clock-raw-diagnostic","scope":"diagnostic-only-not-c03",
+            "aecQualityAcceptance":false,"releaseEligible":false,"sequence":sequence,"endpointId":"endpoint",
+            "processId":1234,"sampleRateHz":48000,"submittedFrames":48000,"paddingFrames":padding,
+            "clockFrequency":384000,"clockPosition":position,"rawClockHresult":0,"rawClockAccuracyAvailable":true,
+            "nativeApiError":null,"paddingError":null,"observationError":null,"qpc100ns":100000000+position,"strictValidationFailure":"source clock origin failed"});
+        let bytes=|last:Value|format!("{}\n{}\n",record(0,3840,47520),last).into_bytes();
+        let good=record(1,384000,0);let end=validate_raw_clock_collection(&bytes(good.clone()),&receipt,48000).unwrap();
+        assert_eq!(end["physicalPlaybackObserved"],true);assert_eq!(end["alignmentQualityAcceptance"],false);
+        for (field,value) in [("clockPosition",json!(383999)),("paddingFrames",json!(1)),("endpointId",json!("other")),
+            ("rawClockHresult",json!(1)),("rawClockAccuracyAvailable",json!(false)),("sequence",json!(5)),("qpc100ns",Value::Null),("qpc100ns",json!(0))] {
+            let mut bad=good.clone();bad[field]=value;assert!(validate_raw_clock_collection(&bytes(bad),&receipt,48000).is_err(),"{field}");
+        }
+        for (field,value) in [("rawClockHresult",json!(-1)),("nativeApiError",json!("API failed")),
+            ("paddingError",json!("padding failed")),("observationError",json!("QPC failed"))] {
+            let mut first=record(0,3840,47520);first[field]=value;
+            let contradictory=format!("{}\n{}\n",first,good).into_bytes();
+            assert!(validate_raw_clock_collection(&contradictory,&receipt,48000).is_err(),"earlier {field}");
+        }
     }
 
 }

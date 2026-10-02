@@ -46,7 +46,7 @@ fn harness() -> (SourcePlaybackClock, TestWriter, TestWriter) {
     let failed = TestWriter::default();
     let clock = SourcePlaybackClock {
         writer: Some(Box::new(accepted.clone())), metadata_path: None,
-        failure_writer: Some(Box::new(failed.clone())), failure: None,
+        failure_writer: Some(Box::new(failed.clone())), failure: None, persistence_failed: false,
         origin: None, frequency: None, previous_position: 0,
         endpoint_id: "test-endpoint".into(), rate: 48_000, sequence: 0,
     };
@@ -339,4 +339,29 @@ fn small_consecutive_clock_errors_cannot_replace_the_global_origin_gate() {
     assert_eq!(rejected.len(), 1);
     assert_eq!(rejected[0]["sequence"], 11);
     assert!(clock.finish().is_err());
+}
+
+#[test]
+fn evidence_persistence_failure_cannot_be_cleared_by_a_later_successful_finish() {
+    let (mut clock, accepted, failed) = harness();
+    accept_two(&mut clock);
+    accepted.0.lock().unwrap().fail_flush = true;
+    assert!(clock.finish().is_err());
+    assert!(clock.persistence_failed());
+    accepted.0.lock().unwrap().fail_flush = false;
+    assert!(clock.finish().is_err());
+    assert!(clock.persistence_failed());
+    assert_eq!(failed.0.lock().unwrap().syncs, 2);
+}
+
+#[test]
+fn strict_clock_violation_alone_is_not_an_evidence_persistence_failure() {
+    let (mut clock, accepted, failed) = harness();
+    accept_two(&mut clock);
+    assert!(clock.observe_sample(sample(48, 384_000, 10_011_251)).is_err());
+    assert!(!clock.persistence_failed());
+    assert!(clock.finish().unwrap_err().contains("frozen 1ms"));
+    assert!(!clock.persistence_failed());
+    assert_eq!(accepted.rows().len(), 2);
+    assert_eq!(failed.rows().len(), 1);
 }

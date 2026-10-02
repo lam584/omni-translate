@@ -27,7 +27,7 @@ struct ClockObservation {
 
 pub(super) struct SourcePlaybackClock {
     writer: Option<Box<dyn EvidenceWriter>>, pub(super) metadata_path: Option<PathBuf>,
-    failure_writer: Option<Box<dyn EvidenceWriter>>, failure: Option<String>,
+    failure_writer: Option<Box<dyn EvidenceWriter>>, failure: Option<String>, persistence_failed: bool,
     pub(super) origin: Option<u64>, pub(super) frequency: Option<u64>, previous_position: u64,
     endpoint_id: String, rate: u32, sequence: u64,
 }
@@ -42,7 +42,7 @@ impl SourcePlaybackClock {
         };
         let writer = metadata_path.as_ref().map(&open).transpose()?;
         let failure_writer = failure_path.as_ref().map(&open).transpose()?;
-        Ok(Self { writer, metadata_path, failure_writer, failure: None,
+        Ok(Self { writer, metadata_path, failure_writer, failure: None, persistence_failed: false,
             origin: None, frequency: None, previous_position: 0,
             endpoint_id: endpoint_id.to_string(), rate, sequence: 0 })
     }
@@ -71,6 +71,7 @@ impl SourcePlaybackClock {
         }
     }
     pub(super) fn validation_failure(&self) -> Option<&str> { self.failure.as_deref() }
+    pub(super) fn persistence_failed(&self) -> bool { self.persistence_failed }
     fn observe_sample(&mut self, sample: ClockObservation) -> Result<(), String> {
         if let Some(error) = &self.failure { return Err(error.clone()); }
         let ClockObservation { position, frequency, qpc, .. } = sample;
@@ -100,6 +101,7 @@ impl SourcePlaybackClock {
             "clockPosition":position,"clockFrequency":frequency,"qpc100ns":qpc,
             "playbackStartQpc100ns":self.origin.unwrap_or(origin),"submittedFrames":sample.submitted,"paddingFrames":padding});
         if let Err(error) = Self::write_row(&mut self.writer, &value) {
+            self.persistence_failed = true;
             return self.reject(Some(&sample), format!("write source clock evidence: {error}"));
         }
         // Only a validated, successfully written row can change accepted state.
@@ -129,6 +131,7 @@ impl SourcePlaybackClock {
                     "clockPosition":self.previous_position,"successfulObservations":self.sequence},
                 "validationError":error});
             if let Err(error) = Self::write_row(&mut self.failure_writer, &value) {
+                self.persistence_failed = true;
                 errors.push(format!("write source clock failure evidence: {error}"));
             }
         }
@@ -146,7 +149,7 @@ impl SourcePlaybackClock {
                 if let Err(error) = writer.sync_all() { errors.push(format!("sync {name} source clock evidence: {error}")); }
             }
         }
-        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+        if errors.is_empty() { Ok(()) } else { self.persistence_failed = true; Err(errors.join("; ")) }
     }
     pub(super) fn finish(&mut self) -> Result<(), String> {
         // Incomplete/failed runs still persist every row that reached a writer.

@@ -49,6 +49,9 @@ mod injector {
     #[serde(rename_all = "camelCase")]
     pub(super) struct InjectorResult {
         pub passed: bool,
+        pub media_playback_complete: bool,
+        pub source_clock_validation_passed: Option<bool>,
+        pub source_clock_validation_error: Option<String>,
         pub media_path: String,
         pub endpoint_id: String,
         pub endpoint_name: String,
@@ -83,6 +86,7 @@ mod injector {
 
     pub(super) struct InjectorError {
         detail: String,
+        diagnostic_only: bool,
         buffer_frames: usize,
         prefill_frames: usize,
         render_wake_count: usize,
@@ -95,6 +99,7 @@ mod injector {
             Self { buffer_frames, ..detail.into() }
         }
 
+        #[cfg(test)]
         fn with_render(
             detail: String,
             buffer_frames: usize,
@@ -103,6 +108,7 @@ mod injector {
         ) -> Self {
             Self {
                 detail,
+                diagnostic_only: false,
                 buffer_frames,
                 prefill_frames: pacing.prefill_frames.max(observed_prefill_frames),
                 render_wake_count: pacing.wake_count,
@@ -116,6 +122,7 @@ mod injector {
         fn from(detail: String) -> Self {
             Self {
                 detail,
+                diagnostic_only: false,
                 buffer_frames: 0,
                 prefill_frames: 0,
                 render_wake_count: 0,
@@ -126,9 +133,32 @@ mod injector {
     }
 
     impl InjectorResult {
+        // Physical delivery is an independent receipt, never a source/c03 acceptance.
+        // Call only after all observations have been written, flushed and synced.
+        fn record_playback_receipt(&mut self, physical_complete: bool, diagnostic_only: bool,
+            clock_validation: Option<Result<(), String>>, playback_error: Option<String>) {
+            self.diagnostic_only = diagnostic_only;
+            self.source_clock_validation_passed = clock_validation.as_ref().map(Result::is_ok);
+            self.source_clock_validation_error = clock_validation.and_then(Result::err);
+            self.media_playback_complete = physical_complete && playback_error.is_none();
+            self.natural_render_drained = self.media_playback_complete;
+            self.passed = self.media_playback_complete && !diagnostic_only
+                && self.source_clock_validation_passed != Some(false);
+            let mut details: Vec<String> = playback_error.into_iter().collect();
+            if let Some(error) = &self.source_clock_validation_error {
+                if !details.contains(error) { details.push(error.clone()); }
+            }
+            if diagnostic_only { details.push("diagnostic-only full clock trace; not quality acceptance".into()); }
+            if !physical_complete && details.is_empty() { details.push("media playback physically incomplete".into()); }
+            self.detail = if details.is_empty() { None } else { Some(details.join("; ")) };
+        }
+
         pub(super) fn failed(error: InjectorError) -> Self {
             Self {
                 passed: false,
+                media_playback_complete: false,
+                source_clock_validation_passed: None,
+                source_clock_validation_error: None,
                 media_path: String::new(),
                 endpoint_id: String::new(),
                 endpoint_name: String::new(),
@@ -156,7 +186,7 @@ mod injector {
                 source_pcm48k_mono_path: None,
                 source_clock_metadata_path: None,
                 detail: Some(error.detail),
-                diagnostic_only: false,
+                diagnostic_only: error.diagnostic_only,
                 natural_render_drained: false,
                 source_clock_raw_trace_path: None,
             }
@@ -279,8 +309,17 @@ mod injector {
     }
 
     pub(super) fn run() -> Result<InjectorResult, InjectorError> {
+        let args = parse_args().map_err(|detail| {
+            let mut error: InjectorError = detail.into();
+            error.diagnostic_only = std::env::args().any(|arg| arg == "--diagnostic-source-clock-trace");
+            error
+        })?;
+        let diagnostic_only = args.diagnostic_source_clock_trace;
+        run_with_args(args).map_err(|mut error| { error.diagnostic_only = diagnostic_only; error })
+    }
+
+    fn run_with_args(args: Args) -> Result<InjectorResult, InjectorError> {
         let started_at_ms = unix_ms();
-        let args = parse_args()?;
         let decoded = decode_media(&args.media_path)?;
         if decoded.samples.is_empty() {
             return Err(format!(
@@ -309,6 +348,9 @@ mod injector {
             write_pcm16le(reference_path, &reference_samples)?;
             return Ok(InjectorResult {
                 passed: true,
+                media_playback_complete: false,
+                source_clock_validation_passed: None,
+                source_clock_validation_error: None,
                 media_path: args.media_path.display().to_string(),
                 endpoint_id: String::new(),
                 endpoint_name: String::new(),
@@ -424,10 +466,12 @@ mod injector {
         let mut pacing_authority = RenderPacingAuthority::default();
         let mut observed_prefill_frames = 0;
         let mut source_clock = SourcePlaybackClock::new(args.reference_pcm48k_mono_path.as_deref(), &endpoint_id, render_sample_rate_hz)?;
-        let mut raw_trace = if args.diagnostic_source_clock_trace {
-            Some(RawClockTrace::new(args.reference_pcm48k_mono_path.as_deref().unwrap(), &endpoint_id, render_sample_rate_hz)?)
-        } else { None };
-        let result = (|| -> Result<InjectorResult, String> {
+        // Every 48k reference run preserves raw observations on the SAME client;
+        // opting into evidence collection does not opt into diagnostic-only mode.
+        let mut raw_trace = args.reference_pcm48k_mono_path.as_deref()
+            .map(|pcm| RawClockTrace::new(pcm, &endpoint_id, render_sample_rate_hz)).transpose()?;
+        let mut rendered_frames = 0;
+        let playback = (|| -> Result<(), String> {
             observed_prefill_frames = render.write_available(&mut pending).map_err(|error| {
                 format!("media prefill WASAPI failure: totalFrames={total_frames} detail={error}")
             })?;
@@ -448,7 +492,7 @@ mod injector {
                 render_absolute_timeout(total_frames, render_sample_rate_hz);
             let mut last_progress_at = render_started_at;
             let mut last_wake_at = render_started_at;
-            let mut rendered_frames = observed_prefill_frames;
+            rendered_frames = observed_prefill_frames;
             while !pending.is_empty() {
                 render.wait_for_refill().map_err(|error| {
                     format!(
@@ -518,60 +562,61 @@ mod injector {
                 trace.wait_until_device_crosses_source(&render, total_frames, render_sample_rate_hz, &mut source_clock,
                     render_started_at, render_absolute_timeout)?;
             }
-            let clock_validation_error = source_clock.finish().err();
-            if raw_trace.is_none() {
-                if let Some(error) = &clock_validation_error { return Err(error.clone()); }
-            }
-            Ok(InjectorResult {
-                passed: raw_trace.is_none(),
-                media_path: args.media_path.display().to_string(),
-                endpoint_id,
-                endpoint_name,
-                process_id: std::process::id(),
-                started_at_ms,
-                finished_at_ms: unix_ms(),
-                source_sample_rate_hz: decoded.source_sample_rate_hz,
-                source_channels: decoded.source_channels,
-                render_sample_rate_hz,
-                source_gain_db: args.source_gain_db,
-                rendered_frames: media_frames,
-                rendered_seconds: media_frames as f64 / render_sample_rate_hz as f64,
-                restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
-                restart_quiet_window_frames,
-                restart_quiet_window_seconds: restart_quiet_window_frames as f64
-                    / render_sample_rate_hz as f64,
-                postroll_silence_frames,
-                postroll_silence_seconds: postroll_silence_frames as f64
-                    / render_sample_rate_hz as f64,
-                buffer_frames,
-                prefill_frames: pacing_authority.prefill_frames,
-                render_wake_count: pacing_authority.wake_count,
-                max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
-                zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
-                source_playback_start_qpc100ns: source_clock.origin,
-                source_clock_frequency: source_clock.frequency,
-                source_pcm48k_mono_path: args.reference_pcm48k_mono_path.as_ref().map(|p| p.display().to_string()),
-                source_clock_metadata_path: source_clock.metadata_path.as_ref().map(|p| p.display().to_string()),
-                detail: raw_trace.as_ref().map(|_| format!("diagnostic-only full clock trace; strict validation: {}", clock_validation_error.as_deref().unwrap_or("no clock violation observed"))),
-                diagnostic_only: raw_trace.is_some(),
-                natural_render_drained: true,
-                source_clock_raw_trace_path: raw_trace.as_ref().map(|trace| trace.path.display().to_string()),
-            })
+            Ok(())
         })();
-        let result = if let Some(trace) = raw_trace.as_mut() {
-            match trace.finish() {
-                Ok(()) => result,
-                Err(error) => Err(match result { Err(original) => format!("{original}; {error}"), Ok(_) => error }),
+        // Always finish both evidence channels, even after API/underrun/deadline
+        // failure. Strict validation remains sticky, but is not a Stop request.
+        let clock_validation = source_clock.finish();
+        let mut playback_error = playback.err();
+        if source_clock.persistence_failed() {
+            let error = "source clock observations were not durably persisted".to_string();
+            playback_error = Some(playback_error.map(|original| format!("{original}; {error}")).unwrap_or(error));
+        }
+        if let Some(trace) = raw_trace.as_mut() {
+            if let Err(error) = trace.finish() {
+                playback_error = Some(playback_error.map(|original| format!("{original}; {error}")).unwrap_or(error));
             }
-        } else { result };
-        result.map_err(|detail| {
-            InjectorError::with_render(
-                detail,
-                buffer_frames,
-                observed_prefill_frames,
-                &pacing_authority,
-            )
-        })
+        }
+        let physical_complete = playback_error.is_none();
+        let mut result = InjectorResult {
+            passed: false,
+            media_playback_complete: false,
+            source_clock_validation_passed: None,
+            source_clock_validation_error: None,
+            media_path: args.media_path.display().to_string(),
+            endpoint_id,
+            endpoint_name,
+            process_id: std::process::id(),
+            started_at_ms,
+            finished_at_ms: unix_ms(),
+            source_sample_rate_hz: decoded.source_sample_rate_hz,
+            source_channels: decoded.source_channels,
+            render_sample_rate_hz,
+            source_gain_db: args.source_gain_db,
+            rendered_frames: rendered_frames.min(media_frames),
+            rendered_seconds: rendered_frames.min(media_frames) as f64 / render_sample_rate_hz as f64,
+            restart_quiet_window_after_seconds: args.restart_quiet_window_after_seconds,
+            restart_quiet_window_frames,
+            restart_quiet_window_seconds: restart_quiet_window_frames as f64 / render_sample_rate_hz as f64,
+            postroll_silence_frames,
+            postroll_silence_seconds: postroll_silence_frames as f64 / render_sample_rate_hz as f64,
+            buffer_frames,
+            prefill_frames: pacing_authority.prefill_frames,
+            render_wake_count: pacing_authority.wake_count,
+            max_render_wake_interval_ms: pacing_authority.max_wake_interval_ms,
+            zero_padding_underrun_count: pacing_authority.zero_padding_underrun_count,
+            source_playback_start_qpc100ns: source_clock.origin,
+            source_clock_frequency: source_clock.frequency,
+            source_pcm48k_mono_path: args.reference_pcm48k_mono_path.as_ref().map(|p| p.display().to_string()),
+            source_clock_metadata_path: source_clock.metadata_path.as_ref().map(|p| p.display().to_string()),
+            detail: None,
+            diagnostic_only: args.diagnostic_source_clock_trace,
+            natural_render_drained: false,
+            source_clock_raw_trace_path: raw_trace.as_ref().map(|trace| trace.path.display().to_string()),
+        };
+        result.record_playback_receipt(physical_complete, args.diagnostic_source_clock_trace,
+            args.reference_pcm48k_mono_path.as_ref().map(|_| clock_validation), playback_error);
+        Ok(result)
     }
 
     fn parse_args() -> Result<Args, String> {

@@ -48,15 +48,70 @@ export function inspectSpeechOperation(probe, request) {
  check(probe.streamEvidence?.streamStartCount===1&&probe.streamEvidence?.streamDrained===true&&probe.streamEvidence?.aborted===false,'not one completed continuous stream');
  check(probe.streamEvidence?.mediaEndVoicedPhysicalFrames>=48000,'missing actually voiced media-end tail');
  check(probe.sourceMediaComplete?.passed===true&&probe.sourceMediaComplete?.endpointId===request.physicalDeviceId,'source media authority');
- check(!probe.primaryError&&!probe.cleanupError&&!probe.tapError&&!probe.streamEvidenceSealError&&!probe.sourceInjectorCleanupError,'native failure/custody/seal error');
+ const source=probe.sourceMediaComplete,receipt=source?.receipt;
+ // Physical completion is collection authority only. Typed clock failures and
+ // failed injector exits remain sticky even if outer status/passed are forged.
+ check(source?.mediaPlaybackComplete===true&&source?.sourceEvidenceValidationPassed===true
+  &&source?.sourceEvidenceValidationError===null&&source?.exitCode===0&&receipt?.passed===true
+  &&receipt?.mediaPlaybackComplete===true&&receipt?.naturalRenderDrained===true
+  &&receipt?.sourceClockValidationPassed===true&&receipt?.sourceClockValidationError===null
+  &&receipt?.detail===null&&receipt?.diagnosticOnly===false,
+ 'source clock evidence rejected or failed injector receipt');
+ check(!probe.failure&&!probe.primaryError&&!probe.cleanupError&&!probe.tapError&&!probe.streamEvidenceSealError&&!probe.sourceInjectorCleanupError,'native failure/custody/seal error');
  return {passed:failures.length===0,failures,scope:'local-aec-speech-simulation',releaseEligible:false};
 }
-export function finalizeSpeechOutcome(operation,tap,quality){
+export function finalizeSpeechOutcome(operation,tap,quality,collection){
  const overallPassed=operation?.passed===true&&tap?.passed===true&&quality?.passed===true&&quality?.status==='passed'
   &&quality?.scope==='local-aec-speech-simulation'&&quality?.releaseEligible===false&&quality?.providerCalls===0
-  &&quality?.modelInputLeakageVerified===false&&quality?.semanticLeakageChainVerified===false;
+  &&quality?.modelInputLeakageVerified===false&&quality?.semanticLeakageChainVerified===false
+  &&(collection===undefined||(collection.readyForAnalysis===true&&collection.launcher?.passed===true
+   &&collection.custodyValidation?.passed===true&&collection.failures?.length===0));
  return {overallPassed,status:overallPassed?'local-acoustic-simulation-passed':'failed',releaseEligible:false,
   realTranslationLifecycleVerified:false,semanticLeakageChainVerified:false};
+}
+/** Retain native evidence BEFORE interpreting launcher/process/operation success.
+ * No device/provider/analyzer invocation. Original native files and receipt
+ * bytes remain untouched; custody is parsed without adding healthy defaults.
+ * Malformed/missing artifacts are failures, never synthesized receipts.
+ */
+export function collectLocalSpeechRunEvidence(outputDirectory,request,launchResult){
+ const failures=[];
+ const attempt=(area,action)=>{try{return action();}catch(error){failures.push({area,detail:error.message});return undefined;}};
+ const r=launchResult??{};
+ const stdout=r.stdout??'',stderr=r.stderr??'';
+ attempt('launcher-stdout',()=>fs.writeFileSync(path.join(outputDirectory,'launcher.stdout.log'),stdout,{encoding:'utf8',flag:'wx'}));
+ attempt('launcher-stderr',()=>fs.writeFileSync(path.join(outputDirectory,'launcher.stderr.log'),stderr,{encoding:'utf8',flag:'wx'}));
+ const launcher={exitCode:r.status??null,signal:r.signal??null,error:r.error?{message:r.error.message,code:r.error.code??null}:null,
+  passed:!r.error&&r.status===0&&!r.signal};
+ if(!launcher.passed)failures.push({area:'launcher',detail:r.error?.message??('local desktop job failed: exit '+launcher.exitCode)});
+ attempt('launcher-result',()=>write(path.join(outputDirectory,'launcher-result.json'),launcher));
+ const custody=attempt('process-custody',()=>{
+  if(typeof stdout!=='string')throw Error('launcher stdout is not text');
+  const line=stdout.trim().split(/\r?\n/u).at(-1).replace(/^\uFEFF/u,'');
+  if(Buffer.byteLength(line,'utf8')>1024*1024)throw Error('oversized process custody');
+  const value=JSON.parse(line);
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('process custody is not an object');
+  write(path.join(outputDirectory,'process-custody.json'),value);
+  return value;
+ });
+ const custodyValidation={passed:launcher.passed&&custody?.ownedJobExited===true&&custody?.exitCode===0,
+  overallPassed:false,releaseEligible:false,validation:'launcher-and-native-owned-job-exit'};
+ if(!custodyValidation.passed)failures.push({area:'owned-job',detail:'launcher/native owned job did not exit cleanly'});
+ attempt('custody-validation',()=>write(path.join(outputDirectory,'process-custody-validation.json'),custodyValidation));
+ const nativeReceipt=attempt('native-probe',()=>{
+  const value=json(path.join(outputDirectory,'local-aec-probe-result.json'));
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('native probe is not an object');
+  return value;
+ });
+ const operation=nativeReceipt&&attempt('native-operation',()=>inspectSpeechOperation(nativeReceipt,request));
+ if(operation&&!operation.passed)for(const detail of operation.failures)failures.push({area:'native-operation',detail});
+ const readyForAnalysis=failures.length===0&&operation?.passed===true;
+ const collection={launcher,custody,custodyValidation,operation,failures,readyForAnalysis,
+  overallPassed:false,releaseEligible:false,nativeReceiptRetained:nativeReceipt!==undefined};
+ attempt('collection-summary',()=>write(path.join(outputDirectory,'local-speech-evidence-collection.json'),collection));
+ // A failure to seal the summary must itself block analysis/acceptance.
+ collection.readyForAnalysis=failures.length===0&&operation?.passed===true;
+ return {...collection,nativeReceipt};
 }
 export const parseLocalSpeechArgs=argv=>parseCliArgs(argv,{defaults:{desktopExecutable:'',desktopSha256:'',injectorExecutable:'',injectorSha256:'',fixtureDirectory:'',synthesisDirectory:'',synthesisUsageSha256:'',synthesisPlanFileSha256:'',analyzerExecutable:'',analyzerSha256:'',physicalDeviceId:'',outputRoot:'artifacts/testing/aec-iteration/local-speech-runs'}});
 export async function runLocalAecSpeechSimulation(options){
@@ -111,14 +166,10 @@ export async function runLocalAecSpeechSimulation(options){
   write(path.join(outputDirectory,'process-launch-authority.json'),{schemaVersion:1,executionId,helperSha256:sha(bytes(helper,1024*1024)),deadlineUtc,scriptSha256:sha(Buffer.from(script,'utf8'))});
   const r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
    {encoding:'utf8',windowsHide:true,cwd:repoRoot,timeout:LOCAL_SPEECH_BUDGETS.outerMs,maxBuffer:4*1024*1024,env:windowsPowerShellEnvironment()});
-  fs.writeFileSync(path.join(outputDirectory,'launcher.stdout.log'),r.stdout??'','utf8');fs.writeFileSync(path.join(outputDirectory,'launcher.stderr.log'),r.stderr??'','utf8');
-  if(r.error||r.status!==0)throw Error(r.error?.message??`local desktop job failed: exit ${r.status}`);
-  const line=r.stdout.trim().split(/\r?\n/u).at(-1),custody=JSON.parse(line);
-  write(path.join(outputDirectory,'process-custody.json'),custody);
-  if(custody.ownedJobExited!==true||custody.exitCode!==0)throw Error('native owned job did not exit cleanly');
-  const probe=json(path.join(outputDirectory,'local-aec-probe-result.json'));
-  outcome.operation=inspectSpeechOperation(probe,request);
-  if(!outcome.operation.passed)throw Error('native operation validation failed');
+  const collection=collectLocalSpeechRunEvidence(outputDirectory,request,r);
+  const {nativeReceipt:probe,...evidenceCollection}=collection;
+  outcome.evidenceCollection=evidenceCollection;outcome.operation=collection.operation;
+  if(!collection.readyForAnalysis)throw Error(collection.failures.map(f=>f.area+': '+f.detail).join('; ')||'native evidence collection failed');
   outcome.quality=analyzeLocalAecSpeech(outputDirectory,{nativeReceipt:probe,expectedExecutionId:executionId,expectedPhysicalDeviceId:request.physicalDeviceId,
    analyzer:{workspaceRoot:repoRoot,releaseExecutablePath:analyzer,releaseExecutableSha256:options.analyzerSha256,noBuild:true}});
   write(path.join(outputDirectory,'local-speech-quality.json'),outcome.quality);
@@ -130,7 +181,7 @@ export async function runLocalAecSpeechSimulation(options){
    expectedUsageSha256:options.synthesisUsageSha256,expectedPlanFileSha256:options.synthesisPlanFileSha256});
   if(execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim()!==buildCommit
    ||execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim())throw Error('source commit/worktree changed during run');
-  Object.assign(outcome,finalizeSpeechOutcome(outcome.operation,outcome.tap,outcome.quality));
+  Object.assign(outcome,finalizeSpeechOutcome(outcome.operation,outcome.tap,outcome.quality,collection));
  }catch(error){outcome.failure=error.message;}
  write(path.join(outputDirectory,'local-speech-result.json'),outcome);return outcome;
 }

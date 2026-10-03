@@ -15,6 +15,8 @@ use crate::audio::state::NativeCaptureStartAck;
 #[path = "media_collection.rs"] mod media_collection;
 #[cfg(test)]
 #[path = "tests.rs"] mod tests;
+#[cfg(test)]
+#[path = "render_reference_tests.rs"] mod render_reference_tests;
 
 pub(crate) use contract::SpeechSimulationRequest;
 pub(super) fn validate_schema(request: &ProbeRequest) -> Result<(), String> { contract::validate_schema(request) }
@@ -72,8 +74,18 @@ fn observe_event(store: &AudioStateStore, endpoint: &str, evidence: &RefCell<evi
         DesktopStreamingEvent::Render(SpeakerRenderEvent::Frame { render_session_id, samples, sample_rate_hz,
             channel_count, player_position, submitted_frames, submitted_qpc_100ns, endpoint_padding_frames,
             physical_prefix_offset_frames, observed_at }) => {
-            if samples.len() != 960 || sample_rate_hz != 48_000 || channel_count != 2 {
-                return Err("schema2 render reference must be real complete 10ms stereo boundary frames".into());
+            // A successful WASAPI capacity span is not an AEC frame boundary.
+            // Forward only real committed PCM; the production capture-clock
+            // matcher retains short spans and alone assembles complete 10ms.
+            let reference_frames = (samples.len() / 2) as u64;
+            if samples.is_empty() || samples.len() % 2 != 0 || samples.len() > 960
+                || sample_rate_hz != 48_000 || channel_count != 2
+                || samples.iter().any(|s| !s.is_finite() || s.abs() > 1.0)
+                || submitted_qpc_100ns.is_none_or(|qpc| qpc == 0)
+                || submitted_frames < reference_frames
+                || u64::from(endpoint_padding_frames) > submitted_frames
+                || u64::from(physical_prefix_offset_frames) > submitted_frames.saturating_sub(reference_frames) {
+                return Err("schema2 render reference requires real frame-aligned 48k stereo PCM and valid native write clock".into());
             }
             store.push_echo_reference_at(render_session_id, samples, sample_rate_hz, channel_count,
                 player_position, submitted_frames, submitted_qpc_100ns, endpoint_padding_frames,

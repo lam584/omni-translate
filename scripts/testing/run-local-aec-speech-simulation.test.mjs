@@ -520,3 +520,21 @@ test('capacity topup freeze rejects regression-source tampering',t=>{
 test('capacity topup freeze includes actual matcher and delay-consumer diagnostic sources',()=>{
  for(const file of ['apps/desktop/src-tauri/src/audio/state/echo_backend.rs','apps/desktop/src-tauri/src/audio/state/echo_backend_delay_mapping_tests.rs','apps/desktop/src-tauri/src/audio/engine/aec_timing.rs','apps/desktop/src-tauri/src/audio/speech/reference_rate_matcher.rs'])assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file),file);
 });
+
+const partialReferenceTestSource='apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/render_reference_tests.rs';
+test('short device-write contract freeze includes the actual observer regression',()=>{
+ assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(partialReferenceTestSource));
+});
+test('short device-write freeze rejects observer regression tampering',t=>{
+ const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,partialReferenceTestSource),'tampered','utf8');
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+});
+
+const sourceClockDiagnosticFreezeSources=["apps/bridge-service-native/src/bin/omni-watch-media-injector.rs","apps/bridge-service-native/src/bin/injector/render.rs","apps/bridge-service-native/src/bin/injector/source_clock.rs","apps/bridge-service-native/src/bin/injector/source_clock/raw_trace.rs","apps/bridge-service-native/src/bin/injector/source_clock/tests.rs"];
+test('source clock diagnostic freeze retains canonical gate and raw observation code',()=>{
+ for(const file of sourceClockDiagnosticFreezeSources)assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file),file);
+});
+for(const file of sourceClockDiagnosticFreezeSources)test('source clock diagnostic freeze rejects tampering '+file,t=>{
+ const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+});

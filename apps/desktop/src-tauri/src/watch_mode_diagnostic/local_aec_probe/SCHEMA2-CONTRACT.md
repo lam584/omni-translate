@@ -30,6 +30,8 @@ Native starts real production AEC3 capture and checks same endpoint/frames, then
 
 Native continuously pumps NativeDesktopStream. First 2 stages each stageDurationMs real reference frames; third uses all remaining original PCM. At tailStartFrame native waits for verified injector completion, submitting explicit recorded zero-PCM deltas on SAME stream/client during the wait (separately counted physical/reference silence, not repeated Chinese). Final section then plays. At least 48000 voiced physical frames AFTER validated media completion required. No paid/live env or weaker exclusive guard.
 
+Successful WASAPI writes are physical capacity spans, not native AEC frame boundaries. The observer accepts only nonempty finite frame-aligned 48k stereo reference writes of at most 480 frames, with original started-session, QPC, submitted/padding and prefix authority. A capacity topup (e.g. 96 frames) and short real End tail are forwarded byte-for-byte to the production capture-clock matcher. That matcher alone assembles complete 480-frame/10ms reverse input: incomplete carry is never padded or replayed, and epoch boundaries never borrow an old tail. Physical/reference evidence seals every committed frame with exact continuous ranges and hashes. This changes no acoustic, source-clock, lifecycle, budget or quality threshold.
+
 ## Outputs
 
 - local-aec-ready.json (schemaVersion=2, executionId, physicalDeviceId, scope, readyAtMs, real capture snapshot)

@@ -88,7 +88,15 @@ impl NativeCaptureProducerGuard {
         self.stopping();
         let stop_result = stop();
         seal_diagnostics();
-        let result = capture_result.and(stop_result);
+        // Keep native Stop/owner cleanup details even when processing already
+        // failed. Sticky health still retains its first fault; the returned error
+        // must carry every failure for sealed diagnostics and the route owner.
+        let result = match (capture_result, stop_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(capture), Ok(())) => Err(capture),
+            (Ok(()), Err(stop)) => Err(stop),
+            (Err(capture), Err(stop)) => Err(format!("{capture}; native capture cleanup: {stop}")),
+        };
         self.finish(&result);
         result
     }

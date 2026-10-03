@@ -1,4 +1,4 @@
-//! Thread-affine MMCSS Audio registration for the actual synchronous render pump.
+//! Thread-affine MMCSS Audio registration shared by native capture and render owners.
 //! The AVRT token is not a kernel handle: restore it once, never CloseHandle it.
 use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};

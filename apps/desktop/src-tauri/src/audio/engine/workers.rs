@@ -2,6 +2,8 @@
 mod capture_diagnostics;
 #[path = "workers/capture_route.rs"]
 mod capture_route;
+#[path = "workers/capture_scheduling.rs"]
+mod capture_scheduling;
 use capture_diagnostics::AecTapQueueClock;
 #[path = "workers/capture_pump_timing.rs"]
 mod capture_pump_timing;
@@ -205,7 +207,37 @@ fn run_capture_loop(
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     native_capture_start: NativeCaptureStartAck,
 ) -> Result<(), String> {
-    let mut producer_guard = native_capture_start.producer_guard();
+    // Cold and warmed routes enter here on their actual synchronous WASAPI
+    // owner. Parked warm handles and bridge-source workers are not registered.
+    // Own health before registration too: an AVRT failure must drop the real
+    // producer guard and publish terminal failure without claiming native Start.
+    let producer_guard = native_capture_start.producer_guard();
+    let scheduling_app = app.clone();
+    capture_scheduling::run_with_audio_scheduling(
+        || crate::audio::mmcss_audio::register_audio().map_err(|failure| {
+            diag_log_detail(&scheduling_app, "audio", "error", "native capture MMCSS registration failed",
+                serde_json::to_string(&failure.receipt).unwrap_or_else(|_| failure.detail.clone()));
+            failure
+        }),
+        |scheduling| run_scheduled_capture_loop(app, store, direction, spec, initialized,
+            stop_rx, stt_sender, native_capture_start, producer_guard, scheduling),
+    )
+}
+
+fn run_scheduled_capture_loop(
+    app: AppHandle,
+    store: &AudioStateStore,
+    direction: &str,
+    spec: RouteSpec,
+    initialized: InitializedCaptureRoute,
+    stop_rx: mpsc::Receiver<()>,
+    stt_sender: Option<mpsc::Sender<Vec<u8>>>,
+    native_capture_start: NativeCaptureStartAck,
+    mut producer_guard: crate::audio::state::NativeCaptureProducerGuard,
+    scheduling: &mut dyn crate::audio::mmcss_audio::SchedulingLease,
+) -> Result<(), String> {
+    diag_log_detail(&app, "audio", "info", "native capture MMCSS Audio registered",
+        serde_json::to_string(&scheduling.receipt()).map_err_str()?);
     let InitializedCaptureRoute {
         _device,
         effective_device_id,
@@ -368,18 +400,29 @@ fn run_capture_loop(
     })();
 
     let native_stop_succeeded = std::cell::Cell::new(false);
+    let final_scheduling = std::cell::RefCell::new(None);
     producer_guard.finish_capture(capture_result,
         || {
             let result = audio_client.stop_stream().map_err_str();
             native_stop_succeeded.set(result.is_ok());
-            result
+            // Restore the actual capture owner's AVRT token after the native
+            // Stop attempt, before JSON/disk work. Native Stop truth is separate
+            // from restoration success; both failures block completion.
+            let restored = scheduling.finish(crate::audio::mmcss_audio::CleanupPath::Explicit);
+            *final_scheduling.borrow_mut() = Some(scheduling.receipt());
+            capture_scheduling::combine_capture_cleanup(result, restored)
         },
         || {
-            // Serialization/persistence is deferred until native Stop returned.
-            // Failure is retained explicitly, never labelled as a successful stop.
+            // Serialization/persistence is deferred until native Stop returned
+            // and scheduling cleanup was attempted, with no fabricated success.
             if let Some(mut receipt) = capture_pump_timing::receipt(&timing) {
                 receipt["nativeStopSucceeded"] = serde_json::json!(native_stop_succeeded.get());
-                if !native_stop_succeeded.get() { receipt["diagnosticIncomplete"] = serde_json::json!(true); }
+                let scheduling_receipt = final_scheduling.borrow();
+                receipt["mmcssAudio"] = serde_json::json!(scheduling_receipt.as_ref());
+                if !native_stop_succeeded.get() || scheduling_receipt.as_ref().is_none_or(|r|
+                    r.state != crate::audio::mmcss_audio::SchedulingState::Restored) {
+                    receipt["diagnosticIncomplete"] = serde_json::json!(true);
+                }
                 store.persist_aec_capture_pump_diagnostic(receipt);
             }
             if spec.echo_cancel_enabled() { pipeline.diagnostics.log_final(&app, store, direction); }

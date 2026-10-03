@@ -290,3 +290,25 @@ replace the packet ledger, main PCM seal, source clock, acoustic thresholds,
 physical playback receipts, open-input drain or Provider evidence. In particular,
 diagnosticIncomplete=false does not mean AEC passed. No acceptance threshold,
 watchdog, PCM, reset rule, mode or Provider input is changed by this recorder.
+
+
+## Native capture MMCSS owner lifecycle
+
+Cold and activated pre-warmed WASAPI capture share one synchronous entry point.
+That owner registers the Audio task before native Start; parked warm handles and
+bridge-source pipe workers are not registered as WASAPI owners. The existing
+render AVRT lease is now shared at audio/mmcss_audio.rs, retaining its non-Send,
+non-Sync token, same-thread exact-once restoration and panic fallback semantics.
+No process/global priority, timer resolution, buffer size, PCM, mode, source clock
+or acceptance threshold is changed. Successful registration is not a guarantee
+of scheduling, physical completion or AEC quality.
+
+Native Stop is attempted before explicit scheduling restoration. Restoration is
+attempted even when Stop fails, and precedes diagnostic JSON/hash/disk work.
+Primary/cleanup failures block operation completion. The capture timing file may
+include an optional mmcssAudio final typed receipt, bound to its capture thread
+by the existing hash/identity seal. Legacy absent receipts retain diagnostic
+custody compatibility only. Restored receipts require same-owner explicit cleanup;
+truthful failed cleanup requires diagnosticIncomplete=true and retains its typed
+native error, owner mismatch or unwind cause. Neither receipt creates acoustic,
+source-clock, quiet-drain or Provider acceptance authority.

@@ -7,6 +7,7 @@ mod aec_diagnostic_tap;
 mod echo_cancel;
 pub(crate) mod glossary;
 pub(crate) mod str_utils;
+mod mmcss_audio;
 pub(crate) mod engine;
 pub(crate) mod events;
 pub(crate) use crate::provider::adapters::gemini_live;

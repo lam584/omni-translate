@@ -1512,3 +1512,50 @@ test('capture pump consumer manifest authenticates files and memory projection h
   assert.equal(missing.passed,false);assert.match(missing.violations.join(';'),/ENOENT/);
   assert.equal(verifyAecClosedLoopEvidence(f.root,f.options).passed,false);
 });
+
+
+function captureMmcssReceipt(ownerThreadId) {
+  return {schemaVersion:1,taskName:'Audio',ownerThreadId,registrationAttempted:true,registrationSucceeded:true,
+    taskIndex:0,registrationErrorCode:null,cleanupAttempted:true,revertAttempted:true,revertSucceeded:true,
+    revertThreadId:ownerThreadId,revertErrorCode:null,restoreFailureKind:null,cleanupPath:'explicit',state:'restored'};
+}
+
+test('capture MMCSS final receipt is bound to sealed native owner without granting quality', t => {
+  const f=fixture(t); installCapturePump(f,v=>{v.mmcssAudio=captureMmcssReceipt(v.threadId);});
+  const result=buildAecClosedLoopEvidence(f.root,f.options);
+  assert.equal(result.passed,true,result.violations.join(';'));assert.equal(result.releaseEligible,false);
+  const manifest=createAecClosedLoopManifest(f.root,{cell:f.identity,freezePublicKey:f.publicKey});
+  assert.equal(manifest.passed,true,manifest.violations.join(';'));
+});
+
+test('capture MMCSS valid failures remain incomplete diagnostic evidence', async t => {
+  for(const kind of ['nativeError','ownerThreadMismatch','unwound-before-thread','unwound-native']) await t.test(kind,t=>{
+    const f=fixture(t);installCapturePump(f,(v,e)=>{
+      v.diagnosticIncomplete=e.diagnosticIncomplete=true;
+      const r=v.mmcssAudio=captureMmcssReceipt(v.threadId);r.state='restoreFailed';r.revertSucceeded=false;
+      if(kind==='nativeError'){r.restoreFailureKind='nativeError';r.revertErrorCode=1550;}
+      else if(kind==='ownerThreadMismatch'){r.restoreFailureKind='ownerThreadMismatch';r.revertThreadId+=1;r.revertAttempted=false;}
+      else {r.restoreFailureKind='unwound';if(kind==='unwound-before-thread'){r.revertThreadId=null;r.revertAttempted=false;}}
+    });
+    const result=buildAecClosedLoopEvidence(f.root,f.options);assert.equal(result.passed,true,result.violations.join(';'));
+    assert.equal(result.releaseEligible,false); // Valid custody is not an AEC pass or successful cleanup.
+  });
+});
+
+test('capture MMCSS forged or unfinished final receipts are rejected after resealing', async t => {
+  const cases=[
+    ['null',v=>{v.mmcssAudio=null;}],['array',v=>{v.mmcssAudio=[];}],['missing-state',v=>{delete v.mmcssAudio.state;}],
+    ['active',v=>{v.mmcssAudio.state='active';}],['registration-failed',v=>{v.mmcssAudio.state='registrationFailed';}],
+    ['owner',v=>{v.mmcssAudio.ownerThreadId+=1;}],['wrong-revert-owner',v=>{v.mmcssAudio.revertThreadId+=1;}],
+    ['schema',v=>{v.mmcssAudio.schemaVersion=2;}],['task',v=>{v.mmcssAudio.taskName='Pro Audio';}],
+    ['registration',v=>{v.mmcssAudio.registrationSucceeded=false;}],['task-index',v=>{v.mmcssAudio.taskIndex=-1;}],
+    ['revert-success',v=>{v.mmcssAudio.revertSucceeded=false;}],['revert-attempt',v=>{v.mmcssAudio.revertAttempted=false;}],
+    ['cleanup',v=>{v.mmcssAudio.cleanupAttempted=false;}],['drop-fallback',v=>{v.mmcssAudio.cleanupPath='dropFallback';}],
+    ['revert-error',v=>{v.mmcssAudio.revertErrorCode=5;}],['failure-kind',v=>{v.mmcssAudio.restoreFailureKind='nativeError';}],
+    ['failed-claimed-complete',v=>{Object.assign(v.mmcssAudio,{state:'restoreFailed',revertSucceeded:false,restoreFailureKind:'nativeError',revertErrorCode:5});}],
+    ['native-error-foreign-thread',(v,e)=>{v.diagnosticIncomplete=e.diagnosticIncomplete=true;Object.assign(v.mmcssAudio,{state:'restoreFailed',revertSucceeded:false,restoreFailureKind:'nativeError',revertErrorCode:5,revertThreadId:v.threadId+1});}],
+    ['unknown-failure',(v,e)=>{v.diagnosticIncomplete=e.diagnosticIncomplete=true;Object.assign(v.mmcssAudio,{state:'restoreFailed',revertSucceeded:false,restoreFailureKind:'unknown'});}],
+    ['failed-native-stop-claimed-complete',(v,e)=>{v.nativeStopSucceeded=e.captureStoppedBeforePersistence=false;}],
+  ];
+  for(const [name,mutate] of cases) await t.test(name,t=>{const f=fixture(t);installCapturePump(f,(v,e)=>{v.mmcssAudio=captureMmcssReceipt(v.threadId);mutate(v,e);});fails(f,/capture pump/);});
+});

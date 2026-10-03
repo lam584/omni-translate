@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
+import { validateMmcssAudioReceipt } from './local-aec-mmcss-receipt.mjs';
 
 export const AEC_CLOSED_LOOP_PROFILE = 'aec-closed-loop-dual-reference/v1';
 export const AEC_CLOSED_LOOP_THRESHOLDS = Object.freeze({ echoAttenuationDb: 20,
@@ -459,6 +460,43 @@ function validateCapturePumpAuthority(value) {
     && (!Object.hasOwn(value, 'aecQualityAcceptance') || value.aecQualityAcceptance === false),
   'capture pump diagnostic claimed authority or omitted authority boundary');
 }
+// Optional on legacy diagnostic files; when present this is a typed final
+// capture-owner receipt, not a scheduling/clock/acoustic acceptance shortcut.
+function validateCapturePumpScheduling(value) {
+  if (!Object.hasOwn(value, 'mmcssAudio')) return;
+  const r = value.mmcssAudio;
+  const u32 = n => Number.isInteger(n) && n >= 0 && n <= 0xFFFF_FFFF;
+  requireEvidence(r !== null && typeof r === 'object' && !Array.isArray(r), 'capture pump MMCSS receipt object missing');
+  requireEvidence(r.ownerThreadId === value.threadId, 'capture pump MMCSS owner differs from capture thread');
+  requireEvidence(value.nativeStopSucceeded === true || value.diagnosticIncomplete === true,
+    'capture pump failed Stop must remain incomplete');
+  if (r.state === 'restored') {
+    const verified = validateMmcssAudioReceipt(r, 'restored');
+    requireEvidence(verified.valid, 'capture pump MMCSS restored receipt invalid: '+verified.failures.join('; '));
+    return;
+  }
+  requireEvidence(r.state === 'restoreFailed' && value.diagnosticIncomplete === true,
+    'capture pump MMCSS final state missing or failed cleanup claimed complete');
+  requireEvidence(r.schemaVersion === 1 && r.taskName === 'Audio' && u32(r.ownerThreadId) && r.ownerThreadId > 0
+    && r.registrationAttempted === true && r.registrationSucceeded === true && u32(r.taskIndex)
+    && r.registrationErrorCode === null && r.cleanupAttempted === true && r.cleanupPath === 'explicit'
+    && r.revertSucceeded === false && typeof r.revertAttempted === 'boolean',
+    'capture pump MMCSS failed receipt registration/cleanup incoherent');
+  if (r.restoreFailureKind === 'nativeError') {
+    requireEvidence(r.revertThreadId === r.ownerThreadId && r.revertAttempted === true && u32(r.revertErrorCode),
+      'capture pump MMCSS native-error receipt incoherent');
+  } else if (r.restoreFailureKind === 'ownerThreadMismatch') {
+    requireEvidence(u32(r.revertThreadId) && r.revertThreadId > 0 && r.revertThreadId !== r.ownerThreadId
+      && r.revertAttempted === false && r.revertErrorCode === null,
+      'capture pump MMCSS owner-mismatch receipt incoherent');
+  } else if (r.restoreFailureKind === 'unwound') {
+    requireEvidence(r.revertErrorCode === null && ((r.revertThreadId === null && r.revertAttempted === false)
+      || (r.revertThreadId === r.ownerThreadId && r.revertAttempted === true)),
+    'capture pump MMCSS unwound receipt incoherent');
+  } else {
+    requireEvidence(false, 'capture pump MMCSS unknown restoration failure kind');
+  }
+}
 function validateCapturePumpDescriptor(e) {
   requireEvidence(e?.schemaVersion === 1 && e.kind === CAPTURE_PUMP_KIND,
     'capture pump descriptor schema/kind mismatch');
@@ -512,6 +550,7 @@ export function verifyCapturePumpTimingSeals(root, events) {
     requireEvidence(typeof value.nativeStopSucceeded === 'boolean'
       && value.nativeStopSucceeded === e.captureStoppedBeforePersistence,
     'capture pump diagnostic file native stop mismatch');
+    validateCapturePumpScheduling(value);
   }
   return { descriptorCount: descriptors.length, fileSealsVerified: true, diagnosticOnly: true,
     qualityAcceptance: false, formalCaptureClockAcceptance: false, releaseEligible: false };

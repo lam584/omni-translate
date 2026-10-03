@@ -5,7 +5,7 @@ use super::*;
 use crate::audio::playback_ownership::{DesktopPlaybackOwnership, DesktopPlaybackPermit};
 
 #[path = "native_streaming/pump_diagnostic.rs"] mod pump_diagnostic;
-#[path = "native_streaming/mmcss_audio.rs"] mod mmcss_audio;
+use crate::audio::mmcss_audio;
 use mmcss_audio::{CleanupPath, SchedulingLease};
 #[cfg(test)]
 #[path = "native_streaming/mmcss_lifecycle_tests.rs"] mod mmcss_lifecycle_tests;

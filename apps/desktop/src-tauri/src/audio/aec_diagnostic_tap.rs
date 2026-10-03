@@ -395,14 +395,17 @@ impl AecDiagnosticTap {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn record_capture(&self, pre: &[f32], post: &[f32], metadata: AecCaptureFrameMetadata) {
         let _ = self.record_capture_with_provenance(pre, post, metadata);
     }
 
+    #[cfg(test)]
     pub(crate) fn record_capture_with_provenance(&self, pre: &[f32], post: &[f32], metadata: AecCaptureFrameMetadata) -> Option<AecPostPacket> {
         self.record_capture_with_processing(pre, post, metadata, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn record_capture_with_processing(&self, pre: &[f32], post: &[f32],
         metadata: AecCaptureFrameMetadata, processing: Option<AecCaptureProcessing>) -> Option<AecPostPacket> {
         self.record_capture_with_processing_receipt(pre, post, metadata, processing).0

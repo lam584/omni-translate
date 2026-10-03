@@ -403,6 +403,7 @@ impl AudioStateStore {
         self.process_echo_capture_with_metadata(captured, delay_samples, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn process_echo_capture_with_metadata(
         &self,
         captured: &[f32],
@@ -412,6 +413,7 @@ impl AudioStateStore {
         self.process_echo_capture_with_provenance(captured, delay_samples, metadata).map(|(result, _)| result)
     }
 
+    #[cfg(test)]
     pub(crate) fn process_echo_capture_with_provenance(
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {

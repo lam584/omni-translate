@@ -319,3 +319,379 @@ test('an ongoing English reference remains distinct from the translated output t
   fs.writeFileSync(path.join(f.root, f.manifest.source.file), chinese.subarray(0, f.manifest.source.byteLength));
   fails(f, /source clock.hash authority mismatch|source hash.identity mismatch/);
 });
+
+
+test('native capture packet sidecar record is accepted and strictly validated without granting formal authority', (t) => {
+  const f = fixture(t);
+  const validPacket = {
+    schemaVersion: 1,
+    sequence: f.side.length,
+    kind: 'native-capture-packet',
+    diagnosticOnly: true,
+    qualityAcceptance: false,
+    aecQualityAcceptance: false,
+    releaseEligible: false,
+    formalCaptureClockAcceptance: false,
+    rawFrameCount: 480,
+    rawByteCount: 3840,
+    blockAlignBytes: 8,
+    rawPacketDeviceFrameIndex: 0,
+    rawPacketQpc100ns: 10_000_000,
+    dataDiscontinuity: false,
+    silent: false,
+    timestampError: false,
+    queuedBytesBeforeRead: 0,
+    queuedBytesAfterRead: 3840,
+    qpc100ns: 10_000_000,
+    observedQpc100ns: 10_000_000,
+    direction: 'capture',
+    requestedEndpointId: '{default-mic}',
+    endpointId: null,
+    captureOwnerId: null,
+    captureAecResetGeneration: null,
+    resetGeneration: 0,
+    resetGenerationDomain: 'aec-diagnostic-tap',
+  };
+  f.side.push(validPacket);
+  f.seal.attemptedEvents += 1;
+  f.seal.acceptedEvents += 1;
+  f.seal.writtenEvents += 1;
+  f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+  f.saveEvents('side');
+
+  const manifestResult = createAecClosedLoopManifest(f.root, {
+    cell: f.identity,
+    signedFreezeFile: 'aec-threshold-freeze.json',
+    freezePublicKey: f.publicKey,
+    playbackReceiptFile: 'playback.json',
+  });
+  assert.equal(manifestResult.passed, true, manifestResult.violations.join('; '));
+
+  const built = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(built.passed, true, built.violations.join('; '));
+});
+
+test('native capture packet rejects fraudulent authority or acceptance booleans', async (t) => {
+  for (const [key, value] of [
+    ['diagnosticOnly', false],
+    ['qualityAcceptance', true],
+    ['aecQualityAcceptance', true],
+    ['releaseEligible', true],
+    ['formalCaptureClockAcceptance', true],
+  ]) {
+    await t.test(key, (t) => {
+      const f = fixture(t);
+      const packet = {
+        schemaVersion: 1,
+        sequence: f.side.length,
+        kind: 'native-capture-packet',
+        diagnosticOnly: true,
+        qualityAcceptance: false,
+        aecQualityAcceptance: false,
+        releaseEligible: false,
+        formalCaptureClockAcceptance: false,
+        rawFrameCount: 480,
+        rawByteCount: 3840,
+        blockAlignBytes: 8,
+        rawPacketDeviceFrameIndex: 0,
+        rawPacketQpc100ns: 10_000_000,
+        dataDiscontinuity: false,
+        silent: false,
+        timestampError: false,
+        queuedBytesBeforeRead: 0,
+        queuedBytesAfterRead: 3840,
+        qpc100ns: 10_000_000,
+        observedQpc100ns: 10_000_000,
+        direction: 'capture',
+        requestedEndpointId: '{default-mic}',
+        endpointId: null,
+        captureOwnerId: null,
+        captureAecResetGeneration: null,
+        resetGenerationDomain: 'aec-diagnostic-tap',
+        [key]: value,
+      };
+      f.side.push(packet);
+      f.seal.attemptedEvents += 1;
+      f.seal.acceptedEvents += 1;
+      f.seal.writtenEvents += 1;
+      f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+      f.saveEvents('side');
+      fails(f, /formal quality or clock authority/);
+    });
+  }
+});
+
+test('native capture packet rejects frame, byte and queue inconsistencies', async (t) => {
+  const basePacket = {
+    schemaVersion: 1,
+    kind: 'native-capture-packet',
+    diagnosticOnly: true,
+    qualityAcceptance: false,
+    aecQualityAcceptance: false,
+    releaseEligible: false,
+    formalCaptureClockAcceptance: false,
+    rawFrameCount: 480,
+    rawByteCount: 3840,
+    blockAlignBytes: 8,
+    rawPacketDeviceFrameIndex: 0,
+    rawPacketQpc100ns: 10_000_000,
+    dataDiscontinuity: false,
+    silent: false,
+    timestampError: false,
+    queuedBytesBeforeRead: 0,
+    queuedBytesAfterRead: 3840,
+    qpc100ns: 10_000_000,
+    observedQpc100ns: 10_000_000,
+    direction: 'capture',
+    requestedEndpointId: '{default-mic}',
+    endpointId: null,
+    captureOwnerId: null,
+    captureAecResetGeneration: null,
+    resetGeneration: 0,
+    resetGenerationDomain: 'aec-diagnostic-tap',
+  };
+
+  await t.test('zero frames', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, rawFrameCount: 0 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /raw frame count/);
+  });
+
+  await t.test('null underflow rawByteCount', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, rawByteCount: null, queuedBytesBeforeRead: 5000, queuedBytesAfterRead: 3840 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /frame\/byte\/queue inconsistency/);
+  });
+
+  await t.test('rawByteCount delta mismatch', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, rawByteCount: 3840, queuedBytesBeforeRead: 0, queuedBytesAfterRead: 4000 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /frame\/byte\/queue inconsistency/);
+  });
+
+  await t.test('block align frame mismatch', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, rawFrameCount: 480, rawByteCount: 3840, blockAlignBytes: 4 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /frame\/byte\/queue inconsistency/);
+  });
+  await t.test('unaligned queuedBytesBeforeRead intra-frame offset', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, queuedBytesBeforeRead: 3, queuedBytesAfterRead: 3843 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /queued bytes not aligned to frame block align/);
+  });
+
+  await t.test('unaligned queuedBytesAfterRead intra-frame offset', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, queuedBytesBeforeRead: 0, queuedBytesAfterRead: 3841, rawByteCount: 3841 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /queued bytes not aligned to frame block align/);
+  });
+
+  await t.test('missing resetGeneration field entirely', (t) => {
+    const f = fixture(t);
+    const p = { ...basePacket, sequence: f.side.length };
+    delete p.resetGeneration;
+    f.side.push(p);
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /reset generation/);
+  });
+
+  await t.test('invalid negative or non-integer resetGeneration', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, resetGeneration: -1 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /reset generation/);
+  });
+});
+
+test('native capture packet rejects unsafe integers, missing fields and unknown kind', async (t) => {
+  const basePacket = {
+    schemaVersion: 1,
+    kind: 'native-capture-packet',
+    diagnosticOnly: true,
+    qualityAcceptance: false,
+    aecQualityAcceptance: false,
+    releaseEligible: false,
+    formalCaptureClockAcceptance: false,
+    rawFrameCount: 480,
+    rawByteCount: 3840,
+    blockAlignBytes: 8,
+    rawPacketDeviceFrameIndex: 0,
+    rawPacketQpc100ns: 10_000_000,
+    dataDiscontinuity: false,
+    silent: false,
+    timestampError: false,
+    queuedBytesBeforeRead: 0,
+    queuedBytesAfterRead: 3840,
+    qpc100ns: 10_000_000,
+    observedQpc100ns: 10_000_000,
+    direction: 'capture',
+    requestedEndpointId: '{default-mic}',
+    endpointId: null,
+    captureOwnerId: null,
+    captureAecResetGeneration: null,
+    resetGeneration: 0,
+    resetGenerationDomain: 'aec-diagnostic-tap',
+  };
+
+  await t.test('unsafe integer QPC', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, rawPacketQpc100ns: Number.MAX_SAFE_INTEGER + 10 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /packet frame index or QPC/);
+  });
+
+  await t.test('negative integer queued bytes', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, queuedBytesBeforeRead: -1 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /queued byte accounting/);
+  });
+
+  await t.test('missing requestedEndpointId', (t) => {
+    const f = fixture(t);
+    const p = { ...basePacket, sequence: f.side.length };
+    delete p.requestedEndpointId;
+    f.side.push(p);
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /requested endpoint ID/);
+  });
+
+  await t.test('wrong reset generation domain', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, resetGenerationDomain: 'hardware-clock' });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /reset generation domain/);
+  });
+
+  await t.test('unknown kind', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, kind: 'unknown-sidecar-packet' });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /sidecar metadata sequence\/schema mismatch/);
+  });
+
+  await t.test('missing endpointId field entirely', (t) => {
+    const f = fixture(t);
+    const p = { ...basePacket, sequence: f.side.length };
+    delete p.endpointId;
+    f.side.push(p);
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /endpoint ID/);
+  });
+
+  await t.test('missing captureOwnerId field entirely', (t) => {
+    const f = fixture(t);
+    const p = { ...basePacket, sequence: f.side.length };
+    delete p.captureOwnerId;
+    f.side.push(p);
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /capture owner ID/);
+  });
+
+  await t.test('missing captureAecResetGeneration field entirely', (t) => {
+    const f = fixture(t);
+    const p = { ...basePacket, sequence: f.side.length };
+    delete p.captureAecResetGeneration;
+    f.side.push(p);
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /capture AEC reset generation/);
+  });
+
+  await t.test('observedQpc mismatch with qpc100ns', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, qpc100ns: 10_000_000, observedQpc100ns: 10_000_001 });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    fails(f, /observed QPC mismatch/);
+  });
+
+  await t.test('inbound direction with explicit null observedQpc is accepted if consistent', (t) => {
+    const f = fixture(t);
+    f.side.push({ ...basePacket, sequence: f.side.length, direction: 'inbound', qpc100ns: null, observedQpc100ns: null });
+    f.seal.attemptedEvents += 1; f.seal.acceptedEvents += 1; f.seal.writtenEvents += 1;
+    f.seal.lifecycleEvents = (f.seal.lifecycleEvents ?? 0) + 1;
+    f.saveEvents('side');
+    const built = buildAecClosedLoopEvidence(f.root, f.options);
+    assert.equal(built.passed, true, built.violations.join('; '));
+  });
+});
+
+test('native capture packet is not counted as formal output or provider input', (t) => {
+  const f = fixture(t);
+  const packet = {
+    schemaVersion: 1,
+    sequence: f.side.length,
+    kind: 'native-capture-packet',
+    diagnosticOnly: true,
+    qualityAcceptance: false,
+    aecQualityAcceptance: false,
+    releaseEligible: false,
+    formalCaptureClockAcceptance: false,
+    rawFrameCount: 480,
+    rawByteCount: 3840,
+    blockAlignBytes: 8,
+    rawPacketDeviceFrameIndex: 0,
+    rawPacketQpc100ns: 10_000_000,
+    dataDiscontinuity: false,
+    silent: false,
+    timestampError: false,
+    queuedBytesBeforeRead: 0,
+    queuedBytesAfterRead: 3840,
+    qpc100ns: 10_000_000,
+    observedQpc100ns: 10_000_000,
+    direction: 'capture',
+    requestedEndpointId: '{default-mic}',
+    endpointId: null,
+    captureOwnerId: null,
+    captureAecResetGeneration: null,
+    resetGeneration: 0,
+    resetGenerationDomain: 'aec-diagnostic-tap',
+  };
+  f.side.push(packet);
+  // Do not increase lifecycleEvents count; fraudulently try to count it as physicalEvents
+  f.seal.physicalEvents += 1;
+  f.seal.attemptedEvents += 1;
+  f.seal.acceptedEvents += 1;
+  f.seal.writtenEvents += 1;
+  f.saveEvents('side');
+  fails(f, /sidecar final count mismatch/);
+});

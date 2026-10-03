@@ -75,6 +75,41 @@ function providerPcm(post, rate) {
   }
   return out;
 }
+function validateSidecarRecord(e, i) {
+  requireEvidence(e?.schemaVersion === 1 && e.sequence === i && typeof e.kind === 'string', 'sidecar metadata sequence/schema mismatch');
+  if (e.kind === 'native-capture-packet') {
+    requireEvidence(e.diagnosticOnly === true
+      && e.qualityAcceptance === false
+      && e.aecQualityAcceptance === false
+      && e.releaseEligible === false
+      && e.formalCaptureClockAcceptance === false,
+    'native capture packet claimed formal quality or clock authority');
+    requireEvidence(integer(e.rawFrameCount) && e.rawFrameCount > 0, 'invalid raw frame count');
+    requireEvidence(integer(e.blockAlignBytes) && e.blockAlignBytes > 0, 'invalid block align');
+    requireEvidence(integer(e.queuedBytesBeforeRead) && integer(e.queuedBytesAfterRead), 'invalid queued byte accounting');
+    requireEvidence(e.queuedBytesBeforeRead % e.blockAlignBytes === 0
+      && e.queuedBytesAfterRead % e.blockAlignBytes === 0,
+    'queued bytes not aligned to frame block align');
+    requireEvidence(integer(e.rawByteCount)
+      && e.rawByteCount === e.queuedBytesAfterRead - e.queuedBytesBeforeRead
+      && e.rawByteCount === e.rawFrameCount * e.blockAlignBytes,
+    'native capture packet frame/byte/queue inconsistency');
+    requireEvidence(integer(e.rawPacketDeviceFrameIndex) && integer(e.rawPacketQpc100ns), 'invalid packet frame index or QPC');
+    requireEvidence(typeof e.dataDiscontinuity === 'boolean' && typeof e.silent === 'boolean' && typeof e.timestampError === 'boolean', 'invalid packet flags');
+    requireEvidence(['inbound', 'outbound', 'capture', 'render'].includes(e.direction), 'invalid capture direction');
+    requireEvidence(typeof e.requestedEndpointId === 'string' && e.requestedEndpointId.length > 0, 'invalid requested endpoint ID');
+    requireEvidence(Object.hasOwn(e, 'endpointId') && (e.endpointId === null || (typeof e.endpointId === 'string' && e.endpointId.length > 0)), 'invalid endpoint ID');
+    requireEvidence(Object.hasOwn(e, 'captureOwnerId') && (e.captureOwnerId === null || integer(e.captureOwnerId)), 'invalid capture owner ID');
+    requireEvidence(Object.hasOwn(e, 'captureAecResetGeneration') && (e.captureAecResetGeneration === null || integer(e.captureAecResetGeneration)), 'invalid capture AEC reset generation');
+    requireEvidence(Object.hasOwn(e, 'qpc100ns') && (e.qpc100ns === null || integer(e.qpc100ns)), 'invalid observed QPC');
+    requireEvidence(Object.hasOwn(e, 'observedQpc100ns') && e.observedQpc100ns === e.qpc100ns, 'observed QPC mismatch');
+    requireEvidence(Object.hasOwn(e, 'resetGeneration') && integer(e.resetGeneration), 'invalid reset generation');
+    requireEvidence(e.resetGenerationDomain === 'aec-diagnostic-tap', 'invalid reset generation domain');
+    return;
+  }
+  const allowed = ['physical-output', 'provider-input', 'render-lifecycle', 'stage-lifecycle', 'provider-lifecycle'];
+  requireEvidence(allowed.includes(e.kind), 'sidecar metadata sequence/schema mismatch');
+}
 function validateSeal(root, terminal) {
   requireEvidence(terminal.schemaVersion === 1 && terminal.kind === 'aec-closed-loop-terminal'
     && terminal.complete === true && terminal.countsFinal === true && terminal.errors?.length === 0
@@ -224,8 +259,8 @@ export function buildAecClosedLoopEvidence(runDirectory, { runtimeAuthority, cel
     if (authority.closedLoopTerminalSha256) requireEvidence(sha(bounded(root, 'aec-closed-loop-terminal.json', MAX_METADATA)) === authority.closedLoopTerminalSha256, 'closed-loop terminal identity changed');
     const data = validateSeal(root, seal);
     const metadata = records(data.metadata);
-    requireEvidence(metadata.length === seal.writtenEvents && metadata.every((e, i) => e.sequence === i && e.schemaVersion === 1
-      && ['physical-output', 'provider-input', 'render-lifecycle', 'stage-lifecycle', 'provider-lifecycle'].includes(e.kind)), 'sidecar metadata sequence/schema mismatch');
+    requireEvidence(metadata.length === seal.writtenEvents, 'sidecar metadata sequence/schema mismatch');
+    metadata.forEach((e, i) => validateSidecarRecord(e, i));
     const physicalEvents = metadata.filter((e) => e.kind === 'physical-output');
     const modelEvents = metadata.filter((e) => e.kind === 'provider-input');
     requireEvidence(physicalEvents.length === seal.physicalEvents && modelEvents.length === seal.providerEvents
@@ -543,7 +578,8 @@ export function createAecClosedLoopManifest(runDirectory, {
     requireEvidence(isDeepStrictEqual(seal.identity, identity) && seal.thresholdFreezeSha256 === freeze.sha256
       && integer(seal.startupQpc100ns), 'tap did not bind signed policy before paid startup');
     const events = records(data.metadata);
-    requireEvidence(events.length === seal.writtenEvents && events.every((e, i) => e.sequence === i && e.schemaVersion === 1), 'manifest sidecar sequence mismatch');
+    requireEvidence(events.length === seal.writtenEvents, 'manifest sidecar sequence mismatch');
+    events.forEach((e, i) => validateSidecarRecord(e, i));
     const physicalEvents = events.filter((e) => e.kind === 'physical-output');
     const stereo = floats(data.physical, 2); const domains = physicalTimeline(physicalEvents, mono(stereo), stereo);
     const completed = events.filter((e) => e.kind === 'stage-lifecycle' && e.status === 'completed');

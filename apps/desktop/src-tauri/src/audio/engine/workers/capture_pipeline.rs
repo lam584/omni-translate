@@ -29,6 +29,23 @@ impl CapturePipeline {
         block_align: usize, buffer_frame_count: u32,
         producer_guard: &crate::audio::state::NativeCaptureProducerGuard,
     ) -> Result<(), String> {
+        // Journal each real native append before any reset or processing can
+        // replace its observation. This is independent of 960-frame admission.
+        // Integration requires the closed-loop writer/consumer to admit this
+        // explicit diagnostic kind; never disguise it as render/stage lifecycle.
+        if captured_frames > 0 && store.aec_diagnostic_tap_enabled() {
+            capture_diagnostics::record_native_capture_packet_witness(
+                capture_diagnostics::NativeCapturePacketWitness {
+                    buffer_info, captured_frames, queued_bytes_before_read, queued_bytes_after_read,
+                    block_align, observed_qpc_100ns: qpc_now_100ns(), direction,
+                    requested_endpoint_id: &spec.requested_device_id,
+                    // The guard's Start owner and initialized effective endpoint
+                    // are not available through this signature. Do not guess.
+                    endpoint_id: None, capture_owner_id: None, capture_aec_reset_generation: None,
+                },
+                |metadata| store.record_aec_lifecycle(metadata),
+            );
+        }
         if captured_frames > 0 && spec.echo_cancel_enabled()
             && store.echo_partial_capture_boundary_pending() {
             let clock = store.echo_render_clock_snapshot();

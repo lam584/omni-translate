@@ -17,7 +17,7 @@ export function localSpeechJobDeadline(nowMs) {
  if(!Number.isSafeInteger(nowMs)||nowMs<0||nowMs>8640000000000000-LOCAL_SPEECH_BUDGETS.ownedJobMs)throw Error("invalid local speech launch time");
  return new Date(nowMs+LOCAL_SPEECH_BUDGETS.ownedJobMs).toISOString();
 }
-export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(['apps/desktop/src-tauri/src/audio/state/echo_backend_capture_tail_tests.rs','apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/tests.rs','scripts/testing/watch-mode-aec-capture-processing-evidence.mjs','scripts/testing/watch-mode-aec-capture-processing-evidence.test.mjs','scripts/testing/watch-mode-aec-tap-evidence.test.mjs','scripts/testing/local-aec-speech-analysis.test.mjs',"apps/desktop/src-tauri/src/audio/aec_diagnostic_tap.rs",
+export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(["apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop.rs","apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop_packet_tests.rs","scripts/testing/watch-mode-aec-closed-loop-evidence.test.mjs",'apps/desktop/src-tauri/src/audio/state/echo_backend_capture_tail_tests.rs','apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/tests.rs','scripts/testing/watch-mode-aec-capture-processing-evidence.mjs','scripts/testing/watch-mode-aec-capture-processing-evidence.test.mjs','scripts/testing/watch-mode-aec-tap-evidence.test.mjs','scripts/testing/local-aec-speech-analysis.test.mjs',"apps/desktop/src-tauri/src/audio/aec_diagnostic_tap.rs",
   "apps/desktop/src-tauri/src/audio/echo_cancel/production.rs",
   "apps/desktop/src-tauri/src/audio/echo_cancel/partial_capture_tests.rs",
   "apps/desktop/src-tauri/src/audio/engine/mod.rs",

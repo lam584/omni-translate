@@ -6,6 +6,31 @@ const PHYSICAL: &str = "aec-physical-output-48k-stereo.f32le";
 const PROVIDER: &str = "aec-provider-input.s16le";
 const RECORDS: &str = "aec-closed-loop-metadata.jsonl";
 const SEAL: &str = "aec-closed-loop-terminal.json";
+// Diagnostic witnesses may retain an unavailable native observation or an
+// impossible append, but can never claim formal capture/quality authority.
+// Byte/clock acceptance is the strict consumer's job, not writer normalization.
+fn validate_native_packet_witness(meta: &Value) -> io::Result<()> {
+    let unsigned = |key: &str| meta.get(key).is_some_and(|v| v.as_u64().is_some());
+    let nullable_unsigned = |key: &str| meta.get(key).is_some_and(|v| v.is_null() || v.as_u64().is_some());
+    let string = |key: &str| meta.get(key).is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()));
+    let flags = ["dataDiscontinuity","silent","timestampError"];
+    let no_authority = ["qualityAcceptance","aecQualityAcceptance","releaseEligible","formalCaptureClockAcceptance"];
+    let valid = meta["schemaVersion"] == 1 && meta["diagnosticOnly"] == true
+        && no_authority.iter().all(|key| meta[*key] == false)
+        && ["rawFrameCount","blockAlignBytes"].iter().all(|key| meta[*key].as_u64().is_some_and(|n| n > 0))
+        && ["rawPacketDeviceFrameIndex","rawPacketQpc100ns","queuedBytesBeforeRead","queuedBytesAfterRead","resetGeneration"].iter().all(|key| unsigned(key))
+        && ["rawByteCount","qpc100ns","observedQpc100ns","captureOwnerId","captureAecResetGeneration"].iter().all(|key| nullable_unsigned(key))
+        && flags.iter().all(|key| meta[*key].is_boolean())
+        && ["direction","requestedEndpointId"].iter().all(|key| string(key))
+        && meta.get("endpointId").is_some_and(|v| v.is_null() || v.as_str().is_some_and(|s| !s.is_empty()))
+        && meta["qpc100ns"] == meta["observedQpc100ns"]
+        && meta["resetGenerationDomain"] == "aec-diagnostic-tap";
+    if !valid {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,"invalid diagnostic native capture packet witness"));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Event { physical: Option<Vec<f32>>, provider: Option<Vec<i16>>, metadata: Value }
 #[derive(Debug, Default)]
@@ -44,6 +69,7 @@ impl ClosedLoopTap {
                 };
                 let mut meta=event.metadata;
                 let result=(|| -> io::Result<()> {
+                    if meta["kind"] == "native-capture-packet" { validate_native_packet_witness(&meta)?; }
                     meta["schemaVersion"]=json!(1);
                     meta["sequence"]=json!(worker.written_events.load(Ordering::Acquire));
                     if let Some(samples)=event.physical {
@@ -61,7 +87,7 @@ impl ClosedLoopTap {
                         meta["sha256"]=json!(format!("{:x}",Sha256::digest(&bytes)));
                         provider.writer.write_all(&bytes)?; provider_samples+=samples.len() as u64; provider_events+=1;
                     } else {
-                        if !matches!(meta["kind"].as_str(),Some("render-lifecycle"|"stage-lifecycle"|"provider-lifecycle")) {
+                        if !matches!(meta["kind"].as_str(),Some("render-lifecycle"|"stage-lifecycle"|"provider-lifecycle"|"native-capture-packet")) {
                             return Err(io::Error::new(io::ErrorKind::InvalidData,"unknown closed-loop lifecycle event"));
                         }
                         lifecycle_events+=1;
@@ -119,3 +145,7 @@ impl Drop for ClosedLoopTap {
         if let Ok(mut writer)=live.writer.try_lock(){if writer.as_ref().is_some_and(JoinHandle::is_finished){if let Some(writer)=writer.take(){let _=writer.join();}}}
     }}
 }
+
+#[cfg(test)]
+#[path = "closed_loop_packet_tests.rs"]
+mod packet_witness_tests;

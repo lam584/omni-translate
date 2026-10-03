@@ -68,3 +68,125 @@ fn actual_route_frame_count_and_cached_voiced_pcm_exclude_computational_padding(
     let active = pipeline.processor.active_segment.as_ref().unwrap();
     assert_eq!(active.audio_bytes.len(), 2400 * 8);
 }
+
+fn packet_witness<'a>(buffer_info: &'a wasapi::BufferInfo, frames: usize, before_frames: usize)
+    -> capture_diagnostics::NativeCapturePacketWitness<'a> {
+    capture_diagnostics::NativeCapturePacketWitness {
+        buffer_info, captured_frames: frames, queued_bytes_before_read: before_frames * 8,
+        queued_bytes_after_read: (before_frames + frames) * 8, block_align: 8,
+        observed_qpc_100ns: Some(9_000_000), direction: "inbound",
+        requested_endpoint_id: "requested-endpoint", endpoint_id: None,
+        capture_owner_id: None, capture_aec_reset_generation: None,
+    }
+}
+
+#[test]
+fn native_capture_packet_witness_includes_96_480_576_frame_reads_without_processing() {
+    let pipeline = pipeline();
+    let before = pipeline.capture_metadata().unwrap();
+    let mut records = Vec::new();
+    for (frames, prefix) in [(96, 0), (480, 96), (576, 192)] {
+        assert!(frames + prefix < CHUNK_FRAMES);
+        let info = wasapi::BufferInfo::new(0, 6_672_000 + frames as u64, 4_207_119_107_588);
+        capture_diagnostics::record_native_capture_packet_witness(packet_witness(&info, frames, prefix),
+            |record| records.push(record));
+        let row = records.last().unwrap();
+        assert_eq!(row["rawFrameCount"], json!(frames));
+        assert_eq!(row["rawByteCount"], json!(frames * 8));
+        assert_eq!(row["queuedBytesBeforeRead"], json!(prefix * 8));
+        assert_eq!(row["queuedBytesAfterRead"], json!((prefix + frames) * 8));
+        assert_eq!(row["rawPacketDeviceFrameIndex"], json!(info.index));
+    }
+    assert_eq!(records.len(), 3);
+    assert_eq!(pipeline.processor.frames_captured, 0);
+    assert_eq!(pipeline.capture_metadata().unwrap(), before);
+}
+
+#[test]
+fn native_capture_packet_witness_ignores_zero_frame_idle_with_retained_prefix() {
+    let pipeline = pipeline();
+    let retained = pipeline.capture_metadata().unwrap();
+    // Even flagged/default idle BufferInfo cannot impersonate a returned PCM packet.
+    let idle = wasapi::BufferInfo::new(7, 0, 0);
+    let mut records = Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet_witness(&idle, 0, 576),
+        |record| records.push(record));
+    assert!(records.is_empty());
+    assert_eq!(pipeline.capture_metadata().unwrap(), retained);
+}
+
+#[test]
+fn native_capture_packet_witness_preserves_flags_owner_and_native_reset_domain() {
+    let info = wasapi::BufferInfo::new(7, 0, u64::MAX);
+    let mut packet = packet_witness(&info, 96, 672);
+    packet.endpoint_id = Some("actual-endpoint");
+    packet.capture_owner_id = Some(41);
+    packet.capture_aec_reset_generation = Some(3);
+    let mut records = Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet, |record| records.push(record));
+    let row = &records[0];
+    assert_eq!(row["kind"], "native-capture-packet");
+    assert_eq!(row["schemaVersion"], 1);
+    assert_eq!(row["dataDiscontinuity"], true);
+    assert_eq!(row["silent"], true);
+    assert_eq!(row["timestampError"], true);
+    assert_eq!(row["rawPacketDeviceFrameIndex"], 0);
+    assert_eq!(row["rawPacketQpc100ns"], json!(u64::MAX));
+    assert_eq!(row["captureOwnerId"], 41);
+    assert_eq!(row["captureAecResetGeneration"], 3);
+    assert_eq!(row["endpointId"], "actual-endpoint");
+    assert_eq!(row["requestedEndpointId"], "requested-endpoint");
+    assert_eq!(row["direction"], "inbound");
+    assert_eq!(row["resetGenerationDomain"], "aec-diagnostic-tap");
+    assert!(row.get("resetGeneration").is_none(), "only the tap injects its own reset generation");
+    assert_eq!(row["diagnosticOnly"], true);
+    for field in ["qualityAcceptance", "aecQualityAcceptance", "releaseEligible", "formalCaptureClockAcceptance"] {
+        assert_eq!(row[field], false);
+    }
+    assert!(row.get("queueHeadClockValid").is_none());
+    assert!(row.get("queueHeadDeviceFrameIndex").is_none());
+    assert!(row.get("queueHeadQpc100ns").is_none());
+}
+
+#[test]
+fn native_capture_packet_witness_keeps_unavailable_identity_and_observation_null() {
+    let info = wasapi::BufferInfo::new(0, 6_672_000, 4_207_119_107_588);
+    let mut packet = packet_witness(&info, 96, 672);
+    packet.observed_qpc_100ns = None;
+    let mut records = Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet, |record| records.push(record));
+    let row = &records[0];
+    for field in ["endpointId", "captureOwnerId", "captureAecResetGeneration", "observedQpc100ns", "qpc100ns"] {
+        assert!(row.get(field).unwrap().is_null(), "unknown field must remain null: {field}");
+    }
+    assert_eq!(row["rawPacketQpc100ns"], json!(info.timestamp));
+}
+
+#[test]
+fn native_capture_packet_witness_snapshot_survives_clock_consumption_and_later_idle() {
+    let mut pipeline = pipeline();
+    let info = wasapi::BufferInfo::new(1, 6_672_000, 4_207_119_107_588);
+    let mut records = Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet_witness(&info, 96, 672),
+        |record| records.push(record));
+    let snapshot = records[0].clone();
+    pipeline.consume_capture_clock(672, 672 * 8);
+    let idle = wasapi::BufferInfo::new(0, 0, 0);
+    capture_diagnostics::record_native_capture_packet_witness(packet_witness(&idle, 0, 768),
+        |record| records.push(record));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0], snapshot);
+    assert_eq!(records[0]["rawPacketQpc100ns"], json!(4_207_119_107_588u64));
+    assert_eq!(records[0]["observedQpc100ns"], json!(9_000_000));
+}
+
+#[test]
+fn native_capture_packet_witness_does_not_invent_bytes_on_queue_underflow() {
+    let info = wasapi::BufferInfo::new(0, 6_672_000, 4_207_119_107_588);
+    let mut packet = packet_witness(&info, 96, 672);
+    packet.queued_bytes_after_read = packet.queued_bytes_before_read - 8;
+    let mut records = Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet, |record| records.push(record));
+    assert_eq!(records[0]["rawFrameCount"], 96);
+    assert!(records[0]["rawByteCount"].is_null());
+}

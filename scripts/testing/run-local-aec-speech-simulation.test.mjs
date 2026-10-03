@@ -556,3 +556,14 @@ test('legacy tap and mismatched processing seal cannot authorize final local out
  for(const patch of [{captureProcessingVersion:0},{processingVerified:false},{verifiedProcessingCount:0},{terminalSha256:'b'.repeat(64)}])
   assert.equal(finalizeSpeechOutcome({passed:true},{...strictTap(),...patch},acceptedQuality()).overallPassed,false);
 });
+
+const nativePacketFrozenSources=["apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop.rs","apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop_packet_tests.rs","scripts/testing/watch-mode-aec-closed-loop-evidence.test.mjs"];
+test('native packet witness writer and strict consumer tests are frozen for local AEC runs',()=>{
+ for(const file of nativePacketFrozenSources)assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file),file);
+});
+test('changing the packet journal writer or consumer tests invalidates a frozen source identity',t=>{
+ for(const file of nativePacketFrozenSources){
+  const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'\nchanged','utf8');
+  assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+ }
+});

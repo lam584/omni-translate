@@ -157,3 +157,28 @@ conformance or offline tests alone do not establish acoustic quality.
 
 Primary API contract (not an acceptance override):
 `https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize`
+
+## Native capture packet witness (diagnostic version 1)
+
+Every non-empty actual GetBuffer append is journaled before reset, chunk admission
+or AEC processing as a distinct `native-capture-packet` closed-loop sidecar record.
+It records the actual frame/byte append, block alignment, queue before/after,
+returned device frame and QPC, all native flags, observation QPC and requested
+route. Zero-frame idle polls cannot produce a packet witness. Unknown effective
+endpoint, capture owner/reset or observation time remains explicit null rather
+than borrowing a latest packet or render identity.
+
+The tap injects only its own `resetGeneration` in the explicit
+`aec-diagnostic-tap` domain; a native capture reset observation, when available,
+is separately named `captureAecResetGeneration`. The immutable packet witness
+cannot make an invalid retained-prefix clock valid or authorize any quality gate.
+It must carry `diagnosticOnly: true` and false quality, AEC quality, release and
+formal capture-clock acceptance flags. Missing/contradictory packet structure or
+any authority claim is rejected by strict reconstruction. A real impossible
+append is retained with null byte count for diagnosis and cannot pass validation.
+
+These events count only toward sealed lifecycle metadata, not physical or
+provider PCM. Unknown event kinds still fail closed. Writer, producer and strict
+consumer changes are source-hash frozen before a new hardware run. Existing
+1ms source clock, unknown-prefix, zero-drop, source preservation, per-stage 20dB
+echo attenuation and open-input drain gates are unchanged.

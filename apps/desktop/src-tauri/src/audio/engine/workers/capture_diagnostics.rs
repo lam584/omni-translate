@@ -8,6 +8,60 @@ use crate::audio::state::{AecCaptureFrameMetadata, AudioStateStore, EchoRenderCl
 use super::aec_timing::AecDelayEstimate;
 use super::SAMPLE_RATE_HZ;
 
+/// A single completed GetBuffer read, not a processed chunk or a queue-head clock.
+/// Unknown identities remain null; neither this witness nor its timestamps grant
+/// acoustic quality, release eligibility, or capture-clock acceptance.
+pub(super) struct NativeCapturePacketWitness<'a> {
+    pub(super) buffer_info: &'a wasapi::BufferInfo,
+    pub(super) captured_frames: usize,
+    pub(super) queued_bytes_before_read: usize,
+    pub(super) queued_bytes_after_read: usize,
+    pub(super) block_align: usize,
+    pub(super) observed_qpc_100ns: Option<u64>,
+    pub(super) direction: &'a str,
+    pub(super) requested_endpoint_id: &'a str,
+    pub(super) endpoint_id: Option<&'a str>,
+    pub(super) capture_owner_id: Option<u64>,
+    pub(super) capture_aec_reset_generation: Option<u64>,
+}
+
+pub(super) fn record_native_capture_packet_witness(
+    packet: NativeCapturePacketWitness<'_>,
+    record: impl FnOnce(serde_json::Value),
+) {
+    if packet.captured_frames == 0 { return; }
+    // The byte delta is the actual append, never the size of the older prefix.
+    // Preserve an impossible underflow as null rather than inventing bytes.
+    let raw_byte_count = packet.queued_bytes_after_read.checked_sub(packet.queued_bytes_before_read);
+    record(serde_json::json!({
+        "schemaVersion": 1,
+        "kind": "native-capture-packet",
+        "diagnosticOnly": true,
+        "qualityAcceptance": false,
+        "aecQualityAcceptance": false,
+        "releaseEligible": false,
+        "formalCaptureClockAcceptance": false,
+        "rawFrameCount": packet.captured_frames,
+        "rawByteCount": raw_byte_count,
+        "blockAlignBytes": packet.block_align,
+        "rawPacketDeviceFrameIndex": packet.buffer_info.index,
+        "rawPacketQpc100ns": packet.buffer_info.timestamp,
+        "dataDiscontinuity": packet.buffer_info.flags.data_discontinuity,
+        "silent": packet.buffer_info.flags.silent,
+        "timestampError": packet.buffer_info.flags.timestamp_error,
+        "queuedBytesBeforeRead": packet.queued_bytes_before_read,
+        "queuedBytesAfterRead": packet.queued_bytes_after_read,
+        "qpc100ns": packet.observed_qpc_100ns,
+        "observedQpc100ns": packet.observed_qpc_100ns,
+        "direction": packet.direction,
+        "requestedEndpointId": packet.requested_endpoint_id,
+        "endpointId": packet.endpoint_id,
+        "captureOwnerId": packet.capture_owner_id,
+        "captureAecResetGeneration": packet.capture_aec_reset_generation,
+        "resetGenerationDomain": "aec-diagnostic-tap",
+    }));
+}
+
 #[derive(Debug, Default)]
 pub(super) struct AecTapQueueClock {
     invalid_prefix_bytes: usize,

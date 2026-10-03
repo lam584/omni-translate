@@ -382,6 +382,7 @@
         tap.record_capture_with_processing(&pre, &post, metadata(), Some(AecCaptureProcessing {
             schema_version: 1, input_frames: 672, native_10ms_frames: 2, math_padding_frames: 288,
             all_input_processed: true, reset_before_resume_required: true,
+            boundary_admission: None,
             tail_admission: Some(AecCaptureTailEvidence {
                 schema_version: 1, queue_generation: 8, capture_owner_id: 4, capture_reset_generation: 3,
                 byte_len: 5376, last_empty_query_id: 101, empty_polls: 101,

@@ -1000,7 +1000,7 @@ test('exported local ledger validator requires real ledger only when explicitly 
   assert.equal(r.required, true); assert.equal(r.reviewSatisfied, true);
   assert.equal(r.inputs, f.base.filter(e => e.kind === 'capture').length);
   assert.equal(r.qualityAcceptance, false); assert.equal(r.formalCaptureClockAcceptance, false);
-  assert.equal(AEC_CAPTURE_QUEUE_WITNESS_POLICY, 'owner-range-receipt-v1');
+  assert.equal(AEC_CAPTURE_QUEUE_WITNESS_POLICY, 'owner-range-time-segments-v2');
 });
 
 test('exported validator refuses absent or forged main receipts and incomplete capture coverage', async (t) => {
@@ -1056,7 +1056,7 @@ test('signed frozen queue policy enforces complete ledger despite caller false',
     }
   });
   await t.test('complete frozen ledger passes structural review', (t) => {
-    const f = queueFixture(t); f.pinQueuePolicy();
+    const f = queueFixture(t); upgradeTimeSegments(f); f.pinQueuePolicy();
     const r = buildAecClosedLoopEvidence(f.root, { ...f.options, requireCaptureQueueLedger: false });
     assert.equal(r.passed, true, r.violations.join('; ')); assert.equal(r.captureQueueLedger.required, true);
     const m = createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey });
@@ -1172,4 +1172,220 @@ test('native replay accepts exact frame and floor-QPC anchor boundaries without 
   p.rawPacketDeviceFrameIndex = p.queuedBytesBeforeRead / 8;
   p.rawPacketQpc100ns = Number(BigInt(p.queuedBytesBeforeRead / 8) * 10000000n / 48000n);
   f.saveQueue(); assert.equal(validateCaptureQueueLedger(f.side, f.base, { required: true }).resolved, true);
+});
+
+test('time-segment strict evidence cannot upgrade a v1 owner/range ledger', (t) => {
+  const f = queueFixture(t);
+  assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true, requireTimeSegments: true }), /time.segment/);
+});
+
+function upgradeTimeSegments(f) {
+  for (const c of f.base.filter(e=>e.kind==='capture')) {
+    const frames=c.preSampleCount/2;
+    c.aecProcessing={schemaVersion:1,inputFrames:frames,native10msFrames:Math.ceil(frames/480),
+      mathPaddingFrames:Math.ceil(frames/480)*480-frames,allInputProcessed:true,resetBeforeResumeRequired:false,tailAdmission:null};
+  }
+  f.saveEvents('base');
+  let previous = null;
+  for (const e of f.side) {
+    if (e.kind === 'native-capture-packet') {
+      Object.assign(e, {captureTimeSegmentId:1,captureTimeBoundaryId:null,captureTimeBoundaryReason:null,
+        captureTimePreviousEndDeviceFrameIndex:previous ? previous.rawPacketDeviceFrameIndex+previous.rawFrameCount : null,
+        captureTimePreviousPacketTimestampError:previous ? previous.timestampError : null,
+        captureTimeQueueGeneration:e.queueGenerationAfter}); previous=e;
+    } else if (e.kind === 'native-capture-queue-clock') {
+      e.captureClockPrefixBytesAtPrepare = previous.queuedBytesBeforeRead;
+    }
+  }
+  f.saveQueue(); return f;
+}
+
+test('v2 no-boundary ledger validates segments without upgrading clock or quality', (t) => {
+  const f = upgradeTimeSegments(queueFixture(t));
+  const r = validateCaptureQueueLedger(f.side,f.base,{required:true,requireTimeSegments:true});
+  assert.equal(r.schemaVersion,2);assert.equal(r.timeSegmentsValidated,true);
+  assert.equal(r.qualityAcceptance,false);assert.equal(r.formalCaptureClockAcceptance,false);
+  for (const mutate of [e=>{e.captureTimeSegmentId+=1;},e=>{e.captureTimeQueueGeneration+=1;},
+    e=>{delete e.captureTimePreviousPacketTimestampError;},e=>{e.captureTimeBoundaryId=1;},
+    e=>{e.captureTimeBoundaryReason='device-frame-gap';}]) {
+    const rows=structuredClone(f.side); mutate(rows.find(e=>e.kind==='native-capture-packet'));
+    assert.throws(()=>validateCaptureQueueLedger(rows,f.base,{requireTimeSegments:true}),/time-segment/);
+  }
+  const rows=structuredClone(f.side);rows.find(e=>e.kind==='native-capture-queue-clock').captureClockPrefixBytesAtPrepare=8;
+  assert.throws(()=>validateCaptureQueueLedger(rows,f.base,{requireTimeSegments:true}),/prefixAtPrepare/);
+});
+
+function timeBoundaryFixture(t,frames=480) {
+  const f=queueFixture(t); const bytes=frames*8; const nextBytes=960*8;
+  const identity=f.side.find(e=>e.kind==='native-capture-packet');
+  const capture=structuredClone(f.base.find(e=>e.kind==='capture'));
+  const main=[{...capture,sequence:0,resetGeneration:0,preSampleCount:frames*2,postSampleCount:frames*2,
+    postSampleOffset:0,timestampError:false,dataDiscontinuity:false,queueHeadClockValid:true,
+    rawPacketDeviceFrameIndex:0,rawPacketQpc100ns:10000000,queueHeadDeviceFrameIndex:0,queueHeadQpc100ns:10000000,
+    aecProcessing:{schemaVersion:2,inputFrames:frames,native10msFrames:Math.ceil(frames/480),
+      mathPaddingFrames:Math.ceil(frames/480)*480-frames,allInputProcessed:true,resetBeforeResumeRequired:true,tailAdmission:null,
+      boundaryAdmission:{schemaVersion:1,captureOwnerId:identity.captureOwnerId,queueGeneration:2,boundaryId:1,
+        closedSegmentId:1,nextSegmentId:2,byteLen:bytes,realFrames:frames,boundaryReason:'device-frame-gap',
+        oldSegmentStartDeviceFrameIndex:0,oldSegmentStartQpc100ns:10000000,oldSegmentEndDeviceFrameIndex:frames,
+        nextPacketDeviceFrameIndex:1000,nextPacketQpc100ns:11000000,nextPacketDataDiscontinuity:false,nextPacketTimestampError:false,previousPacketTimestampError:false}}},
+    {schemaVersion:3,kind:'reset',sequence:1,resetGeneration:1,reason:'capture-packet-time-boundary'},
+    {...capture,sequence:2,resetGeneration:1,preSampleCount:1920,postSampleCount:1920,postSampleOffset:frames*2,
+      timestampError:false,dataDiscontinuity:false,queueHeadClockValid:true,
+      aecProcessing:{schemaVersion:1,inputFrames:960,native10msFrames:2,mathPaddingFrames:0,allInputProcessed:true,
+        resetBeforeResumeRequired:false,tailAdmission:null}}];
+  let generation=0,head=0,tail=0,nativeGeneration=0,resetGeneration=0;const side=[];
+  const add=(kind,extra)=>side.push({...identity,kind,sequence:side.length,queueGeneration:generation,
+    captureAecResetGeneration:nativeGeneration,resetGeneration,ledgerLastKnownHeadByte:head,ledgerLastKnownTailByte:tail,...extra});
+  const append=(packetId,start,frame,qpc,size,segment,boundary)=>{
+    const before=tail-head;const gen=generation;tail+=size;generation++;
+    add('native-capture-packet',{packetId,rawFrameCount:size/8,rawByteCount:size,rawPacketDeviceFrameIndex:frame,
+      rawPacketQpc100ns:qpc,timestampError:false,dataDiscontinuity:false,queuedBytesBeforeRead:before,
+      queuedBytesAfterRead:tail-head,appendStartByte:start,appendEndByte:tail,queueGenerationBefore:gen,queueGenerationAfter:generation,
+      captureTimeSegmentId:segment,captureTimeBoundaryId:boundary,captureTimeBoundaryReason:boundary?'device-frame-gap':null,
+      captureTimePreviousEndDeviceFrameIndex:packetId===1?null:frames,
+      captureTimePreviousPacketTimestampError:packetId===1?null:false,captureTimeQueueGeneration:generation});
+  };
+  const clock=packetId=>add('native-capture-queue-clock',{packetId,invalidPrefixBytes:0,invalidPrefixStartByte:head,
+    invalidPrefixEndByte:head,invalidPrefixPacketRanges:[],packetClockValid:true,queueHeadClockValidForNextChunk:true,
+    captureClockPrefixBytesAtPrepare:0});
+  const consume=(packetId,dequeueId,start,end,kind,c)=>{
+    const gen=generation;const before=tail-head;head=end;generation++;
+    const packetRanges=[{packetId,startByte:start,endByte:end,packetOffsetStartByte:0,packetOffsetEndByte:end-start}];
+    add('native-capture-queue-dequeue',{dequeueKind:kind,dequeueId,dequeueStartByte:start,dequeueEndByte:end,
+      dequeuedBytes:end-start,queuedBytesBefore:before,queuedBytesAfter:tail-head,chunkByteLength:kind==='packet-boundary'?null:end-start,
+      chunkCount:1,queueGenerationBefore:gen,queueGenerationAfter:generation,packetRanges});
+    add('native-capture-queue-input',{dequeueId,chunkIndex:0,inputStartByte:start,inputEndByte:end,inputByteCount:end-start,
+      packetRanges,captureIdentityAvailable:true,dequeueMappingAvailable:true,mainCaptureSequence:c.sequence,
+      mainCaptureResetGeneration:c.resetGeneration,mainCapturePostSampleOffset:c.postSampleOffset,
+      timestampError:false,dataDiscontinuity:false,queueHeadClockValid:true});
+  };
+  append(1,0,0,10000000,bytes,1,null);clock(1);
+  append(2,bytes,1000,11000000,nextBytes,2,1);consume(1,1,0,bytes,'packet-boundary',main[0]);
+  nativeGeneration=1;resetGeneration=1;
+  add('native-capture-queue-reset',{reason:'capture-packet-time-boundary',succeeded:true,error:null,
+    captureAecResetGenerationBefore:0,captureAecResetGenerationAfter:1,queueGenerationBefore:generation,
+    queueGenerationAfter:generation,queuedBytes:nextBytes,retainedPacketRanges:[{packetId:2,startByte:bytes,endByte:tail,
+      packetOffsetStartByte:0,packetOffsetEndByte:nextBytes}]});
+  clock(2);consume(2,2,bytes,tail,'full-chunk-batch',main[2]);
+  return {side,main};
+}
+
+test('v2 actual voiced old-prefix boundary dequeue/input/reset is causal even at exactly 480 frames', (t) => {
+  for(const frames of [96,480,700]) {
+    const f=timeBoundaryFixture(t,frames);
+    assert.equal(validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}).reviewSatisfied,true);
+  }
+});
+
+test('v2 boundary counterexamples fail closed without changing v1 diagnostic semantics', async(t)=>{
+  const cases=[
+    ['forged boundary reason',f=>{f.side.find(e=>e.kind==='native-capture-packet'&&e.packetId===2).captureTimeBoundaryReason='data-discontinuity';}],
+    ['forged predecessor flag',f=>{f.main[0].aecProcessing.boundaryAdmission.previousPacketTimestampError=true;}],
+    ['missing predecessor flag',f=>{delete f.main[0].aecProcessing.boundaryAdmission.previousPacketTimestampError;}],
+    ['swapped boundary',f=>{f.main[0].aecProcessing.boundaryAdmission.boundaryId=2;}],
+    ['new packet input bytes',f=>{const e=f.side.find(e=>e.kind==='native-capture-queue-input');e.packetRanges[0].packetId=2;}],
+    ['normal dequeue before clock',f=>{const e=f.side.find(e=>e.kind==='native-capture-queue-dequeue');e.dequeueKind='full-chunk-batch';e.chunkByteLength=e.dequeuedBytes;}],
+    ['fake retained old metadata',f=>{f.main[0].queueHeadQpc100ns++;}],
+    ['fake cleared old flags',f=>{f.side[0].dataDiscontinuity=true;}],
+    ['fake old boundary time',f=>{f.main[0].aecProcessing.boundaryAdmission.oldSegmentStartQpc100ns++;}],
+    ['boundary quiet-tail laundering',f=>{f.main[0].aecProcessing.schemaVersion=1;}],
+    ['missing reset requirement without padding',f=>{f.main[0].aecProcessing.resetBeforeResumeRequired=false;}],
+    ['unrelated reset cannot ack boundary',f=>{f.main[1].reason='render-discontinuity';f.side.find(e=>e.kind==='native-capture-queue-reset').reason='render-discontinuity';}],
+    ['missing reset',f=>{f.side=f.side.filter(e=>e.kind!=='native-capture-queue-reset');f.side.forEach((e,i)=>e.sequence=i);} ],
+    ['eager new clock covers old prefix',f=>{const i=f.side.findIndex(e=>e.kind==='native-capture-queue-clock'&&e.packetId===2);const [clock]=f.side.splice(i,1);f.side.splice(3,0,clock);f.side.forEach((e,i)=>e.sequence=i);} ],
+    ['fake segment',f=>{f.side.find(e=>e.kind==='native-capture-packet'&&e.packetId===2).captureTimeSegmentId=1;}],
+    ['fake prefix prepare',f=>{f.side.find(e=>e.kind==='native-capture-queue-clock'&&e.packetId===2).captureClockPrefixBytesAtPrepare=480*8;}],
+    ['boundary grants invalid clock',f=>{const e=f.side.find(e=>e.kind==='native-capture-queue-clock');e.packetClockValid=false;e.queueHeadClockValidForNextChunk=false;}],
+  ];
+  for(const [name,mutate]of cases)await t.test(name,t=>{const f=timeBoundaryFixture(t);mutate(f);
+    assert.throws(()=>validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}));});
+});
+
+test('v2 producer reason priority uses actual flags and preserves invalid old/new clocks',async t=>{
+ for(const [reason,oldError,newError,disc] of [
+   ['timestamp-error',true,true,true],['timestamp-error',false,true,false],
+   ['untrusted-predecessor',true,false,true],['data-discontinuity',false,false,true]]) {
+  await t.test(reason+' old='+oldError,t=>{
+   const f=timeBoundaryFixture(t);const p1=f.side[0],p2=f.side[2];p1.timestampError=oldError;
+   p2.timestampError=newError;p2.dataDiscontinuity=disc;p2.captureTimePreviousPacketTimestampError=oldError;
+   p2.captureTimeBoundaryReason=reason;
+   const b=f.main[0].aecProcessing.boundaryAdmission;b.boundaryReason=reason;
+   b.nextPacketTimestampError=newError;b.nextPacketDataDiscontinuity=disc;b.previousPacketTimestampError=oldError;
+   for(const [index,error]of [[1,oldError],[6,newError]]) {
+    const e=f.side[index];e.packetClockValid=!error;e.queueHeadClockValidForNextChunk=!error;
+    e.invalidPrefixBytes=error?(index===1?480*8:960*8):0;
+    e.invalidPrefixEndByte=e.invalidPrefixStartByte+e.invalidPrefixBytes;
+    e.invalidPrefixPacketRanges=error?[{packetId:index===1?1:2,startByte:e.invalidPrefixStartByte,endByte:e.invalidPrefixEndByte,
+      packetOffsetStartByte:0,packetOffsetEndByte:e.invalidPrefixBytes}]:[];
+   }
+   for(const [inputIndex,captureIndex,error,discontinuity]of [[4,0,oldError,false],[8,2,newError,disc]]) {
+    Object.assign(f.side[inputIndex],{timestampError:error,dataDiscontinuity:discontinuity,queueHeadClockValid:!error});
+    Object.assign(f.main[captureIndex],{timestampError:error,dataDiscontinuity:discontinuity,queueHeadClockValid:!error});
+   }
+   const r=validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true});
+   assert.equal(r.reviewSatisfied,true);assert.equal(r.formalCaptureClockAcceptance,false);
+   p2.captureTimeBoundaryReason='device-frame-gap';
+   assert.throws(()=>validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}),/boundary reason/);
+  });
+ }
+});
+
+test('v2 empty-prefix boundary still requires an actual reset ack; first DISC is not a segment transition',t=>{
+ const f=timeBoundaryFixture(t);const [p1,c1,p2,d1,i1,r,c2,d2,i2]=f.side;
+ Object.assign(d1,{dequeueKind:'full-chunk-batch',chunkByteLength:480*8,queueGenerationBefore:1,queueGenerationAfter:2,
+   queueGeneration:2,queuedBytesBefore:480*8,queuedBytesAfter:0,ledgerLastKnownTailByte:480*8});
+ Object.assign(i1,{queueGeneration:2,ledgerLastKnownTailByte:480*8});
+ Object.assign(p2,{queueGenerationBefore:2,queueGenerationAfter:3,queueGeneration:3,captureTimeQueueGeneration:3,
+   queuedBytesBeforeRead:0,queuedBytesAfterRead:960*8,ledgerLastKnownHeadByte:480*8});
+ f.main[0].aecProcessing={schemaVersion:1,inputFrames:480,native10msFrames:1,mathPaddingFrames:0,
+   allInputProcessed:true,resetBeforeResumeRequired:false,tailAdmission:null};
+ p1.dataDiscontinuity=true;i1.dataDiscontinuity=true;f.main[0].dataDiscontinuity=true;
+ f.side=[p1,c1,d1,i1,p2,r,c2,d2,i2];f.side.forEach((e,i)=>e.sequence=i);
+ assert.equal(validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}).reviewSatisfied,true);
+ f.side.splice(5,1);f.side.forEach((e,i)=>e.sequence=i);
+ assert.throws(()=>validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}));
+});
+
+test('v2 prepare permits first DISC/startup and non-time render resets without inventing a segment',async t=>{
+ for(const disc of [true,false])await t.test(disc?'first DISC':'render reset',t=>{
+  const f=timeBoundaryFixture(t);const firstResetReason=disc?'wasapi-capture-data-discontinuity':'wasapi-render-session-discontinuity';
+  const boundaryReset=f.side[5];const startup={...boundaryReset,reason:firstResetReason,queueGeneration:1,
+    queueGenerationBefore:1,queueGenerationAfter:1,captureAecResetGenerationBefore:0,captureAecResetGenerationAfter:1,
+    captureAecResetGeneration:1,resetGeneration:1,queuedBytes:480*8,ledgerLastKnownHeadByte:0,ledgerLastKnownTailByte:480*8,
+    retainedPacketRanges:[{packetId:1,startByte:0,endByte:480*8,packetOffsetStartByte:0,packetOffsetEndByte:480*8}]};
+  f.side[0].dataDiscontinuity=disc;
+  f.side[4].dataDiscontinuity=disc;f.main[0].dataDiscontinuity=disc;
+  for(const e of f.side.slice(1)) {e.captureAecResetGeneration++;e.resetGeneration++;
+    if(e.kind==='native-capture-queue-input'){e.mainCaptureSequence++;e.mainCaptureResetGeneration++;}}
+  boundaryReset.captureAecResetGenerationBefore=1;boundaryReset.captureAecResetGenerationAfter=2;
+  f.side.splice(1,0,startup);f.side.forEach((e,i)=>e.sequence=i);
+  f.main.forEach(e=>{e.sequence++;e.resetGeneration++;});
+  f.main.unshift({schemaVersion:3,kind:'reset',sequence:0,resetGeneration:1,reason:firstResetReason});
+  assert.equal(validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}).reviewSatisfied,true);
+ });
+});
+
+test('v2 multi-packet old prefix preserves last prepared clock rather than first packet anchor',t=>{
+ const f=timeBoundaryFixture(t);const [p1,c1,p3,d,i,r,c3,d3,i3]=f.side;
+ const p2={...p1,packetId:2,rawFrameCount:384,rawByteCount:384*8,rawPacketDeviceFrameIndex:96,
+   rawPacketQpc100ns:10020001,queuedBytesBeforeRead:96*8,queuedBytesAfterRead:480*8,
+   appendStartByte:96*8,appendEndByte:480*8,queueGenerationBefore:1,queueGenerationAfter:2,queueGeneration:2,
+   captureTimeQueueGeneration:2,captureTimePreviousEndDeviceFrameIndex:96,captureTimePreviousPacketTimestampError:false,
+   ledgerLastKnownTailByte:480*8};
+ Object.assign(p1,{rawFrameCount:96,rawByteCount:96*8,queuedBytesAfterRead:96*8,appendEndByte:96*8,ledgerLastKnownTailByte:96*8});
+ c1.ledgerLastKnownTailByte=96*8;
+ const c2={...c1,packetId:2,queueGeneration:2,captureClockPrefixBytesAtPrepare:96*8,ledgerLastKnownTailByte:480*8};
+ Object.assign(p3,{packetId:3,queueGenerationBefore:2,queueGenerationAfter:3,queueGeneration:3,captureTimeQueueGeneration:3});
+ const oldRanges=[{packetId:1,startByte:0,endByte:96*8,packetOffsetStartByte:0,packetOffsetEndByte:96*8},
+   {packetId:2,startByte:96*8,endByte:480*8,packetOffsetStartByte:0,packetOffsetEndByte:384*8}];
+ d.packetRanges=oldRanges;i.packetRanges=structuredClone(oldRanges);d.queueGenerationBefore++;d.queueGenerationAfter++;
+ for(const e of [d,i,r,c3,d3,i3])e.queueGeneration++;
+ r.queueGenerationBefore++;r.queueGenerationAfter++;r.retainedPacketRanges[0].packetId=3;
+ c3.packetId=3;d3.queueGenerationBefore++;d3.queueGenerationAfter++;d3.packetRanges[0].packetId=3;i3.packetRanges[0].packetId=3;
+ Object.assign(f.main[0],{rawPacketDeviceFrameIndex:96,rawPacketQpc100ns:10020001,queueHeadQpc100ns:10000001});
+ const b=f.main[0].aecProcessing.boundaryAdmission;b.queueGeneration=3;b.oldSegmentStartQpc100ns=10000001;
+ f.side=[p1,c1,p2,c2,p3,d,i,r,c3,d3,i3];f.side.forEach((e,i)=>e.sequence=i);
+ assert.equal(validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}).reviewSatisfied,true);
+ b.oldSegmentStartQpc100ns=10000000;
+ assert.throws(()=>validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}),/boundaryAdmission/);
 });

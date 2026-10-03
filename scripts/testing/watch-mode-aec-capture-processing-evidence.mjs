@@ -67,7 +67,15 @@ export function verifyCaptureProcessingRecord(event, actualPreSamples, actualPos
   }
 
   requireProcessing(typeof processing === 'object' && !Array.isArray(processing), `aecProcessing must be an object at sequence ${event.sequence}`);
-  requireProcessing(processing.schemaVersion === 1, `unsupported aecProcessing schemaVersion: ${processing.schemaVersion}`);
+  requireProcessing([1, 2].includes(processing.schemaVersion), `unsupported aecProcessing schemaVersion: ${processing.schemaVersion}`);
+
+  const boundary = processing.boundaryAdmission;
+  if (processing.schemaVersion === 2) {
+    requireProcessing(processing.tailAdmission === null && boundary && typeof boundary === 'object' && !Array.isArray(boundary),
+      'schema2 requires explicit null tailAdmission and typed boundaryAdmission');
+  } else {
+    requireProcessing(boundary === undefined || boundary === null, 'schema1 cannot claim boundaryAdmission');
+  }
 
   // In strict mode, tailAdmission must be explicitly declared (either null or object).
   // Missing or undefined field is rejected to avoid ambiguous partial interpretation.
@@ -118,12 +126,37 @@ export function verifyCaptureProcessingRecord(event, actualPreSamples, actualPos
   }
 
   // Strict mode: any mathPaddingFrames > 0 must have an authorized tailAdmission (no anonymous computational padding)
-  if (strict && processing.mathPaddingFrames > 0) {
+  if (strict && processing.mathPaddingFrames > 0 && processing.schemaVersion !== 2) {
     requireProcessing(processing.tailAdmission !== null && processing.tailAdmission !== undefined,
       'strict mode rejects mathPaddingFrames > 0 without an authorized tailAdmission (anonymous computational padding prohibited)');
   }
 
-  const isPartial = processing.mathPaddingFrames > 0 || (processing.tailAdmission !== null && processing.tailAdmission !== undefined);
+  if (processing.schemaVersion === 2) {
+    requireProcessing(boundary.schemaVersion === 1, 'boundaryAdmission schemaVersion');
+    for (const key of ['captureOwnerId', 'queueGeneration', 'boundaryId', 'closedSegmentId', 'nextSegmentId']) {
+      requireProcessing(positiveInteger(boundary[key]), 'boundaryAdmission ' + key + ' must be positive integer');
+    }
+    for (const key of ['oldSegmentStartDeviceFrameIndex', 'oldSegmentStartQpc100ns', 'oldSegmentEndDeviceFrameIndex',
+      'nextPacketDeviceFrameIndex', 'nextPacketQpc100ns']) {
+      requireProcessing(integer(boundary[key]), 'boundaryAdmission ' + key + ' must be safe nonnegative integer');
+    }
+    requireProcessing(boundary.realFrames === expectedInputFrames && expectedInputFrames > 0 && expectedInputFrames < 960
+      && boundary.byteLen === expectedInputFrames * 8
+      && boundary.oldSegmentEndDeviceFrameIndex - boundary.oldSegmentStartDeviceFrameIndex === expectedInputFrames
+      && boundary.nextSegmentId === boundary.closedSegmentId + 1, 'boundaryAdmission frame/segment accounting');
+    requireProcessing(typeof boundary.nextPacketDataDiscontinuity === 'boolean'
+      && typeof boundary.nextPacketTimestampError === 'boolean' && typeof boundary.previousPacketTimestampError === 'boolean', 'boundaryAdmission flags must be boolean');
+    requireProcessing(['data-discontinuity', 'device-frame-gap', 'timestamp-error', 'untrusted-predecessor'].includes(boundary.boundaryReason),
+      'boundaryAdmission reason unavailable');
+    requireProcessing(boundary.boundaryReason !== 'data-discontinuity' || boundary.nextPacketDataDiscontinuity, 'boundaryAdmission discontinuity reason mismatch');
+    requireProcessing(boundary.boundaryReason !== 'device-frame-gap'
+      || boundary.nextPacketDeviceFrameIndex !== boundary.oldSegmentEndDeviceFrameIndex, 'boundaryAdmission frame-gap reason mismatch');
+    requireProcessing(boundary.boundaryReason !== 'timestamp-error' || boundary.nextPacketTimestampError, 'boundaryAdmission timestamp reason mismatch');
+    requireProcessing(boundary.boundaryReason !== 'untrusted-predecessor' || boundary.previousPacketTimestampError, 'boundaryAdmission untrusted predecessor reason mismatch');
+    requireProcessing(processing.resetBeforeResumeRequired === true, 'boundaryAdmission requires reset before resume even without padding');
+  }
+
+  const isPartial = processing.schemaVersion === 2 || processing.mathPaddingFrames > 0 || (processing.tailAdmission !== null && processing.tailAdmission !== undefined);
 
   // Tail admission validation
   const tail = processing.tailAdmission;
@@ -210,6 +243,7 @@ export function verifyCaptureProcessingRecord(event, actualPreSamples, actualPos
     hasReceipt: true,
     partial: isPartial,
     tailAdmission: tail ?? null,
+    boundaryAdmission: boundary ?? null,
     passed: true,
     strictValidated: strict,
     diagnosticOnly: true,

@@ -163,7 +163,7 @@ function nativeTapSeal(root, terminal) {
     && terminal.resetGeneration === generation && terminal.invalidClockEvents === 0
     && isDeepStrictEqual(terminal.eventCounts, counts) && isDeepStrictEqual(terminal.sampleCounts, samples), 'tap sealed accounting mismatch');
   for (const lane of ['render', 'pre', 'post']) check(data[lane].length === samples[lane] * 4, 'tap PCM missing/unreferenced frames');
-  return { ...data, rows, terminalSha256: sha(terminalBytes), captureProcessingVersion: 1,
+  return { ...data, rows, terminalSha256: sha(terminalBytes), captureProcessingVersion: rows.some(e => e.aecProcessing?.schemaVersion === 2) ? 2 : 1,
     processingVerified: counts.capture > 0, verifiedProcessingCount: counts.capture };
 }
 /** Independent sealed-journal custody. Invalid formal capture clocks remain
@@ -224,7 +224,7 @@ export function inspectLocalCaptureQueueEvidence(root, nativeReceipt) {
   check(counts.physicalEvents > 0 && counts.physicalSamples === physical?.sampleCount
     && sidecarLengths.physical === physical.bytes && seal.files.physical.sha256 === physical.sha256,
     'queue sidecar physical PCM differs from owned local stream recording');
-  const projection = validateCaptureQueueLedger(sidecarRows, mainRows, { required: true });
+  const projection = validateCaptureQueueLedger(sidecarRows, mainRows, { required: true, requireTimeSegments: true });
   return { ...projection, terminalSha256: sha(sealBytes), metadataSha256: sha(sidecarBytes),
     mainTerminalSha256: sha(mainBytes), mainMetadataSha256: sha(mainMetadata), freezeSha256: sha(freezeBytes) };
 }

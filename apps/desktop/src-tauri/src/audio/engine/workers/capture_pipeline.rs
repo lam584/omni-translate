@@ -1,5 +1,6 @@
 use super::*;
-use crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence;
+use crate::audio::aec_diagnostic_tap::{AecCaptureTailEvidence, AecCaptureBoundaryEvidence};
+use super::capture_packet_segments::{CapturePacketSegments, PacketTime, BoundaryPermit, BoundaryProof};
 use super::capture_queue_provenance::{CaptureQueueLedger, QueueMutation};
 
 struct CaptureQueueBinding { endpoint_id: String, owner_id: u64, ledger: CaptureQueueLedger }
@@ -15,6 +16,8 @@ pub(super) struct CapturePipeline {
     metadata: Option<AecCaptureFrameMetadata>,
     last_delay_diagnostic_at: Option<Instant>,
     queue_binding: Option<CaptureQueueBinding>,
+    time_segments: Option<CapturePacketSegments>,
+    latest_append_packet_id: Option<u64>,
 }
 
 impl CapturePipeline {
@@ -22,17 +25,22 @@ impl CapturePipeline {
         Self { processor: RouteProcessor::new(spec), diagnostics: EchoCancelDiagnostics::new(),
             delay_estimator: AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT),
             delay_samples: 0, queue_clock: AecTapQueueClock::default(), metadata: None,
-            last_delay_diagnostic_at: None, queue_binding: None }
+            last_delay_diagnostic_at: None, queue_binding: None, time_segments: None, latest_append_packet_id: None }
     }
 
-    /// Bind this worker's already-created FIFO to its initialized endpoint and
-    /// actual Start owner. Disabled diagnostics allocate/retain no ledger.
+    /// The production time-segment owner exists independently of the optional
+    /// diagnostic ledger. Disabling the tap must not disable boundary handling.
     pub(super) fn bind_capture_queue(&mut self, endpoint_id: &str,
-        guard: &crate::audio::state::NativeCaptureProducerGuard, queued_bytes: usize, enabled: bool) {
-        if !enabled { return; }
+        guard: &crate::audio::state::NativeCaptureProducerGuard, queued_bytes: usize, enabled: bool) -> Result<(), String> {
         let owner_id = guard.diagnostic_owner_identity().0;
+        if self.processor.spec.echo_cancel_enabled() {
+            if queued_bytes != 0 { return Err("capture time owner must bind before native append".into()); }
+            self.time_segments = Some(CapturePacketSegments::new(owner_id)?);
+        }
+        if !enabled { return Ok(()); }
         self.queue_binding = Some(CaptureQueueBinding { endpoint_id: endpoint_id.to_owned(), owner_id,
             ledger: CaptureQueueLedger::new(owner_id, queued_bytes) });
+        Ok(())
     }
 
     fn queue_record(&self, kind: &str, direction: &str,
@@ -59,8 +67,12 @@ impl CapturePipeline {
     pub(super) fn observe_dequeue(&mut self, store: &AudioStateStore, direction: &str,
         guard: &crate::audio::state::NativeCaptureProducerGuard, before: usize, after: usize,
         actual_bytes: Option<usize>, kind: &str, chunk_bytes: Option<usize>, chunk_count: usize,
-    ) -> Option<QueueMutation> {
-        let binding = self.queue_binding.as_mut()?;
+    ) -> Result<Option<QueueMutation>, String> {
+        if let Some(segments) = &mut self.time_segments {
+            segments.dequeued(guard.diagnostic_owner_identity().0, before, after,
+                actual_bytes.ok_or("capture time dequeue byte accounting overflow")?)?;
+        }
+        let Some(binding) = self.queue_binding.as_mut() else { return Ok(None); };
         let receipt = binding.ledger.observe_dequeue(guard.diagnostic_owner_identity().0,
             before, after, actual_bytes);
         if before != after || receipt.error.is_some() {
@@ -80,16 +92,17 @@ impl CapturePipeline {
                 store.record_aec_lifecycle(event);
             }
         }
-        Some(receipt)
+        Ok(Some(receipt))
     }
 
     fn record_queue_clock(&self, store: &AudioStateStore, direction: &str,
-        guard: &crate::audio::state::NativeCaptureProducerGuard, packet_id: Option<u64>) {
+        guard: &crate::audio::state::NativeCaptureProducerGuard, packet_id: Option<u64>, prefix_at_prepare: usize) {
         let Some(mut event) = self.queue_record("native-capture-queue-clock", direction, guard) else { return; };
         let binding = self.queue_binding.as_ref().expect("bound queue");
         let (invalid_bytes, packet_clock_valid) = self.queue_clock.diagnostic_state();
         let prefix = binding.ledger.range(binding.ledger.last_known_range().start, invalid_bytes);
         event["packetId"] = serde_json::json!(packet_id);
+        event["captureClockPrefixBytesAtPrepare"] = serde_json::json!(prefix_at_prepare);
         event["invalidPrefixBytes"] = serde_json::json!(invalid_bytes);
         event["packetClockValid"] = serde_json::json!(packet_clock_valid);
         event["queueHeadClockValidForNextChunk"] = serde_json::json!(self.queue_clock.next_chunk_valid());
@@ -147,6 +160,69 @@ impl CapturePipeline {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn admit_native_packet(&mut self, store: &AudioStateStore, direction: &str,
+        spec: &RouteSpec, buffer_info: &wasapi::BufferInfo, captured_frames: usize,
+        queued_bytes_before_read: usize, queue: &VecDeque<u8>, block_align: usize,
+        producer_guard: &crate::audio::state::NativeCaptureProducerGuard,
+    ) -> Result<Option<BoundaryPermit>, String> {
+        let identity = producer_guard.diagnostic_owner_identity();
+        let append = self.queue_binding.as_mut().map(|binding| binding.ledger.observe_append(
+            identity.0, queued_bytes_before_read, queue.len(), captured_frames.checked_mul(block_align)));
+        self.latest_append_packet_id = append.as_ref().and_then(|a| a.packet_id);
+        let time_result = if captured_frames > 0 {
+            self.time_segments.as_mut().map(|segments| segments.append(identity.0,
+                queued_bytes_before_read, queue, PacketTime { frame: buffer_info.index,
+                    qpc: buffer_info.timestamp, frames: captured_frames,
+                    discontinuity: buffer_info.flags.data_discontinuity,
+                    timestamp_error: buffer_info.flags.timestamp_error })).transpose()
+        } else { Ok(None) };
+        if captured_frames > 0 && store.aec_diagnostic_tap_enabled() {
+            capture_diagnostics::record_native_capture_packet_witness(
+                capture_diagnostics::NativeCapturePacketWitness { buffer_info, captured_frames,
+                    queued_bytes_before_read, queued_bytes_after_read: queue.len(), block_align,
+                    observed_qpc_100ns: qpc_now_100ns(), direction,
+                    requested_endpoint_id: &spec.requested_device_id,
+                    endpoint_id: self.queue_binding.as_ref().map(|b| b.endpoint_id.as_str()),
+                    capture_owner_id: Some(identity.0), capture_aec_reset_generation: Some(identity.1),
+                    queue_append: append.as_ref(), time_admission: time_result.as_ref().ok().and_then(|a| a.as_ref()),
+                }, |metadata| store.record_aec_lifecycle(metadata));
+        }
+        Ok(time_result?.and_then(|a| a.prefix))
+    }
+
+    pub(super) fn normal_dequeue_ready(&self) -> Result<(), String> {
+        self.time_segments.as_ref().map_or(Ok(()), CapturePacketSegments::normal_dequeue_ready)
+    }
+
+    pub(super) fn take_boundary_prefix(&mut self, queue: &mut VecDeque<u8>, permit: BoundaryPermit) -> Result<Vec<u8>, String> {
+        self.time_segments.as_mut().ok_or("capture time segment owner missing")?.take_prefix(queue, permit)
+    }
+
+    /// Shared production reset phase, called before new-packet clock preparation.
+    /// No reset side effect is allowed while the retained prefix is still queued.
+    pub(super) fn reset_capture_boundary(&mut self, store: &AudioStateStore, direction: &str,
+        producer_guard: &crate::audio::state::NativeCaptureProducerGuard) -> Result<(), String> {
+        if !(store.echo_partial_capture_boundary_pending()
+            || self.time_segments.as_ref().is_some_and(CapturePacketSegments::reset_required)) {
+            return Ok(());
+        }
+        if let Some(segments) = &self.time_segments { segments.boundary_reset_ready()?; }
+            let clock = store.echo_render_clock_snapshot();
+            let reset_before = producer_guard.diagnostic_owner_identity().1;
+            let reason = if self.time_segments.as_ref().is_some_and(CapturePacketSegments::reset_required) {
+                "capture-packet-time-boundary"
+            } else { "capture-resume-after-partial-tail" };
+            let reset_result = store.reset_echo_canceller_with_diagnostic(reason,
+                qpc_now_100ns(), clock.discontinuity_count);
+            if reset_result.is_ok() { producer_guard.record_aec_reset(); }
+            self.record_aec_reset_receipt(store, direction, producer_guard,
+                reason, reset_before, &reset_result);
+            reset_result?;
+            if let Some(segments) = &mut self.time_segments { segments.acknowledge_reset()?; }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_packet(
         &mut self, app: &AppHandle, store: &AudioStateStore, direction: &str, spec: &RouteSpec,
         audio_client: &wasapi::AudioClient, buffer_info: &wasapi::BufferInfo,
@@ -154,35 +230,8 @@ impl CapturePipeline {
         block_align: usize, buffer_frame_count: u32,
         producer_guard: &crate::audio::state::NativeCaptureProducerGuard,
     ) -> Result<(), String> {
-        // Observe the real completed GetBuffer append before reset/AEC can
-        // replace any observation. No idle/default BufferInfo creates an ID.
-        let identity = producer_guard.diagnostic_owner_identity();
-        let append = self.queue_binding.as_mut().map(|binding| binding.ledger.observe_append(
-            identity.0, queued_bytes_before_read, queued_bytes_after_read,
-            captured_frames.checked_mul(block_align)));
-        if captured_frames > 0 && store.aec_diagnostic_tap_enabled() {
-            capture_diagnostics::record_native_capture_packet_witness(
-                capture_diagnostics::NativeCapturePacketWitness {
-                    buffer_info, captured_frames, queued_bytes_before_read, queued_bytes_after_read,
-                    block_align, observed_qpc_100ns: qpc_now_100ns(), direction,
-                    requested_endpoint_id: &spec.requested_device_id,
-                    endpoint_id: self.queue_binding.as_ref().map(|b| b.endpoint_id.as_str()),
-                    capture_owner_id: Some(identity.0), capture_aec_reset_generation: Some(identity.1),
-                    queue_append: append.as_ref(),
-                },
-                |metadata| store.record_aec_lifecycle(metadata),
-            );
-        }
-        if captured_frames > 0 && spec.echo_cancel_enabled()
-            && store.echo_partial_capture_boundary_pending() {
-            let clock = store.echo_render_clock_snapshot();
-            let reset_before = producer_guard.diagnostic_owner_identity().1;
-            let reset_result = store.reset_echo_canceller_with_diagnostic("capture-resume-after-partial-tail",
-                qpc_now_100ns(), clock.discontinuity_count);
-            if reset_result.is_ok() { producer_guard.record_aec_reset(); }
-            self.record_aec_reset_receipt(store, direction, producer_guard,
-                "capture-resume-after-partial-tail", reset_before, &reset_result);
-            reset_result?;
+        if captured_frames > 0 && spec.echo_cancel_enabled() {
+            self.reset_capture_boundary(store, direction, producer_guard)?;
         }
         if captured_frames > 0 && spec.echo_cancel_enabled()
         {
@@ -240,7 +289,7 @@ impl CapturePipeline {
                 buffer_info.flags.data_discontinuity, buffer_info.flags.timestamp_error,
                 anchor_arithmetic_valid);
             self.record_queue_clock(store, direction, producer_guard,
-                append.as_ref().and_then(|r| r.packet_id));
+                self.latest_append_packet_id, queued_bytes_before_read);
             self.metadata = Some(AecCaptureFrameMetadata {
                 packet_device_frame_index: buffer_info.index,
                 packet_qpc_100ns: buffer_info.timestamp,
@@ -325,7 +374,7 @@ impl CapturePipeline {
         Ok(())
     }
 
-    fn capture_metadata(&self) -> Result<AecCaptureFrameMetadata, String> {
+    pub(super) fn capture_metadata(&self) -> Result<AecCaptureFrameMetadata, String> {
         let mut metadata = self.metadata.ok_or("real AEC capture has no retained queue-head metadata")?;
         metadata.delay_samples = self.delay_samples;
         metadata.queue_head_clock_valid &= self.queue_clock.next_chunk_valid();
@@ -347,6 +396,7 @@ impl CapturePipeline {
         spec: &RouteSpec, stt_sender: &Option<mpsc::Sender<Vec<u8>>>, chunk: Vec<u8>,
         queued_bytes: usize, producer_guard: &crate::audio::state::NativeCaptureProducerGuard,
         tail: Option<AecCaptureTailEvidence>,
+        boundary: Option<AecCaptureBoundaryEvidence>,
         dequeue: Option<(&QueueMutation, usize)>,
     ) -> Result<(), String> {
         let frames = chunk.len() / (CHANNEL_COUNT * std::mem::size_of::<f32>());
@@ -358,8 +408,10 @@ impl CapturePipeline {
         let (chunk, provenance) = if spec.echo_cancel_enabled() {
             let metadata = self.capture_metadata()?;
             let captured = bytes_to_f32_stereo(&chunk);
-            let (cancellation, provenance, capture_identity) = store.process_echo_capture_with_queue_receipt(
-                &captured, self.delay_samples, Some(metadata), tail)?;
+            if tail.is_some() && boundary.is_some() { return Err("capture cannot be both a quiet tail and a packet boundary".into()); }
+            let (cancellation, provenance, capture_identity) = if let Some(boundary) = boundary {
+                store.process_echo_capture_boundary_with_queue_receipt(&captured, self.delay_samples, Some(metadata), boundary)?
+            } else { store.process_echo_capture_with_queue_receipt(&captured, self.delay_samples, Some(metadata), tail)? };
             self.record_queue_input(store, direction, producer_guard, dequeue, chunk.len(), metadata,
                 capture_identity.map(|id| (id.sequence, id.reset_generation, id.post_sample_offset)));
             producer_guard.complete_aec(frames as u64);
@@ -374,6 +426,11 @@ impl CapturePipeline {
         process_captured_chunk_with_provenance(app, store, direction, &mut self.processor,
             stt_sender, chunk, queued_bytes, provenance)?;
         producer_guard.complete_dispatch(frames as u64);
+        if let Some(receipt) = boundary {
+            self.time_segments.as_mut().ok_or("capture boundary completion has no production owner")?
+                .complete_prefix_processing(receipt.capture_owner_id, receipt.queue_generation,
+                    receipt.boundary_id, receipt.real_frames)?;
+        }
         Ok(())
     }
 }
@@ -381,3 +438,22 @@ impl CapturePipeline {
 #[cfg(test)]
 #[path = "capture_pipeline_tests.rs"]
 mod tests;
+
+/// Bind the immutable old-prefix byte proof to its retained, not new-packet,
+/// clock. Arithmetic invalidity is never repaired by this admission receipt.
+pub(super) fn boundary_receipt(proof: BoundaryProof, metadata: AecCaptureFrameMetadata) -> Result<AecCaptureBoundaryEvidence, String> {
+    if metadata.queue_head_device_frame_index != proof.old_head_frame {
+        return Err("old capture prefix is not bound to its retained device-frame head".into());
+    }
+    Ok(AecCaptureBoundaryEvidence { schema_version: 1, capture_owner_id: proof.owner,
+        queue_generation: proof.generation, boundary_id: proof.id, closed_segment_id: proof.closed_segment,
+        next_segment_id: proof.next_segment, byte_len: proof.bytes, real_frames: proof.frames,
+        boundary_reason: proof.reason, old_segment_start_device_frame_index: proof.old_head_frame,
+        old_segment_start_qpc_100ns: metadata.queue_head_qpc_100ns,
+        old_segment_end_device_frame_index: proof.old_end_frame,
+        next_packet_device_frame_index: proof.next.frame, next_packet_qpc_100ns: proof.next.qpc,
+        next_packet_data_discontinuity: proof.next.discontinuity,
+        next_packet_timestamp_error: proof.next.timestamp_error,
+        previous_packet_timestamp_error: proof.previous_timestamp_error,
+    })
+}

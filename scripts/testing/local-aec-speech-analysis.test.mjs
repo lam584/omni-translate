@@ -179,12 +179,15 @@ function fixture(t, variant = 'good') {
         resetGenerationDomain:'aec-diagnostic-tap',ledgerError:null,qpc100ns:capture.observedQpc100ns };
       addQueue({...common,kind:'native-capture-packet',requestedEndpointId:ENDPOINT,packetId,
         rawFrameCount:capture.preSampleCount/2,rawByteCount:bytes,blockAlignBytes:8,
+        captureTimeSegmentId:1,captureTimeBoundaryId:null,captureTimeBoundaryReason:null,
+        captureTimePreviousEndDeviceFrameIndex:packetId === 1 ? null : capture.rawPacketDeviceFrameIndex,
+        captureTimePreviousPacketTimestampError:packetId === 1 ? null : false,captureTimeQueueGeneration:generation+1,
         rawPacketDeviceFrameIndex:capture.rawPacketDeviceFrameIndex,rawPacketQpc100ns:capture.rawPacketQpc100ns,
         observedQpc100ns:capture.observedQpc100ns,timestampError:capture.timestampError,
         dataDiscontinuity:capture.dataDiscontinuity,silent:false,queuedBytesBeforeRead:0,queuedBytesAfterRead:bytes,
         appendStartByte:byteOffset,appendEndByte:end,queueGenerationBefore:generation,queueGenerationAfter:++generation,
         ledgerLastKnownHeadByte:byteOffset,ledgerLastKnownTailByte:end});
-      addQueue({...common,kind:'native-capture-queue-clock',packetId,queueGeneration:generation,
+      addQueue({...common,kind:'native-capture-queue-clock',packetId,queueGeneration:generation,captureClockPrefixBytesAtPrepare:0,
         invalidPrefixBytes:0,packetClockValid:true,queueHeadClockValidForNextChunk:true,
         invalidPrefixStartByte:byteOffset,invalidPrefixEndByte:byteOffset,invalidPrefixPacketRanges:[],
         ledgerLastKnownHeadByte:byteOffset,ledgerLastKnownTailByte:end});
@@ -244,7 +247,7 @@ function fixture(t, variant = 'good') {
   write('request.json', Buffer.from(JSON.stringify(request) + '\n'));
   const freeze = { schemaVersion: 1, executionId, scope: LOCAL_AEC_SPEECH_SCOPE, releaseEligible: false,
     providerCalls: 0, translationProviderCalls: 0, requestSha256: sha(fs.readFileSync(path.join(root, 'request.json'))),
-    injectorSha256: simulation.injectorExecutableSha256, inputWatchdogMs: 180000, captureQueueWitnessPolicy:'owner-range-receipt-v1',
+    injectorSha256: simulation.injectorExecutableSha256, inputWatchdogMs: 180000, captureQueueWitnessPolicy:'owner-range-time-segments-v2',
     thresholds: { echoAttenuationDb: 20, sourceGainToleranceDb: 3, sourceCoverage: 0.95 } };
   write('run-freeze.json', Buffer.from(JSON.stringify(freeze) + '\n'));
   write('local-aec-ready.json', Buffer.from(JSON.stringify({schemaVersion:2,artifactKind:'watch-mode-local-aec-ready',
@@ -595,4 +598,16 @@ test('local ledger forbids provider rows even when all counters and file hashes 
 test('queue physical PCM must match owned stream recording identity',t=>{
  const f=fixture(t);f.receipt.streamEvidence.physical.sha256='0'.repeat(64);
  assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/physical PCM differs/u);
+});
+
+test('new local freeze cannot rehabilitate fully sealed v1 ledger bytes',t=>{
+ const f=fixture(t);const meta=path.join(f.root,'aec-closed-loop-metadata.jsonl');
+ const rows=fs.readFileSync(meta,'utf8').trim().split('\n').map(JSON.parse);
+ for(const e of rows)for(const key of Object.keys(e))if(key.startsWith('captureTime')||key==='captureClockPrefixBytesAtPrepare')delete e[key];
+ const bytes=jsonl(rows);fs.writeFileSync(meta,bytes);const seal=f.receipt.tap.closedLoop;
+ seal.files.metadata.byteLength=bytes.length;seal.files.metadata.sha256=sha(bytes);
+ fs.writeFileSync(path.join(f.root,'aec-closed-loop-terminal.json'),JSON.stringify(seal)+'\n');
+ fs.writeFileSync(path.join(f.root,'aec-terminal.json'),JSON.stringify(f.receipt.tap)+'\n');
+ assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/time.segment.*v2.*required/u);
+ rejected(f.analyze(),/time.segment/u);
 });

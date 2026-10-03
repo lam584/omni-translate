@@ -417,7 +417,7 @@ impl AudioStateStore {
     pub(crate) fn process_echo_capture_with_provenance(
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
-        self.process_echo_capture_frames(captured, delay_samples, metadata, false, None).map(|(result, packet, _)| (result, packet))
+        self.process_echo_capture_frames(captured, delay_samples, metadata, false, None, None).map(|(result, packet, _)| (result, packet))
     }
 
     #[cfg(test)]
@@ -428,7 +428,7 @@ impl AudioStateStore {
         if captured.is_empty() || captured.len() >= 960 * 2 {
             return Err("capture tail must contain fewer than one normal 20ms chunk".into());
         }
-        self.process_echo_capture_frames(captured, delay_samples, metadata, true, Some(tail)).map(|(result, packet, _)| (result, packet))
+        self.process_echo_capture_frames(captured, delay_samples, metadata, true, Some(tail), None).map(|(result, packet, _)| (result, packet))
     }
 
     /// Worker-only cross-point: return the identity from this exact processed
@@ -441,7 +441,52 @@ impl AudioStateStore {
         if tail.is_some() && (captured.is_empty() || captured.len() >= 960 * 2) {
             return Err("capture tail must contain fewer than one normal 20ms chunk".into());
         }
-        self.process_echo_capture_frames(captured, delay_samples, metadata, tail.is_some(), tail)
+        self.process_echo_capture_frames(captured, delay_samples, metadata, tail.is_some(), tail, None)
+    }
+
+    /// Finish retained old-segment PCM before the FIFO reset/new-segment edge.
+    /// Boundary evidence is admission only: raw old clock metadata is preserved.
+    pub(crate) fn process_echo_capture_boundary_with_queue_receipt(
+        &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
+        boundary: crate::audio::aec_diagnostic_tap::AecCaptureBoundaryEvidence,
+    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>,
+        Option<crate::audio::aec_diagnostic_tap::AecCaptureDiagnosticIdentity>), String> {
+        let real_frames = captured.len() / 2;
+        if captured.is_empty() || captured.len() % 2 != 0 || real_frames >= 960
+            || captured.iter().any(|sample| !sample.is_finite())
+            || boundary.schema_version != 1
+            || boundary.real_frames != real_frames
+            || captured.len().checked_mul(std::mem::size_of::<f32>()) != Some(boundary.byte_len)
+            || boundary.capture_owner_id == 0 || boundary.queue_generation == 0
+            || boundary.boundary_id == 0 || boundary.closed_segment_id == 0 || boundary.next_segment_id == 0
+            || boundary.closed_segment_id.checked_add(1) != Some(boundary.next_segment_id)
+            || boundary.old_segment_end_device_frame_index.checked_sub(boundary.old_segment_start_device_frame_index)
+                != u64::try_from(real_frames).ok()
+            || boundary.old_segment_start_device_frame_index.checked_add(real_frames as u64)
+                != Some(boundary.old_segment_end_device_frame_index) {
+            return Err("invalid bounded capture segment evidence or real PCM length".into());
+        }
+        if metadata.is_some_and(|old| {
+            old.queue_head_device_frame_index != boundary.old_segment_start_device_frame_index
+                || old.queue_head_qpc_100ns != boundary.old_segment_start_qpc_100ns
+        }) {
+            return Err("capture boundary evidence does not match retained old-segment metadata".into());
+        }
+        let reason_matches = match boundary.boundary_reason {
+            "data-discontinuity" => boundary.next_packet_data_discontinuity,
+            "device-frame-gap" => boundary.next_packet_device_frame_index != boundary.old_segment_end_device_frame_index,
+            "timestamp-error" => boundary.next_packet_timestamp_error,
+            // The tracker records the actual previous-packet flag and the
+            // Node consumer independently binds it to the native packet row.
+            // A clock-invalid metadata bit is not a substitute for this flag;
+            // boundary admission never changes capture-clock authority.
+            "untrusted-predecessor" => boundary.previous_packet_timestamp_error,
+            _ => false,
+        };
+        if !reason_matches {
+            return Err("capture boundary reason is not supported by its raw next/previous packet flags or gap".into());
+        }
+        self.process_echo_capture_frames(captured, delay_samples, metadata, true, None, Some(boundary))
     }
 
     pub(crate) fn echo_partial_capture_boundary_pending(&self) -> bool {
@@ -453,6 +498,7 @@ impl AudioStateStore {
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
         allow_partial: bool,
         tail: Option<crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence>,
+        boundary: Option<crate::audio::aec_diagnostic_tap::AecCaptureBoundaryEvidence>,
     ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>,
         Option<crate::audio::aec_diagnostic_tap::AecCaptureDiagnosticIdentity>), String> {
         const AEC_FRAME_SAMPLES: usize = 480 * 2;
@@ -472,10 +518,8 @@ impl AudioStateStore {
         let canceller = canceller_guard.as_mut().ok_or_else(|| {
             "WebRTC AEC3 production engine is not active; capture cannot be processed".to_string()
         })?;
-        let mut processed = Vec::with_capacity(captured.len());
-        let mut native_frames = 0_usize;
-        for (index, frame) in captured.chunks(AEC_FRAME_SAMPLES).enumerate() {
-            let matched = if let (Some(epoch), Some(frame_metadata)) = (render_epoch, metadata) {
+        let reference_for_frame = |index: usize| {
+            if let (Some(epoch), Some(frame_metadata)) = (render_epoch, metadata) {
                 let mut matcher = self
                     .echo_reference_matcher
                     .lock()
@@ -494,29 +538,43 @@ impl AudioStateStore {
                 matcher.take_10ms(epoch)
             } else {
                 None
-            };
-            let delay = delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES);
-            let result = if frame.len() == AEC_FRAME_SAMPLES {
-                canceller.process_capture_10ms_with_reference(matched.as_deref(), frame, delay, Instant::now())
-            } else {
-                canceller.process_capture_partial_10ms_with_reference(matched.as_deref(), frame, delay, Instant::now())
-            }.inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
-            if result.samples.len() != frame.len() {
-                self.aec_diagnostic_tap.abort("AEC native output changed the real input sample count");
-                return Err("AEC native output changed the real input sample count".into());
             }
-            native_frames += 1;
-            processed.extend_from_slice(&result.samples);
-        }
-        let result = EchoCancellationResult { samples: processed };
+        };
+        let (result, native_frames) = if boundary.is_some() {
+            let result = canceller.process_capture_boundary_with_reference(
+                captured, delay_samples, Instant::now(), reference_for_frame,
+            ).inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+            (result, captured.len().div_ceil(AEC_FRAME_SAMPLES))
+        } else {
+            let mut processed = Vec::with_capacity(captured.len());
+            let mut native_frames = 0_usize;
+            for (index, frame) in captured.chunks(AEC_FRAME_SAMPLES).enumerate() {
+                let matched = reference_for_frame(index);
+                let delay = delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES);
+                let result = if frame.len() == AEC_FRAME_SAMPLES {
+                    canceller.process_capture_10ms_with_reference(matched.as_deref(), frame, delay, Instant::now())
+                } else {
+                    canceller.process_capture_partial_10ms_with_reference(matched.as_deref(), frame, delay, Instant::now())
+                }.inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+                if result.samples.len() != frame.len() {
+                    self.aec_diagnostic_tap.abort("AEC native output changed the real input sample count");
+                    return Err("AEC native output changed the real input sample count".into());
+                }
+                native_frames += 1;
+                processed.extend_from_slice(&result.samples);
+            }
+            (EchoCancellationResult { samples: processed }, native_frames)
+        };
         let (provenance, capture_identity) = if let Some(metadata) = metadata {
             self.aec_diagnostic_tap.record_capture_with_processing_receipt(captured, &result.samples, metadata,
                 Some(crate::audio::aec_diagnostic_tap::AecCaptureProcessing {
-                    schema_version: 1, input_frames: captured.len() / 2, native_10ms_frames: native_frames,
+                    schema_version: if boundary.is_some() { 2 } else { 1 },
+                    input_frames: captured.len() / 2, native_10ms_frames: native_frames,
                     math_padding_frames: native_frames * 480 - captured.len() / 2,
                     all_input_processed: true,
                     reset_before_resume_required: canceller.partial_capture_boundary_pending(),
                     tail_admission: tail,
+                    boundary_admission: boundary,
                 }))
         } else {
             if self.aec_diagnostic_tap.enabled() {
@@ -1286,3 +1344,7 @@ fn clear_render_timing(clock: &mut EchoRenderClock, observed_at: Instant) {
 #[cfg(test)]
 #[path = "echo_backend_capture_tail_tests.rs"]
 mod capture_tail_tests;
+
+#[cfg(test)]
+#[path = "echo_backend_capture_boundary_tests.rs"]
+mod echo_backend_capture_boundary_tests;

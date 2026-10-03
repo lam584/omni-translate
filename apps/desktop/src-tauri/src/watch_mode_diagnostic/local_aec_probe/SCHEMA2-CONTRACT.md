@@ -206,3 +206,50 @@ Host wall time observations bracket GetPosition outside the unchanged formal QPC
 The 20dB echo suppression, source gain ±3dB, 95% coverage, source clock 1ms, continuous open-input quiescence 2s and 180/190/195s budgets remain unchanged.
 
 The strict consumer independently replays queue clock invalidation from native flags/anchor arithmetic (not declared validity), and binds every input in FIFO order to the next sealed main capture identity. Local inspection additionally verifies event classes, contiguous PCM offsets/sample counts, zero Provider PCM, and exact physical PCM identity against the owned stream recording. Rehashed counter forgery, complete capture-identity swaps and undeclared invalid prefixes must be rejected.
+
+## Owner-local packet time segments (queue witness policy v2)
+
+New local API-speech runs require `owner-range-time-segments-v2`. A v1 journal
+remains readable only for diagnostics and cannot satisfy this versioned gate.
+The production time-segment owner is bound before the first native append and
+exists even when the diagnostic tap is disabled.
+
+A real packet append starts a new segment when a previous packet exists and,
+in priority order, the next packet has a timestamp error, the previous packet
+has a timestamp error, the next packet reports discontinuity, or the device-frame
+range is noncontiguous. An initial discontinuity flag is not a segment transition.
+No QPC origin, slope, frame gap or invalid old clock is repaired by this decision.
+
+If the old FIFO prefix contains 1..959 real stereo frames, the worker processes
+that exact old prefix before preparing/resetting for the new packet. A one-use,
+owner/generation/content-bound permit authorizes its dequeue; no PCM is dropped,
+silenced or copied across the discontinuity into one native 10ms block. Receipt
+`dequeueKind=packet-boundary` has null `chunkByteLength` and `chunkCount=1`.
+`captureClockPrefixBytesAtPrepare` records the actual remaining old prefix, not
+the original append's `queuedBytesBeforeRead` (which remains unchanged).
+
+Boundary capture processing uses `aecProcessing.schemaVersion=2` with explicitly
+null `tailAdmission` and `boundaryAdmission.schemaVersion=1`. The boundary receipt
+binds the closed/new segment IDs, boundary ID, capture owner, append generation,
+real bytes/frames, retained old head QPC/frame interval, next packet flags/QPC/frame
+and the actual previous packet timestamp-error flag. The old metadata stays old;
+invalid authority is still invalid. Ordinary capture and authorized quiet tails
+retain processing schema v1.
+
+The canceller fences resumed capture before the first native call of the boundary
+transaction, including an exact 480-frame prefix and failure in the first block.
+Only calculation padding reaches native AEC; real pre/post PCM and downstream
+capture/Provider accounting exclude it. Normal/reset admission cannot skip a
+retained prefix. Readiness is checked before the real reset side effect; reset
+failure cannot acknowledge the segment or clear the native fence. Only successful
+old-prefix processing/dispatch followed by successful native reset permits new
+segment preparation. Stop/error cleanup is not proof of successful open drain.
+
+The strict consumer independently replays append/dequeue/old-input/reset/prepare
+order and binds the real preceding and next native packet flags, main capture
+identity and sealed PCM. Missing evidence, inconsistent identity, a rehashed false
+boundary or a v1 journal blocks the new local gate. This is not acoustic acceptance:
+20dB per-stage echo attenuation, source gain +/-3dB, coverage >=95%, source clock
+1ms and continuous open-input quiescence 2s remain unchanged. In particular this
+software boundary fix does not establish that the independent source-device clock
+failure is repaired, nor does simulated speech certify live LLM response behavior.

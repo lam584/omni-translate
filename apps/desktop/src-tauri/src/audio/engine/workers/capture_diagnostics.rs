@@ -24,6 +24,7 @@ pub(super) struct NativeCapturePacketWitness<'a> {
     pub(super) capture_owner_id: Option<u64>,
     pub(super) capture_aec_reset_generation: Option<u64>,
     pub(super) queue_append: Option<&'a super::capture_queue_provenance::QueueMutation>,
+    pub(super) time_admission: Option<&'a super::capture_packet_segments::PacketAdmission>,
 }
 
 pub(super) fn record_native_capture_packet_witness(
@@ -34,7 +35,7 @@ pub(super) fn record_native_capture_packet_witness(
     // The byte delta is the actual append, never the size of the older prefix.
     // Preserve an impossible underflow as null rather than inventing bytes.
     let raw_byte_count = packet.queued_bytes_after_read.checked_sub(packet.queued_bytes_before_read);
-    record(serde_json::json!({
+    let mut metadata = serde_json::json!({
         "schemaVersion": 1,
         "kind": "native-capture-packet",
         "diagnosticOnly": true,
@@ -71,7 +72,14 @@ pub(super) fn record_native_capture_packet_witness(
         "ledgerError": packet.queue_append.and_then(|r| r.error),
         "ledgerLastKnownHeadByte": packet.queue_append.map(|r| r.last_known_head),
         "ledgerLastKnownTailByte": packet.queue_append.map(|r| r.last_known_tail),
-    }));
+    });
+    metadata["captureTimeSegmentId"] = serde_json::json!(packet.time_admission.map(|a| a.segment));
+    metadata["captureTimeBoundaryId"] = serde_json::json!(packet.time_admission.and_then(|a| a.boundary));
+    metadata["captureTimeBoundaryReason"] = serde_json::json!(packet.time_admission.and_then(|a| a.reason));
+    metadata["captureTimePreviousEndDeviceFrameIndex"] = serde_json::json!(packet.time_admission.and_then(|a| a.previous_end));
+    metadata["captureTimePreviousPacketTimestampError"] = serde_json::json!(packet.time_admission.and_then(|a| a.previous_timestamp_error));
+    metadata["captureTimeQueueGeneration"] = serde_json::json!(packet.time_admission.map(|a| a.generation));
+    record(metadata);
 }
 
 #[derive(Debug, Default)]

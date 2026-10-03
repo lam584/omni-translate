@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
+import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
 
 export const AEC_CLOSED_LOOP_PROFILE = 'aec-closed-loop-dual-reference/v1';
@@ -82,7 +83,7 @@ function providerPcm(post, rate) {
   }
   return out;
 }
-export const AEC_CAPTURE_QUEUE_WITNESS_POLICY = 'owner-range-receipt-v1';
+export const AEC_CAPTURE_QUEUE_WITNESS_POLICY = 'owner-range-time-segments-v2';
 const CAPTURE_QUEUE_KINDS = new Set(['native-capture-queue-dequeue', 'native-capture-queue-clock',
   'native-capture-queue-reset', 'native-capture-queue-input']);
 function validateQueueIdentity(e) {
@@ -125,7 +126,7 @@ function validateQueueRecord(e) {
     requireEvidence(integer(e.chunkCount) && e.chunkCount > 0
       && ((e.dequeueKind === 'full-chunk-batch' && integer(e.chunkByteLength) && e.chunkByteLength > 0
         && e.chunkByteLength % 8 === 0 && e.chunkCount * e.chunkByteLength === e.dequeuedBytes)
-        || (e.dequeueKind === 'partial-tail' && e.chunkByteLength === null && e.chunkCount === 1)),
+        || (['partial-tail', 'packet-boundary'].includes(e.dequeueKind) && e.chunkByteLength === null && e.chunkCount === 1)),
     'queue dequeue chunk schema');
     validatePacketRanges(e.packetRanges, 'queue dequeue packet ranges');
   } else if (e.kind === 'native-capture-queue-clock') {
@@ -157,7 +158,22 @@ function validateQueueRecord(e) {
 // A versioned queue trace is replayed independently of source clocks/quality.
 // Legacy packet-only diagnostic journals remain non-causal, never upgraded by
 // latest flags. Once ledger fields/events exist, missing receipts are fatal.
-function replayCaptureQueueLedger(events, mainEvents) {
+function replayPacketClock(state, e, prefixBytes, queuedBytes) {
+  const queuedFrames = BigInt(prefixBytes / 8);
+  const ticks = queuedFrames * 10_000_000n;
+  const backTicks = (ticks > 0xffff_ffff_ffff_ffffn ? 0xffff_ffff_ffff_ffffn : ticks) / 48_000n;
+  const anchorValid = BigInt(e.rawPacketDeviceFrameIndex) >= queuedFrames && BigInt(e.rawPacketQpc100ns) >= backTicks;
+  if (e.timestampError || !anchorValid) {
+    state.expectedClock.remainingPrefix = queuedBytes;
+    state.expectedClock.valid = false;
+  } else {
+    if (e.dataDiscontinuity) state.expectedClock.remainingPrefix = Math.max(state.expectedClock.remainingPrefix, prefixBytes);
+    state.expectedClock.valid = true;
+  }
+}
+function replayCaptureQueueLedger(events, mainEvents, requireTimeSegments = false) {
+  const timeSegments = requireTimeSegments || events.some(e => e.kind === 'native-capture-packet'
+    && Object.hasOwn(e, 'captureTimeSegmentId'));
   if (!events.some(e => CAPTURE_QUEUE_KINDS.has(e.kind)
     || (e.kind === 'native-capture-packet' && Object.hasOwn(e, 'queueGenerationDomain')))) return {
     schemaVersion: 1, diagnosticOnly: true, qualityAcceptance: false, formalCaptureClockAcceptance: false,
@@ -180,7 +196,8 @@ function replayCaptureQueueLedger(events, mainEvents) {
     if (!state) {
       state = { endpoint: e.endpointId, direction: e.direction, generation: 0, nativeGeneration: 0,
         head: 0, tail: 0, packetId: 0, dequeueId: 0, spans: [], pending: new Map(), clock: null,
-        expectedClock: { remainingPrefix: 0, valid: false } };
+        expectedClock: { remainingPrefix: 0, valid: false }, timeSegment: 0, boundaryId: 0,
+        previousPacket: null, preparing: null, resetRequired: false };
       owners.set(e.queueOwnerId, state);
     }
     requireEvidence(state.endpoint === e.endpointId && state.direction === e.direction,
@@ -198,6 +215,12 @@ function replayCaptureQueueLedger(events, mainEvents) {
       usedResets.add(e.resetGeneration);
       requireEvidence(isDeepStrictEqual(e.retainedPacketRanges, ranges(state.spans, state.head, state.tail)),
         'queue reset retained packet mapping mismatch');
+      if (timeSegments && state.preparing) {
+        requireEvidence(!state.preparing.reason || state.preparing.oldBytes === 0 || state.preparing.boundaryProcessed,
+          'time-segment reset before actual old boundary input');
+        if (state.preparing.reason && e.reason === 'capture-packet-time-boundary') state.preparing.resetObserved = true;
+      }
+      state.resetRequired = false;
       state.nativeGeneration = next;
     } else {
       requireEvidence(e.captureAecResetGeneration === state.nativeGeneration, 'queue native reset changed without receipt');
@@ -209,25 +232,33 @@ function replayCaptureQueueLedger(events, mainEvents) {
         validateByteRange(e.appendStartByte, e.appendEndByte, e.rawByteCount, 'queue append byte range');
         requireEvidence(e.queuedBytesAfterRead === e.appendEndByte - state.head && state.pending.size === 0,
           'queue append missing dequeue input receipts/accounting');
-        state.spans.push({ packetId: e.packetId, startByte: e.appendStartByte, endByte: e.appendEndByte, packetOffsetStartByte: 0 });
+        if (timeSegments) {
+          requireEvidence(!state.preparing && !state.resetRequired, 'time-segment append before clock/reset receipt');
+          const prev = state.previousPacket;
+          const previousEnd = prev ? prev.rawPacketDeviceFrameIndex + prev.rawFrameCount : null;
+          requireEvidence(Number.isSafeInteger(e.rawPacketDeviceFrameIndex + e.rawFrameCount), 'time-segment packet endpoint exceeds safe integer');
+          const reason = !prev ? null : e.timestampError ? 'timestamp-error'
+            : prev.timestampError ? 'untrusted-predecessor' : e.dataDiscontinuity ? 'data-discontinuity'
+            : e.rawPacketDeviceFrameIndex !== previousEnd ? 'device-frame-gap' : null;
+          requireEvidence(e.captureTimePreviousEndDeviceFrameIndex === previousEnd
+            && e.captureTimePreviousPacketTimestampError === (prev ? prev.timestampError : null)
+            && e.captureTimeQueueGeneration === e.queueGenerationAfter, 'time-segment predecessor/queue generation mismatch');
+          requireEvidence(e.captureTimeBoundaryReason === reason
+            && e.captureTimeSegmentId === (state.timeSegment === 0 ? 1 : state.timeSegment + (reason ? 1 : 0))
+            && e.captureTimeBoundaryId === (reason ? state.boundaryId + 1 : null), 'time-segment identity/boundary reason mismatch');
+          state.preparing = { packet: e, oldHead: state.head, oldSpans: state.spans.map(p => ({ ...p })),
+            oldSegment: state.timeSegment, oldBytes: e.queuedBytesBeforeRead, reason, boundaryProcessed: false, resetObserved: false };
+          state.timeSegment = e.captureTimeSegmentId;
+          if (reason) state.boundaryId = e.captureTimeBoundaryId;
+          state.previousPacket = e;
+        }
+        state.spans.push({ packetId: e.packetId, startByte: e.appendStartByte, endByte: e.appendEndByte,
+          packetOffsetStartByte: 0, packet: e });
         requireEvidence(state.spans.length <= 2048, 'queue packet retention bound exceeded');
         // Replay the existing Rust AecTapQueueClock::observe_packet exactly.
         // This only tests native anchor arithmetic; it does not invent/re-anchor
         // timestamps or change the formal capture/source-clock acceptance rule.
-        const queuedFrames = BigInt(e.queuedBytesBeforeRead / 8);
-        const ticks = queuedFrames * 10_000_000n;
-        const backTicks = (ticks > 0xffff_ffff_ffff_ffffn ? 0xffff_ffff_ffff_ffffn : ticks) / 48_000n;
-        const anchorValid = BigInt(e.rawPacketDeviceFrameIndex) >= queuedFrames
-          && BigInt(e.rawPacketQpc100ns) >= backTicks;
-        if (e.timestampError || !anchorValid) {
-          state.expectedClock.remainingPrefix = e.queuedBytesAfterRead;
-          state.expectedClock.valid = false;
-        } else {
-          // Discontinuity invalidates only OLD queued bytes, not this packet.
-          if (e.dataDiscontinuity) state.expectedClock.remainingPrefix = Math.max(
-            state.expectedClock.remainingPrefix, e.queuedBytesBeforeRead);
-          state.expectedClock.valid = true;
-        }
+        if (!timeSegments) replayPacketClock(state, e, e.queuedBytesBeforeRead, e.queuedBytesAfterRead);
         state.tail = e.appendEndByte; state.packetId = e.packetId; state.generation += 1; packetCount += 1;
       } else if (e.kind === 'native-capture-queue-dequeue') {
         requireEvidence(e.dequeueId === state.dequeueId + 1 && e.queueGenerationBefore === state.generation
@@ -235,7 +266,16 @@ function replayCaptureQueueLedger(events, mainEvents) {
           && e.dequeueStartByte === state.head && e.dequeueEndByte <= state.tail
           && e.queuedBytesAfter === state.tail - e.dequeueEndByte && state.pending.size === 0,
         'queue dequeue missing append/ownership/range/generation receipt');
-        requireEvidence(state.clock?.packetId === state.packetId, 'queue dequeue missing actual packet clock receipt');
+        if (timeSegments && state.preparing) {
+          const prep = state.preparing;
+          requireEvidence(prep.reason && prep.oldBytes > 0 && prep.oldBytes < 960 * 8
+            && !prep.boundaryProcessed && e.dequeueKind === 'packet-boundary'
+            && e.dequeueStartByte === prep.oldHead && e.dequeueEndByte === prep.packet.appendStartByte
+            && e.dequeuedBytes === prep.oldBytes && state.clock, 'time-segment boundary dequeue must isolate actual old prefix');
+        } else {
+          requireEvidence(e.dequeueKind !== 'packet-boundary', 'time-segment boundary dequeue without pending packet');
+          requireEvidence(state.clock?.packetId === state.packetId, 'queue dequeue missing actual packet clock receipt');
+        }
         const expected = ranges(state.spans, e.dequeueStartByte, e.dequeueEndByte);
         requireEvidence(isDeepStrictEqual(e.packetRanges, expected), 'queue dequeue packet mapping mismatch');
         state.pending.set(e.dequeueId, { event: e, ranges: expected, inputs: new Set() });
@@ -245,6 +285,17 @@ function replayCaptureQueueLedger(events, mainEvents) {
           const span = state.spans[0]; span.packetOffsetStartByte += state.head - span.startByte; span.startByte = state.head;
         }
       } else if (e.kind === 'native-capture-queue-clock') {
+        if (timeSegments) {
+          const prep = state.preparing;
+          requireEvidence(prep && prep.packet.packetId === e.packetId && state.pending.size === 0
+            && (!prep.reason || (prep.resetObserved && !state.resetRequired && (prep.oldBytes === 0 || prep.boundaryProcessed))),
+          'time-segment queue-clock missing old-prefix processing/reset');
+          const prefix = prep.reason ? 0 : prep.oldBytes;
+          requireEvidence(e.captureClockPrefixBytesAtPrepare === prefix
+            && state.tail - state.head === prefix + prep.packet.rawByteCount, 'time-segment prefixAtPrepare mismatch');
+          replayPacketClock(state, prep.packet, prefix, state.tail - state.head);
+          state.preparing = null;
+        }
         requireEvidence(e.packetId === state.packetId && e.queueGeneration === state.generation
           && e.invalidPrefixStartByte === state.head && e.invalidPrefixEndByte <= state.tail
           && isDeepStrictEqual(e.invalidPrefixPacketRanges, ranges(state.spans, state.head, e.invalidPrefixEndByte)),
@@ -254,9 +305,17 @@ function replayCaptureQueueLedger(events, mainEvents) {
           && e.queueHeadClockValidForNextChunk === (state.expectedClock.valid && state.expectedClock.remainingPrefix === 0),
         'queue clock differs from native packet replay');
         state.clock = { packetId: e.packetId, remainingPrefix: e.invalidPrefixBytes, valid: e.packetClockValid };
+        if (timeSegments) {
+          const packet = state.previousPacket;
+          const prefixFrames = e.captureClockPrefixBytesAtPrepare / 8;
+          Object.assign(state.clock, { headFrame: Math.max(0, packet.rawPacketDeviceFrameIndex - prefixFrames),
+            headQpc: Math.max(0, packet.rawPacketQpc100ns - Math.floor(prefixFrames * 10000000 / 48000)),
+            timestampError: packet.timestampError, dataDiscontinuity: packet.dataDiscontinuity,
+            rawFrame: packet.rawPacketDeviceFrameIndex, rawQpc: packet.rawPacketQpc100ns });
+        }
       } else {
         const pending = state.pending.get(e.dequeueId); const d = pending?.event;
-        const size = d?.dequeueKind === 'partial-tail' ? d.dequeuedBytes : d?.chunkByteLength;
+        const size = ['partial-tail', 'packet-boundary'].includes(d?.dequeueKind) ? d.dequeuedBytes : d?.chunkByteLength;
         requireEvidence(d && e.queueGeneration === state.generation && e.queueGeneration === d.queueGenerationAfter
           && e.chunkIndex < d.chunkCount && !pending.inputs.has(e.chunkIndex)
           && e.inputByteCount === size && e.inputStartByte === d.dequeueStartByte + e.chunkIndex * size
@@ -267,6 +326,8 @@ function replayCaptureQueueLedger(events, mainEvents) {
         requireEvidence(state.clock && (!e.queueHeadClockValid
           || (state.clock.valid && state.clock.remainingPrefix === 0)),
         'queue input rehabilitated recorded invalid prefix/clock');
+        if (timeSegments) requireEvidence(!state.resetRequired
+          && (!state.preparing || d?.dequeueKind === 'packet-boundary'), 'time-segment normal input before prepare/reset');
         const capture = captures.get(e.mainCaptureSequence);
         const nextCapture = captureRows[captureIndex];
         requireEvidence(nextCapture && e.mainCaptureSequence === nextCapture.sequence
@@ -280,6 +341,39 @@ function replayCaptureQueueLedger(events, mainEvents) {
           && e.queueHeadClockValid === capture.queueHeadClockValid && e.timestampError === capture.timestampError
           && e.dataDiscontinuity === capture.dataDiscontinuity,
         'queue input actual sealed main capture identity/range mismatch');
+        if (timeSegments) {
+          verifyCaptureProcessingRecord(capture, null, null, { strict: true });
+          if (d.dequeueKind === 'packet-boundary') {
+            const prep = state.preparing; const b = capture.aecProcessing.boundaryAdmission;
+            const first = prep.oldSpans[0]; const last = prep.oldSpans.at(-1);
+            const firstPacket = first?.packet; const lastPacket = last?.packet;
+            const startFrame = firstPacket?.rawPacketDeviceFrameIndex + first?.packetOffsetStartByte / 8;
+            // Receipt records the retained production clock, not the new packet or a clock repair.
+            const startQpc = state.clock.headQpc;
+            requireEvidence(capture.aecProcessing.schemaVersion === 2 && b
+              && b.captureOwnerId === e.captureOwnerId && b.queueGeneration === prep.packet.queueGenerationAfter
+              && b.boundaryId === prep.packet.captureTimeBoundaryId && b.closedSegmentId === prep.oldSegment
+              && b.nextSegmentId === prep.packet.captureTimeSegmentId && b.boundaryReason === prep.reason
+              && b.byteLen === e.inputByteCount && b.realFrames === e.inputByteCount / 8
+              && b.oldSegmentStartDeviceFrameIndex === startFrame && b.oldSegmentStartQpc100ns === startQpc
+              && b.oldSegmentStartDeviceFrameIndex === state.clock.headFrame
+              && capture.queueHeadDeviceFrameIndex === state.clock.headFrame && capture.queueHeadQpc100ns === startQpc
+              && capture.rawPacketDeviceFrameIndex === state.clock.rawFrame && capture.rawPacketQpc100ns === state.clock.rawQpc
+              && capture.timestampError === state.clock.timestampError && capture.dataDiscontinuity === state.clock.dataDiscontinuity
+              && b.oldSegmentEndDeviceFrameIndex === lastPacket?.rawPacketDeviceFrameIndex + lastPacket?.rawFrameCount
+              && b.nextPacketDeviceFrameIndex === prep.packet.rawPacketDeviceFrameIndex
+              && b.nextPacketQpc100ns === prep.packet.rawPacketQpc100ns
+              && b.nextPacketDataDiscontinuity === prep.packet.dataDiscontinuity
+              && b.nextPacketTimestampError === prep.packet.timestampError
+              && b.previousPacketTimestampError === prep.packet.captureTimePreviousPacketTimestampError,
+            'time-segment boundaryAdmission not bound to actual old prefix/pending packet');
+            prep.boundaryProcessed = true; state.resetRequired = true;
+          } else requireEvidence(capture.aecProcessing.schemaVersion === 1, 'time-segment schema2 without actual boundary dequeue');
+        }
+        if (timeSegments) {
+          state.clock.headFrame += e.inputByteCount / 8;
+          state.clock.headQpc += Math.floor(e.inputByteCount / 8 * 10000000 / 48000);
+        }
         state.clock.remainingPrefix = Math.max(0, state.clock.remainingPrefix - e.inputByteCount);
         state.expectedClock.remainingPrefix = Math.max(0, state.expectedClock.remainingPrefix - e.inputByteCount);
         captureIndex += 1;
@@ -292,20 +386,26 @@ function replayCaptureQueueLedger(events, mainEvents) {
     if (CAPTURE_QUEUE_KINDS.has(e.kind)) requireEvidence(e.queueGeneration === state.generation, 'queue current generation mismatch');
   }
   requireEvidence(packetCount > 0 && dequeueCount > 0 && usedCaptures.size === captures.size
-    && [...owners.values()].every(s => s.head === s.tail && s.pending.size === 0),
+    && [...owners.values()].every(s => s.head === s.tail && s.pending.size === 0 && (!timeSegments || (!s.preparing && !s.resetRequired))),
   'queue ledger incomplete: undrained bytes/dequeue inputs/main capture identity unavailable');
-  return { schemaVersion: 1, diagnosticOnly: true, qualityAcceptance: false, formalCaptureClockAcceptance: false,
+  return { schemaVersion: timeSegments ? 2 : 1, timeSegmentsValidated: timeSegments, diagnosticOnly: true, qualityAcceptance: false, formalCaptureClockAcceptance: false,
     resolved: true, reviewSatisfied: true, status: 'resolved', owners: owners.size, packets: packetCount, dequeues: dequeueCount, inputs: usedCaptures.size };
 }
 /** Throwing diagnostic-only ledger validator for independently sealed local
  * analysis. Caller must validate both journal seals, hashes and terminal counts
  * before supplying these exact snapshots; this function is not a custody check.
  * required:true rejects old packet-only/no-ledger reports, without changing PCM
- * or any acoustic/formal-clock predicate. Existing ledger is always fail-closed.
+ * or any acoustic/formal-clock predicate. requireTimeSegments:true additionally
+ * rejects v1 and replays owner-local packet boundaries, actual old-prefix input,
+ * retained clock and successful time-boundary reset before preparing new bytes.
+ * V2 fields opt into this replay even in diagnostic calls; no partial downgrade.
+ * Existing ledger is always fail-closed.
  */
-export function validateCaptureQueueLedger(events, mainEvents, { required = false } = {}) {
+export function validateCaptureQueueLedger(events, mainEvents, { required = false, requireTimeSegments = false } = {}) {
+  requireEvidence(typeof requireTimeSegments === 'boolean', 'time-segment required option must be boolean');
   requireEvidence(typeof required === 'boolean', 'queue ledger required option must be boolean');
   requireEvidence(Array.isArray(events) && Array.isArray(mainEvents), 'queue journal snapshots missing');
+  if (requireTimeSegments) requireEvidence(events.some(e => e.kind === 'native-capture-packet' && Object.hasOwn(e, 'captureTimeSegmentId')), 'complete capture queue time-segment v2 ledger required; v1 is diagnostic-only');
   events.forEach((e, i) => validateSidecarRecord(e, i));
   let generation = 0;
   mainEvents.forEach((e, i) => {
@@ -313,7 +413,7 @@ export function validateCaptureQueueLedger(events, mainEvents, { required = fals
     requireEvidence(e?.schemaVersion === 3 && e.sequence === i && e.resetGeneration === generation
       && ['capture', 'reset', 'render-reference'].includes(e.kind), 'queue main journal sequence/schema/reset mismatch');
   });
-  const projection = { ...replayCaptureQueueLedger(events, mainEvents), required };
+  const projection = { ...replayCaptureQueueLedger(events, mainEvents, requireTimeSegments), required };
   requireEvidence(!required || projection.reviewSatisfied === true,
     'complete capture queue owner/range/receipt ledger required; legacy evidence is diagnostic-only');
   return projection;
@@ -334,9 +434,13 @@ export function verifyCaptureQueueLedgerEvidence(sidecarEvents, sealedMainEvents
   try {
     requireEvidence(typeof requireCaptureQueueLedger === 'boolean', 'requireCaptureQueueLedger must be boolean');
     requireEvidence(captureQueueWitnessPolicy === undefined
-      || captureQueueWitnessPolicy === AEC_CAPTURE_QUEUE_WITNESS_POLICY, 'unknown capture queue witness policy');
-    const required = requireCaptureQueueLedger || captureQueueWitnessPolicy === AEC_CAPTURE_QUEUE_WITNESS_POLICY;
+      || captureQueueWitnessPolicy === AEC_CAPTURE_QUEUE_WITNESS_POLICY || captureQueueWitnessPolicy === 'owner-range-receipt-v1', 'unknown capture queue witness policy');
+    const required = requireCaptureQueueLedger || captureQueueWitnessPolicy !== undefined;
     result.captureQueueLedger = { ...validateCaptureQueueLedger(sidecarEvents, sealedMainEvents), required };
+    if (captureQueueWitnessPolicy === AEC_CAPTURE_QUEUE_WITNESS_POLICY) {
+      result.captureQueueLedger = { ...validateCaptureQueueLedger(sidecarEvents, sealedMainEvents,
+        { requireTimeSegments: true }), required };
+    }
     requireEvidence(!required || result.captureQueueLedger.reviewSatisfied === true,
       'complete capture queue owner/range/receipt ledger required; legacy evidence is diagnostic-only');
     result.passed = true;

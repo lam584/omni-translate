@@ -76,7 +76,7 @@ fn packet_witness<'a>(buffer_info: &'a wasapi::BufferInfo, frames: usize, before
         queued_bytes_after_read: (before_frames + frames) * 8, block_align: 8,
         observed_qpc_100ns: Some(9_000_000), direction: "inbound",
         requested_endpoint_id: "requested-endpoint", endpoint_id: None,
-        capture_owner_id: None, capture_aec_reset_generation: None, queue_append: None,
+        capture_owner_id: None, capture_aec_reset_generation: None, queue_append: None, time_admission: None,
     }
 }
 
@@ -236,7 +236,7 @@ fn initialized_queue_binding_reads_actual_guard_not_requested_route_or_tail_iden
     let ack=crate::audio::state::NativeCaptureStartAck::new();
     let guard=ack.producer_guard();
     let other=crate::audio::state::NativeCaptureStartAck::new();
-    pipeline.bind_capture_queue("initialized-effective-endpoint",&guard,0,true);
+    pipeline.bind_capture_queue("initialized-effective-endpoint",&guard,0,true).unwrap();
     let before=ack.health();
     let row=pipeline.queue_record("native-capture-queue-reset","inbound",&guard).unwrap();
     assert_eq!(row["endpointId"],"initialized-effective-endpoint");
@@ -261,4 +261,140 @@ fn queue_clock_diagnostic_snapshot_does_not_change_existing_invalid_prefix_decis
     pipeline.consume_capture_clock(672,672*8);
     assert_eq!(pipeline.queue_clock.diagnostic_state(),(0,true));
     assert!(pipeline.capture_metadata().unwrap().queue_head_clock_valid);
+}
+
+fn segmented_packet_fixture(diagnostics_enabled: bool) -> (CapturePipeline, AudioStateStore,
+    crate::audio::state::NativeCaptureProducerGuard, VecDeque<u8>, BoundaryPermit) {
+    let mut pipeline = pipeline();
+    pipeline.processor.spec.feedback_loop_prevention = "echo-cancel".into();
+    pipeline.processor.spec.aec_enabled = true;
+    let spec = pipeline.processor.spec.clone();
+    let store = AudioStateStore::new();
+    let start = crate::audio::state::NativeCaptureStartAck::new();
+    start.observe_native_start(Ok::<(), String>(())).unwrap();
+    let guard = start.producer_guard();
+    pipeline.bind_capture_queue("actual-endpoint", &guard, 0, diagnostics_enabled).unwrap();
+    let first = wasapi::BufferInfo::new(1, 2400, 1_000_000);
+    let mut queue = VecDeque::from(f32_stereo_to_bytes(&vec![0.25; 96 * 2]));
+    assert!(pipeline.admit_native_packet(&store, "inbound", &spec, &first, 96,
+        0, &queue, 8, &guard).unwrap().is_none());
+    pipeline.queue_clock = AecTapQueueClock::default();
+    pipeline.queue_clock.observe_packet(0, queue.len(), true, false, true);
+    let metadata = pipeline.metadata.as_mut().unwrap();
+    metadata.packet_device_frame_index = 2400;
+    metadata.packet_qpc_100ns = 1_000_000;
+    metadata.queue_head_device_frame_index = 2400;
+    metadata.queue_head_qpc_100ns = 1_000_000;
+    metadata.timestamp_error = false;
+    metadata.data_discontinuity = true;
+    let second = wasapi::BufferInfo::new(1, 3360, 1_344_911);
+    let before = queue.len();
+    queue.extend(f32_stereo_to_bytes(&vec![0.75; 480 * 2]));
+    let permit = pipeline.admit_native_packet(&store, "inbound", &spec, &second, 480,
+        before, &queue, 8, &guard).unwrap().unwrap();
+    (pipeline, store, guard, queue, permit)
+}
+
+#[test]
+fn production_time_boundary_remains_enabled_without_diagnostic_tap() {
+    let (mut pipeline, store, guard, mut queue, permit) = segmented_packet_fixture(false);
+    assert!(!store.aec_diagnostic_tap_enabled());
+    assert!(pipeline.queue_binding.is_none());
+    assert!(pipeline.time_segments.is_some());
+    let old_metadata = pipeline.capture_metadata().unwrap();
+    let receipt = boundary_receipt(permit.proof(), old_metadata).unwrap();
+    assert_eq!(receipt.schema_version, 1);
+    assert_eq!(receipt.old_segment_start_device_frame_index, 2400);
+    assert_eq!(receipt.old_segment_start_qpc_100ns, 1_000_000);
+    assert_eq!(receipt.old_segment_end_device_frame_index, 2496);
+    assert_eq!(receipt.next_packet_device_frame_index, 3360);
+    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+        .contains("retained prefix dequeue"));
+    assert_eq!(guard.diagnostic_owner_identity().1, 0);
+    let before = queue.len();
+    let old = pipeline.take_boundary_prefix(&mut queue, permit).unwrap();
+    assert_eq!(old, f32_stereo_to_bytes(&vec![0.25; 96 * 2]));
+    assert_eq!(queue, VecDeque::from(f32_stereo_to_bytes(&vec![0.75; 480 * 2])));
+    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+        .contains("retained prefix dequeue"));
+    assert!(pipeline.observe_dequeue(&store, "inbound", &guard, before, queue.len(),
+        Some(old.len()), "packet-boundary", None, 1).unwrap().is_none());
+    assert_eq!(pipeline.capture_metadata().unwrap(), old_metadata);
+    assert!(pipeline.normal_dequeue_ready().is_err());
+}
+
+#[test]
+fn production_boundary_keeps_invalid_old_clock_and_rejects_new_packet_reanchoring() {
+    let (mut pipeline, _, _, _, permit) = segmented_packet_fixture(false);
+    pipeline.metadata.as_mut().unwrap().queue_head_clock_valid = false;
+    let invalid = pipeline.capture_metadata().unwrap();
+    assert!(!invalid.queue_head_clock_valid);
+    let receipt = boundary_receipt(permit.proof(), invalid).unwrap();
+    assert_eq!(receipt.old_segment_start_qpc_100ns, invalid.queue_head_qpc_100ns);
+    let mut wrong = invalid;
+    wrong.queue_head_device_frame_index = receipt.next_packet_device_frame_index;
+    wrong.queue_head_qpc_100ns = receipt.next_packet_qpc_100ns;
+    assert!(boundary_receipt(permit.proof(), wrong).is_err());
+    assert!(!pipeline.capture_metadata().unwrap().queue_head_clock_valid);
+}
+
+#[test]
+fn production_boundary_reset_failure_cannot_authorize_new_segment_dequeue() {
+    let (mut pipeline, store, guard, mut queue, permit) = segmented_packet_fixture(true);
+    let proof = permit.proof();
+    let before = queue.len();
+    let old = pipeline.take_boundary_prefix(&mut queue, permit).unwrap();
+    let dequeue = pipeline.observe_dequeue(&store, "inbound", &guard, before, queue.len(),
+        Some(old.len()), "packet-boundary", None, 1).unwrap().unwrap();
+    assert_eq!(dequeue.chunk_range(0, old.len()).unwrap().0.end, old.len() as u64);
+    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err().contains("AEC/dispatch completion"));
+    // Unit fixture supplies a completed transaction to select the failed-reset
+    // branch. This is not an end-to-end dispatch or acoustic acceptance test.
+    pipeline.time_segments.as_mut().unwrap().complete_prefix_processing(proof.owner,
+        proof.generation, proof.id, proof.frames).unwrap();
+    // No engine is active: the actual reset fails, not merely the receipt check.
+    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+        .contains("not active"));
+    assert_eq!(guard.diagnostic_owner_identity().1, 0);
+    assert!(pipeline.normal_dequeue_ready().is_err());
+    assert_eq!(queue, VecDeque::from(f32_stereo_to_bytes(&vec![0.75; 480 * 2])));
+}
+
+#[cfg(feature = "webrtc-aec3")]
+#[test]
+fn production_pipeline_partial_native_boundary_precedes_new_segment_reset() {
+    for diagnostics_enabled in [false, true] {
+        let (mut pipeline, store, guard, mut queue, permit) = segmented_packet_fixture(diagnostics_enabled);
+        store.activate_production_echo_canceller().unwrap();
+        let resets = store.echo_canceller_stats().unwrap().reset_count;
+        assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).is_err());
+        assert_eq!(store.echo_canceller_stats().unwrap().reset_count, resets);
+        let metadata = pipeline.capture_metadata().unwrap();
+        let receipt = boundary_receipt(permit.proof(), metadata).unwrap();
+        let before = queue.len();
+        let old = pipeline.take_boundary_prefix(&mut queue, permit).unwrap();
+        pipeline.observe_dequeue(&store, "inbound", &guard, before, queue.len(),
+            Some(old.len()), "packet-boundary", None, 1).unwrap();
+        let (cleaned, _, _) = store.process_echo_capture_boundary_with_queue_receipt(
+            &bytes_to_f32_stereo(&old), pipeline.delay_samples, Some(metadata), receipt).unwrap();
+        assert_eq!(cleaned.samples.len(), 96 * 2);
+        assert!(store.echo_partial_capture_boundary_pending());
+        pipeline.consume_capture_clock(96, old.len());
+        assert_eq!(pipeline.capture_metadata().unwrap().queue_head_device_frame_index, 2496);
+        assert_eq!(pipeline.capture_metadata().unwrap().queue_head_qpc_100ns, 1_020_000);
+        assert!(pipeline.normal_dequeue_ready().is_err());
+        assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+            .contains("AEC/dispatch completion"));
+        assert_eq!(store.echo_canceller_stats().unwrap().reset_count, resets);
+        // This component test acknowledges a simulated successful dispatch.
+        // Only process_chunk issues this receipt after real dispatch in production.
+        pipeline.time_segments.as_mut().unwrap().complete_prefix_processing(receipt.capture_owner_id,
+            receipt.queue_generation, receipt.boundary_id, receipt.real_frames).unwrap();
+        pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap();
+        assert!(!store.echo_partial_capture_boundary_pending());
+        assert_eq!(guard.diagnostic_owner_identity().1, 1);
+        assert_eq!(store.echo_canceller_stats().unwrap().reset_count, resets + 1);
+        pipeline.normal_dequeue_ready().unwrap();
+        assert_eq!(queue.len(), 480 * 8);
+    }
 }

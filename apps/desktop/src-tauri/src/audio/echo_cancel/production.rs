@@ -7,8 +7,8 @@ use std::time::Duration;
 /// suppression decision can influence the ASR stream.
 pub(crate) struct ProductionEchoCanceller {
     engine: EchoCanceller,
-    // A padded computational frame is not a new capture interval. A resumed
-    // real stream must reset before any subsequent native capture call.
+    // A partial calculation or a closed segment cannot share adaptation with
+    // resumed capture. Only a successful native reset clears this real fence.
     partial_capture_boundary_pending: bool,
 }
 
@@ -67,14 +67,58 @@ impl ProductionEchoCanceller {
             || captured.iter().any(|sample| !sample.is_finite()) {
             return Err("partial AEC capture must be a nonempty finite stereo suffix shorter than 10ms".into());
         }
-        let mut computational_frame = vec![0.0; AEC_FRAME_SAMPLES];
-        computational_frame[..captured.len()].copy_from_slice(captured);
         if self.partial_capture_boundary_pending {
             return Err("capture resumed after a partial computational frame without a continuity reset".into());
         }
         // Native may have advanced even when it fails or returns corrupt output.
         // Fence BEFORE admission; only a successful native reset clears it.
         self.partial_capture_boundary_pending = true;
+        self.process_partial_calculation(render, captured, delay_samples, capture_time)
+    }
+
+    /// One bounded closed-segment transaction. The fence is set before the
+    /// FIRST native call, including aligned 480-frame input and failures in
+    /// the first full block. Internal continuation is restricted to this real
+    /// segment; external full/partial/boundary capture remains fenced.
+    pub(crate) fn process_capture_boundary_with_reference(
+        &mut self, captured: &[f32], delay_samples: usize, capture_time: Instant,
+        mut reference_for_frame: impl FnMut(usize) -> Option<Vec<f32>>,
+    ) -> Result<EchoCancellationResult, String> {
+        if captured.is_empty() || captured.len() >= AEC_FRAME_SAMPLES * 2
+            || captured.len() % TARGET_CHANNEL_COUNT != 0
+            || captured.iter().any(|sample| !sample.is_finite()) {
+            return Err("AEC boundary must contain nonempty finite stereo PCM shorter than 20ms".into());
+        }
+        if self.partial_capture_boundary_pending {
+            return Err("capture resumed after a closed segment without a continuity reset".into());
+        }
+        self.partial_capture_boundary_pending = true;
+        let mut processed = Vec::with_capacity(captured.len());
+        for (index, frame) in captured.chunks(AEC_FRAME_SAMPLES).enumerate() {
+            let render = reference_for_frame(index);
+            let delay = delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES);
+            let result = if frame.len() == AEC_FRAME_SAMPLES {
+                self.engine.process_capture_10ms_with_reference(render.as_deref(), frame, delay, capture_time)?
+            } else {
+                self.process_partial_calculation(render.as_deref(), frame, delay, capture_time)?
+            };
+            if result.samples.len() != frame.len()
+                || result.samples.iter().any(|sample| !sample.is_finite()) {
+                return Err("native AEC returned invalid closed-segment output".into());
+            }
+            processed.extend_from_slice(&result.samples);
+        }
+        Ok(EchoCancellationResult { samples: processed })
+    }
+
+    // Private calculation shared by quiet tails and closed segments. Callers
+    // validate the real suffix and establish the reset fence before reaching it.
+    fn process_partial_calculation(
+        &mut self, render: Option<&[f32]>, captured: &[f32],
+        delay_samples: usize, capture_time: Instant,
+    ) -> Result<EchoCancellationResult, String> {
+        let mut computational_frame = vec![0.0; AEC_FRAME_SAMPLES];
+        computational_frame[..captured.len()].copy_from_slice(captured);
         let mut result = self.engine.process_capture_10ms_with_reference(
             render, &computational_frame, delay_samples, capture_time,
         )?;
@@ -96,6 +140,9 @@ impl ProductionEchoCanceller {
         captured: &[f32],
         delay_samples: usize,
     ) -> Result<EchoCancellationResult, String> {
+        if self.partial_capture_boundary_pending {
+            return Err("capture resumed after a closed segment without a continuity reset".into());
+        }
         self.engine.process_capture(captured, delay_samples)
     }
 

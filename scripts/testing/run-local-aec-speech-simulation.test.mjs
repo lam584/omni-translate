@@ -567,3 +567,17 @@ test('changing the packet journal writer or consumer tests invalidates a frozen 
   assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
  }
 });
+
+const timeSegmentFrozenSources = [
+ 'apps/desktop/src-tauri/src/audio/engine/workers/capture_packet_segments.rs',
+ 'apps/desktop/src-tauri/src/audio/engine/workers/capture_packet_segments_tests.rs',
+ 'apps/desktop/src-tauri/src/audio/state/echo_backend_capture_boundary_tests.rs',
+];
+test('capture time-segment implementation and boundary proofs are frozen for local runs', () => {
+ for (const file of timeSegmentFrozenSources) assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file), file);
+});
+for (const file of timeSegmentFrozenSources) test('time-segment source freeze rejects tampering ' + file, t => {
+ const { root, hashes } = frozenSourceFixture(t);
+ fs.appendFileSync(path.join(root, file), '\nchanged', 'utf8');
+ assert.throws(() => frozenRunner.verifyLocalSpeechSourceHashes(root, hashes), /frozen run source changed/);
+});

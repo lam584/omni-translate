@@ -124,7 +124,7 @@ test('verifyCaptureProcessingRecord backward compatibility: missing receipt pass
 
 test('verifyCaptureProcessingRecord rejects schema mismatch or non-object', () => {
   assert.throws(
-    () => verifyCaptureProcessingRecord(validCaptureEvent({}, { schemaVersion: 2 }), null, null, { strict: true }),
+    () => verifyCaptureProcessingRecord(validCaptureEvent({}, { schemaVersion: 3 }), null, null, { strict: true }),
     /unsupported aecProcessing schemaVersion/
   );
   assert.throws(
@@ -443,4 +443,38 @@ test('tailAdmission rejects owner captureResetGeneration regression in context',
     () => verifyCaptureProcessingRecord(event, null, null, { strict: true }, context),
     /captureResetGeneration regressed for owner 101/
   );
+});
+
+function validBoundaryProcessingEvent(frames=480) {
+  return validCaptureEvent({preSampleCount:frames*2,postSampleCount:frames*2}, {
+    schemaVersion:2,inputFrames:frames,native10msFrames:Math.ceil(frames/480),mathPaddingFrames:Math.ceil(frames/480)*480-frames,
+    resetBeforeResumeRequired:true,tailAdmission:null,boundaryAdmission:{schemaVersion:1,captureOwnerId:101,
+      queueGeneration:2,boundaryId:1,closedSegmentId:1,nextSegmentId:2,byteLen:frames*8,realFrames:frames,
+      boundaryReason:'device-frame-gap',oldSegmentStartDeviceFrameIndex:0,oldSegmentStartQpc100ns:10000000,
+      oldSegmentEndDeviceFrameIndex:frames,nextPacketDeviceFrameIndex:2000,nextPacketQpc100ns:11000000,
+      nextPacketDataDiscontinuity:false,nextPacketTimestampError:false,previousPacketTimestampError:false}});
+}
+test('schema2 boundary accepts real voiced short PCM, including unpadded 480 frames, not quietTail',()=>{
+  for(const frames of [1,96,480,700,959]) {
+    const e=validBoundaryProcessingEvent(frames);const actual=new Float32Array(frames*2).fill(0.25);
+    const r=verifyCaptureProcessingRecord(e,actual,actual,{strict:true});
+    assert.equal(r.partial,true);assert.equal(r.tailAdmission,null);assert.equal(r.boundaryAdmission.realFrames,frames);
+  }
+});
+test('schema2 boundary typed receipt/real PCM guards fail closed',()=>{
+  for(const mutate of [
+    e=>{e.aecProcessing.resetBeforeResumeRequired=false;},e=>{e.aecProcessing.tailAdmission=validTail();},
+    e=>{e.aecProcessing.schemaVersion=1;},e=>{delete e.aecProcessing.boundaryAdmission;},
+    e=>{e.aecProcessing.boundaryAdmission.boundaryReason='quiet-tail';},
+    e=>{e.aecProcessing.boundaryAdmission.nextSegmentId=1;},e=>{e.aecProcessing.boundaryAdmission.queueGeneration=0;},
+    e=>{e.aecProcessing.boundaryAdmission.byteLen-=8;},e=>{e.aecProcessing.boundaryAdmission.oldSegmentEndDeviceFrameIndex++;},
+    e=>{e.aecProcessing.boundaryAdmission.boundaryReason='timestamp-error';},
+    e=>{e.aecProcessing.boundaryAdmission.boundaryReason='data-discontinuity';},
+    e=>{e.aecProcessing.boundaryAdmission.nextPacketDeviceFrameIndex=480;},
+    e=>{e.aecProcessing.boundaryAdmission.nextPacketTimestampError=null;},
+  ]) {const e=validBoundaryProcessingEvent();mutate(e);assert.throws(()=>verifyCaptureProcessingRecord(e,null,null,{strict:true}));}
+  assert.throws(()=>verifyCaptureProcessingRecord(validBoundaryProcessingEvent(960),null,null,{strict:true}),/boundaryAdmission/);
+  const e=validBoundaryProcessingEvent(96);const actual=new Float32Array(192).fill(0.1);actual[0]=NaN;
+  assert.throws(()=>verifyCaptureProcessingRecord(e,actual,new Float32Array(192),{strict:true}),/non-finite/);
+  assert.throws(()=>verifyCaptureProcessingRecord(e,new Float32Array(190),new Float32Array(192),{strict:true}),/length mismatch/);
 });

@@ -67,6 +67,32 @@ pub(crate) struct AecCaptureTailEvidence {
     pub(crate) real_frames: usize,
 }
 
+/// Schema-1 owner-local proof that retained real PCM ends at a packet boundary.
+/// This receipt authorizes bounded processing, never capture-clock validity.
+/// The tracker proves untrusted-predecessor from the actual previous packet's
+/// timestamp-error flag; clock-invalid metadata must not stand in for that flag.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AecCaptureBoundaryEvidence {
+    pub(crate) schema_version: u32,
+    pub(crate) capture_owner_id: u64,
+    pub(crate) queue_generation: u64,
+    pub(crate) boundary_id: u64,
+    pub(crate) closed_segment_id: u64,
+    pub(crate) next_segment_id: u64,
+    pub(crate) byte_len: usize,
+    pub(crate) real_frames: usize,
+    pub(crate) boundary_reason: &'static str,
+    pub(crate) old_segment_start_device_frame_index: u64,
+    pub(crate) old_segment_start_qpc_100ns: u64,
+    pub(crate) old_segment_end_device_frame_index: u64,
+    pub(crate) next_packet_device_frame_index: u64,
+    pub(crate) next_packet_qpc_100ns: u64,
+    pub(crate) next_packet_data_discontinuity: bool,
+    pub(crate) next_packet_timestamp_error: bool,
+    pub(crate) previous_packet_timestamp_error: bool,
+}
+
 /// Receipt from actual native calls, not inferred from a silence flag.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +104,8 @@ pub(crate) struct AecCaptureProcessing {
     pub(crate) all_input_processed: bool,
     pub(crate) reset_before_resume_required: bool,
     pub(crate) tail_admission: Option<AecCaptureTailEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) boundary_admission: Option<AecCaptureBoundaryEvidence>,
 }
 
 #[derive(Debug)]
@@ -213,6 +241,13 @@ impl AecDiagnosticTap {
             eprintln!("AEC diagnostic tap unavailable: {error}");
             Self { live: None, startup_error: Some(error), lineage_enabled: false }
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_diagnostic_only_for_test(directory: &Path) -> Result<Self, String> {
+        let mut tap = Self::start(directory)?;
+        tap.lineage_enabled = false;
+        Ok(tap)
     }
 
     pub(super) fn start(directory: &Path) -> Result<Self, String> {

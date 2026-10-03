@@ -25,7 +25,7 @@ pub(super) fn validate(meta: &Value) -> io::Result<()> {
         && nullable_unsigned(meta, &["qpc100ns"]);
     let payload = match meta["kind"].as_str() {
         Some("native-capture-queue-dequeue") =>
-            matches!(meta["dequeueKind"].as_str(), Some("full-chunk-batch" | "partial-tail"))
+            matches!(meta["dequeueKind"].as_str(), Some("full-chunk-batch" | "partial-tail" | "packet-boundary"))
             && unsigned(meta, &["queuedBytesBefore","queuedBytesAfter","chunkCount","queueGenerationBefore","queueGenerationAfter"])
             && nullable_unsigned(meta, &["dequeueId","dequeueStartByte","dequeueEndByte","dequeuedBytes","chunkByteLength"])
             && ranges(meta, "packetRanges"),

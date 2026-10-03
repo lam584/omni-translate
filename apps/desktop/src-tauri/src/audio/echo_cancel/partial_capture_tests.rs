@@ -556,3 +556,38 @@ mod linked_post_native_failure_review {
         actual_native_failure_must_fence_resume(AfterNative::ErrAfterSuccess);
     }
 }
+
+#[test]
+fn closed_segment_adapter_fences_aligned_input_before_native_and_invalid_output() {
+    for frames in [96, 480, 481, 959] {
+        let (mut adapter, trace) = engine();
+        trace.lock().unwrap().invalid_output = true;
+        assert!(adapter.process_capture_boundary_with_reference(&vec![0.5; frames * 2], 0,
+            Instant::now(), |_| None).is_err());
+        assert!(adapter.partial_capture_boundary_pending());
+        assert_eq!(trace.lock().unwrap().inputs.len(), 1);
+        assert!(adapter.process_capture_10ms_with_reference(None, &[0.0; 960], 0, Instant::now()).is_err());
+        assert!(adapter.process_capture_partial_10ms_with_reference(None, &[0.0; 192], 0, Instant::now()).is_err());
+        assert!(adapter.process_capture(&[0.0; 960], 0).is_err());
+        trace.lock().unwrap().fail_reset = true;
+        assert!(adapter.reset().is_err());
+        assert!(adapter.partial_capture_boundary_pending());
+        assert_eq!(trace.lock().unwrap().inputs.len(), 1);
+        trace.lock().unwrap().fail_reset = false;
+        trace.lock().unwrap().invalid_output = false;
+        adapter.reset().unwrap();
+        assert!(!adapter.partial_capture_boundary_pending());
+        adapter.process_capture_10ms_with_reference(None, &[0.0; 960], 0, Instant::now()).unwrap();
+    }
+}
+
+#[test]
+fn malformed_closed_segment_adapter_input_does_not_match_reference_or_admit_native() {
+    for input in [vec![], vec![0.0], vec![f32::NAN; 2], vec![f32::INFINITY; 2], vec![0.0; 1920]] {
+        let (mut adapter, trace) = engine();
+        assert!(adapter.process_capture_boundary_with_reference(&input, 0, Instant::now(),
+            |_| panic!("malformed boundary must not consume reference")).is_err());
+        assert!(trace.lock().unwrap().inputs.is_empty());
+        assert!(!adapter.partial_capture_boundary_pending());
+    }
+}

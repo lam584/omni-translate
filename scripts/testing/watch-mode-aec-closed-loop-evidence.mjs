@@ -399,7 +399,10 @@ function replayCaptureQueueLedger(events, mainEvents, requireTimeSegments = fals
  * rejects v1 and replays owner-local packet boundaries, actual old-prefix input,
  * retained clock and successful time-boundary reset before preparing new bytes.
  * V2 fields opt into this replay even in diagnostic calls; no partial downgrade.
- * Existing ledger is always fail-closed.
+ * Existing ledger is always fail-closed. Supplemental capture-pump rows are
+ * type/uniqueness checked here, NOT authenticated: callers must first validate
+ * their journal and verifyCapturePumpTimingSeals(root, events). This memory-only
+ * projection never grants file custody or formal acceptance.
  */
 export function validateCaptureQueueLedger(events, mainEvents, { required = false, requireTimeSegments = false } = {}) {
   requireEvidence(typeof requireTimeSegments === 'boolean', 'time-segment required option must be boolean');
@@ -407,6 +410,7 @@ export function validateCaptureQueueLedger(events, mainEvents, { required = fals
   requireEvidence(Array.isArray(events) && Array.isArray(mainEvents), 'queue journal snapshots missing');
   if (requireTimeSegments) requireEvidence(events.some(e => e.kind === 'native-capture-packet' && Object.hasOwn(e, 'captureTimeSegmentId')), 'complete capture queue time-segment v2 ledger required; v1 is diagnostic-only');
   events.forEach((e, i) => validateSidecarRecord(e, i));
+  capturePumpDescriptors(events); // Type/uniqueness only; caller authenticates files.
   let generation = 0;
   mainEvents.forEach((e, i) => {
     if (e?.kind === 'reset') generation += 1;
@@ -447,7 +451,77 @@ export function verifyCaptureQueueLedgerEvidence(sidecarEvents, sealedMainEvents
   } catch (error) { result.violations.push(error.message); }
   return result;
 }
+const CAPTURE_PUMP_KIND = 'native-capture-pump-timing-seal';
+const CAPTURE_PUMP_MAX_BYTES = 64 * 1024 * 1024;
+function validateCapturePumpAuthority(value) {
+  requireEvidence(value?.diagnosticOnly === true && value.qualityAcceptance === false
+    && value.formalCaptureClockAcceptance === false && value.releaseEligible === false
+    && (!Object.hasOwn(value, 'aecQualityAcceptance') || value.aecQualityAcceptance === false),
+  'capture pump diagnostic claimed authority or omitted authority boundary');
+}
+function validateCapturePumpDescriptor(e) {
+  requireEvidence(e?.schemaVersion === 1 && e.kind === CAPTURE_PUMP_KIND,
+    'capture pump descriptor schema/kind mismatch');
+  validateCapturePumpAuthority(e);
+  for (const key of ['captureOwnerId', 'threadId', 'processId']) {
+    requireEvidence(integer(e[key]) && e[key] > 0, 'capture pump descriptor positive safe identity missing: '+key);
+  }
+  requireEvidence(typeof e.endpointId === 'string' && e.endpointId.trim().length > 0,
+    'capture pump descriptor endpoint missing');
+  requireEvidence(e.file === 'aec-capture-pump-owner-'+e.captureOwnerId+'.json',
+    'capture pump descriptor file must be exact owner-relative basename');
+  requireEvidence(integer(e.bytes) && e.bytes > 0 && e.bytes <= CAPTURE_PUMP_MAX_BYTES,
+    'capture pump descriptor bytes out of bounds');
+  requireEvidence(typeof e.sha256 === 'string' && /^[a-f0-9]{64}$/iu.test(e.sha256),
+    'capture pump descriptor sha256 malformed');
+  requireEvidence(e.flushed === true && e.synced === true,
+    'capture pump descriptor not durably committed');
+  requireEvidence(typeof e.captureStoppedBeforePersistence === 'boolean'
+    && typeof e.diagnosticIncomplete === 'boolean', 'capture pump descriptor stop/completeness missing');
+}
+function capturePumpDescriptors(events) {
+  requireEvidence(Array.isArray(events), 'capture pump journal missing');
+  const owners = new Set(); const files = new Set(); const descriptors = [];
+  for (const e of events) if (e?.kind === CAPTURE_PUMP_KIND) {
+    validateCapturePumpDescriptor(e);
+    requireEvidence(!owners.has(e.captureOwnerId) && !files.has(e.file),
+      'duplicate capture pump descriptor owner/file');
+    owners.add(e.captureOwnerId); files.add(e.file); descriptors.push(e);
+  }
+  return descriptors;
+}
+/** Authenticate supplemental diagnostic files against an already sealed journal.
+ * No acoustic/clock/drain acceptance follows from these file seals. All root-
+ * bearing readers must call this before using the memory-only queue projection.
+ */
+export function verifyCapturePumpTimingSeals(root, events) {
+  const descriptors = capturePumpDescriptors(events);
+  for (const e of descriptors) {
+    const bytes = bounded(path.resolve(root), e.file, CAPTURE_PUMP_MAX_BYTES);
+    requireEvidence(bytes.length === e.bytes && sha(bytes) === e.sha256.toLowerCase(),
+      'capture pump diagnostic file bytes/hash mismatch');
+    let value;
+    try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { throw new Error('AEC closed-loop: capture pump diagnostic file invalid UTF-8/JSON'); }
+    requireEvidence(value?.schemaVersion === 1 && value.artifactKind === 'capture-pump-timing-diagnostic',
+      'capture pump diagnostic file schema/artifact kind mismatch');
+    validateCapturePumpAuthority(value);
+    for (const key of ['captureOwnerId', 'threadId', 'processId', 'endpointId', 'diagnosticIncomplete']) {
+      requireEvidence(value[key] === e[key], 'capture pump diagnostic file identity/completeness mismatch: '+key);
+    }
+    requireEvidence(typeof value.nativeStopSucceeded === 'boolean'
+      && value.nativeStopSucceeded === e.captureStoppedBeforePersistence,
+    'capture pump diagnostic file native stop mismatch');
+  }
+  return { descriptorCount: descriptors.length, fileSealsVerified: true, diagnosticOnly: true,
+    qualityAcceptance: false, formalCaptureClockAcceptance: false, releaseEligible: false };
+}
+
 function validateSidecarRecord(e, i) {
+  if (e?.kind === CAPTURE_PUMP_KIND) {
+    requireEvidence(e.sequence === i, 'capture pump descriptor sequence mismatch');
+    validateCapturePumpDescriptor(e); return;
+  }
   requireEvidence(e?.schemaVersion === 1 && e.sequence === i && typeof e.kind === 'string', 'sidecar metadata sequence/schema mismatch');
   if (CAPTURE_QUEUE_KINDS.has(e.kind)) { validateQueueRecord(e); return; }
   if (e.kind === 'native-capture-packet') {
@@ -638,6 +712,7 @@ export function buildAecClosedLoopEvidence(runDirectory, {
     const metadata = records(data.metadata);
     requireEvidence(metadata.length === seal.writtenEvents, 'sidecar metadata sequence/schema mismatch');
     metadata.forEach((e, i) => validateSidecarRecord(e, i));
+    verifyCapturePumpTimingSeals(root, metadata);
     const queueReview = verifyCaptureQueueLedgerEvidence(metadata, diagnosticEvents, {
       requireCaptureQueueLedger,
       captureQueueWitnessPolicy: JSON.parse(freezeBytes.toString('utf8')).payload?.captureQueueWitnessPolicy,
@@ -965,6 +1040,7 @@ export function createAecClosedLoopManifest(runDirectory, {
     const events = records(data.metadata);
     requireEvidence(events.length === seal.writtenEvents, 'manifest sidecar sequence mismatch');
     events.forEach((e, i) => validateSidecarRecord(e, i));
+    verifyCapturePumpTimingSeals(root, events);
     const queueReview = verifyCaptureQueueLedgerEvidence(events, diagnosticEvents, {
       requireCaptureQueueLedger,
       captureQueueWitnessPolicy: JSON.parse(frozenQueueBytes.toString('utf8')).payload?.captureQueueWitnessPolicy,

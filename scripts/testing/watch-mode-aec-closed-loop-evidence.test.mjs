@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS, buildAecClosedLoopEvidence,
@@ -12,7 +12,9 @@ const f32 = (samples) => { const b = Buffer.alloc(samples.length * 4); samples.f
 const names = { render: 'aec-render-reference-48k-stereo.f32le', pre: 'aec-pre-capture-48k-stereo.f32le', post: 'aec-post-output-48k-stereo.f32le', metadata: 'aec-frame-metadata.jsonl' };
 const sideNames = { physical: 'aec-physical-output-48k-stereo.f32le', provider: 'aec-provider-input.s16le', metadata: 'aec-closed-loop-metadata.jsonl' };
 function fixture(t, responses = 1, { sourceFrames } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aec-closed-loop-test-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const fixtureBase = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../artifacts/testing/aec-iteration/capture-pump-consumer-closed-loop-tests');
+  fs.mkdirSync(fixtureBase, { recursive: true });
+  const root = fs.mkdtempSync(path.join(fixtureBase, 'fixture-')); t.after(() => { assert.equal(path.dirname(root), fixtureBase); fs.rmSync(root, { recursive: true, force: true }); });
   const identity = { runMarker: 'run', cellId: 'c03', leaseId: 'lease' };
   let seed = 5; const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return Math.fround((seed / 2 ** 32 - 0.5) * 0.3); };
   const render = []; const physical = []; const pre = []; const post = []; const source = []; const base = []; const side = []; const provider = [];
@@ -1388,4 +1390,125 @@ test('v2 multi-packet old prefix preserves last prepared clock rather than first
  assert.equal(validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}).reviewSatisfied,true);
  b.oldSegmentStartQpc100ns=10000000;
  assert.throws(()=>validateCaptureQueueLedger(f.side,f.main,{requireTimeSegments:true}),/boundaryAdmission/);
+});
+
+
+function installCapturePump(f, mutate = () => {}) {
+  const value = { schemaVersion: 1, artifactKind: 'capture-pump-timing-diagnostic',
+    captureOwnerId: 1, threadId: 171, processId: 42, endpointId: 'endpoint',
+    nativeStopSucceeded: true, diagnosticIncomplete: false,
+    diagnosticOnly: true, qualityAcceptance: false, aecQualityAcceptance: false,
+    formalCaptureClockAcceptance: false, releaseEligible: false, retainedSpans: [] };
+  const descriptor = { schemaVersion: 1, sequence: f.side.length, kind: 'native-capture-pump-timing-seal',
+    captureOwnerId: 1, threadId: 171, processId: 42, endpointId: 'endpoint',
+    file: 'aec-capture-pump-owner-1.json', flushed: true, synced: true,
+    captureStoppedBeforePersistence: true, diagnosticIncomplete: false,
+    diagnosticOnly: true, qualityAcceptance: false, aecQualityAcceptance: false,
+    formalCaptureClockAcceptance: false, releaseEligible: false };
+  mutate(value, descriptor);
+  const bytes = Buffer.from(JSON.stringify(value)+'\n');
+  // Unsafe descriptor names still write only the fixed safe fixture basename.
+  fs.writeFileSync(path.join(f.root, 'aec-capture-pump-owner-1.json'), bytes);
+  descriptor.bytes ??= bytes.length; descriptor.sha256 ??= sha(bytes);
+  f.side.push(descriptor);
+  f.seal.lifecycleEvents += 1;
+  for (const key of ['attemptedEvents','acceptedEvents','writtenEvents']) f.seal[key] += 1;
+  f.saveEvents('side');
+  return { value, descriptor, path: path.join(f.root, 'aec-capture-pump-owner-1.json') };
+}
+
+test('capture pump consumer real fixture build roundtrip', t => {
+  const f = fixture(t); installCapturePump(f);
+  const result = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(result.passed, true, result.violations.join(';'));
+});
+
+
+test('capture pump consumer descriptor rejects malformed identities paths commits and authority', async t => {
+  const cases = [
+    ['schema', (v,e) => { e.schemaVersion=2; }],
+    ...['captureOwnerId','threadId','processId'].flatMap(key => [
+      [key+' zero', (v,e) => { e[key]=0; }],
+      [key+' unsafe', (v,e) => { e[key]=Number.MAX_SAFE_INTEGER+1; }],
+      [key+' fraction', (v,e) => { e[key]=1.5; }],
+    ]),
+    ['endpoint', (v,e) => { e.endpointId=' '; }],
+    ...['../aec-capture-pump-owner-1.json','sub/aec-capture-pump-owner-1.json',
+      'C:\\outside.json','aec-capture-pump-owner-2.json'].map(name =>
+      [name, (v,e) => { e.file=name; }]),
+    ...[0,64*1024*1024+1,1.5].map(bytes => ['bytes '+bytes, (v,e) => { e.bytes=bytes; }]),
+    ['hash shape', (v,e) => { e.sha256='bad'; }],
+    ['hash mismatch', (v,e) => { e.sha256='0'.repeat(64); }],
+    ['flush', (v,e) => { e.flushed=false; }], ['sync', (v,e) => { e.synced=false; }],
+    ['stop missing', (v,e) => { delete e.captureStoppedBeforePersistence; }],
+    ['stop not bool', (v,e) => { e.captureStoppedBeforePersistence=1; }],
+    ['incomplete missing', (v,e) => { delete e.diagnosticIncomplete; }],
+    ['incomplete not bool', (v,e) => { e.diagnosticIncomplete=0; }],
+    ...['qualityAcceptance','formalCaptureClockAcceptance','releaseEligible','aecQualityAcceptance']
+      .map(key => [key, (v,e) => { e[key]=true; }]),
+    ['not diagnostic', (v,e) => { e.diagnosticOnly=false; }],
+    ['authority omitted', (v,e) => { delete e.qualityAcceptance; }],
+  ];
+  for (const [name,change] of cases) await t.test(name, t => {
+    const f=fixture(t); installCapturePump(f,change); fails(f,/capture pump/);
+  });
+});
+
+test('capture pump consumer authenticates actual file not descriptor claims', async t => {
+  const cases = [
+    ['render timing substitute', (v) => { v.artifactKind='local-aec-pump-timing-diagnostic'; }],
+    ['old native kind', (v) => { v.artifactKind='native-capture-pump-timing-diagnostic'; }],
+    ['file schema', (v) => { v.schemaVersion=2; }],
+    ...['captureOwnerId','threadId','processId','endpointId'].map(key =>
+      ['file '+key, v => { v[key]=key==='endpointId'?'other-endpoint':77; }]),
+    ['file stop', v => { v.nativeStopSucceeded=false; }],
+    ['file incomplete', v => { v.diagnosticIncomplete=true; }],
+    ...['qualityAcceptance','formalCaptureClockAcceptance','releaseEligible','aecQualityAcceptance']
+      .map(key => ['file '+key, v => { v[key]=true; }]),
+    ['file missing boundary', v => { delete v.formalCaptureClockAcceptance; }],
+    ['file not diagnostic', v => { v.diagnosticOnly=false; }],
+  ];
+  for (const [name,change] of cases) await t.test(name,t=>{
+    const f=fixture(t); installCapturePump(f,change); fails(f,/capture pump/);
+  });
+  for (const mode of ['missing','tampered','same-size-tampered','oversized','invalid-json','invalid-utf8','directory']) {
+    await t.test(mode,t=>{
+      const f=fixture(t);const p=installCapturePump(f);
+      if(mode==='missing') fs.unlinkSync(p.path);
+      else if(mode==='tampered') fs.appendFileSync(p.path,' ');
+      else if(mode==='same-size-tampered') {const bytes=fs.readFileSync(p.path);bytes[0]=0x5b;fs.writeFileSync(p.path,bytes);}
+      else if(mode==='oversized') fs.truncateSync(p.path,64*1024*1024+1);
+      else if(mode==='directory') {fs.unlinkSync(p.path);fs.mkdirSync(p.path);}
+      else {
+        const bytes=mode==='invalid-json'?Buffer.from('{'):Buffer.from([0xff]);
+        fs.writeFileSync(p.path,bytes);p.descriptor.bytes=bytes.length;p.descriptor.sha256=sha(bytes);f.saveEvents('side');
+      }
+      fails(f,/capture pump|ENOENT|invalid .*size\/type/);
+    });
+  }
+});
+
+test('capture pump consumer duplicate descriptors fail all root and memory readers',t=>{
+  const f=fixture(t);const p=installCapturePump(f);
+  f.side.push({...p.descriptor,sequence:f.side.length});f.seal.lifecycleEvents+=1;
+  for(const key of ['attemptedEvents','acceptedEvents','writtenEvents'])f.seal[key]+=1;
+  f.saveEvents('side');
+  fails(f,/duplicate capture pump/);
+  const manifest=createAecClosedLoopManifest(f.root,{cell:f.identity,freezePublicKey:f.publicKey});
+  assert.equal(manifest.passed,false);assert.match(manifest.violations.join(';'),/duplicate capture pump/);
+  assert.throws(()=>validateCaptureQueueLedger(f.side,f.base),/duplicate capture pump/);
+});
+
+test('capture pump consumer manifest authenticates files and memory projection has no custody',t=>{
+  const f=fixture(t);const p=installCapturePump(f);
+  const manifest=createAecClosedLoopManifest(f.root,{cell:f.identity,freezePublicKey:f.publicKey});
+  assert.equal(manifest.passed,true,manifest.violations.join(';'));
+  fs.unlinkSync(p.path);
+  // In-memory projection checks type only; it cannot authenticate a file/root.
+  const projection=validateCaptureQueueLedger(f.side,f.base);
+  assert.equal(projection.qualityAcceptance,false);
+  assert.equal(projection.fileSealsVerified,undefined);
+  const missing=createAecClosedLoopManifest(f.root,{cell:f.identity,freezePublicKey:f.publicKey});
+  assert.equal(missing.passed,false);assert.match(missing.violations.join(';'),/ENOENT/);
+  assert.equal(verifyAecClosedLoopEvidence(f.root,f.options).passed,false);
 });

@@ -210,6 +210,7 @@ struct LiveTap {
     shared: Arc<Shared>,
     writer: Mutex<Option<JoinHandle<()>>>,
     closed_loop: Arc<closed_loop::ClosedLoopTap>,
+    diagnostic_directory: PathBuf,
     post_provenance: Mutex<PostTapProvenance>,
     capture_post_samples: Mutex<u64>,
 }
@@ -264,6 +265,7 @@ impl AecDiagnosticTap {
     fn spawn(files: EvidenceFiles, terminal: File, directory: PathBuf) -> Result<Self, String> {
         let closed_loop = Arc::new(closed_loop::ClosedLoopTap::start(&directory)?);
         let writer_closed_loop=Arc::clone(&closed_loop);
+        let diagnostic_directory = directory.clone();
         let shared = Arc::new(Shared::default());
         let writer_shared = Arc::clone(&shared);
         let (sender, receiver) = mpsc::sync_channel(TAP_CHANNEL_CAPACITY);
@@ -295,7 +297,7 @@ impl AecDiagnosticTap {
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            live: Some(LiveTap { sender, shared, writer: Mutex::new(Some(writer)), closed_loop, post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }),
+            live: Some(LiveTap { sender, shared, writer: Mutex::new(Some(writer)), closed_loop, diagnostic_directory, post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }),
             startup_error: None,
             lineage_enabled: true,
         })
@@ -421,6 +423,53 @@ impl AecDiagnosticTap {
     /// Actual successfully submitted provider PCM, with exact post provenance.
     pub(crate) fn record_provider(&self, samples: &[i16], metadata: Value) {
         if let Some(live)=&self.live {live.closed_loop.record(None,Some(samples),metadata);}
+    }
+
+    /// Called only after the real capture producer stopped. The hot path retains
+    /// typed spans in bounded memory; it never serializes JSON or writes this file.
+    /// The descriptor is sealed by the existing closed-loop writer, but provides
+    /// no capture-clock, sound-quality or physical-completion authority.
+    pub(crate) fn persist_capture_pump_diagnostic(&self, mut receipt: Value) {
+        let Some(live) = &self.live else { return; };
+        let result = (|| -> Result<(), String> {
+            if live.shared.admission.load(Ordering::Acquire) & CLOSED != 0 {
+                return Err("capture pump diagnostic arrived after tap admission closed".into());
+            }
+            if receipt["diagnosticOnly"] != true || receipt["qualityAcceptance"] != false
+                || receipt["formalCaptureClockAcceptance"] != false || receipt["releaseEligible"] != false {
+                return Err("capture pump diagnostic authority boundary missing".into());
+            }
+            if !receipt["nativeStopSucceeded"].is_boolean() || !receipt["diagnosticIncomplete"].is_boolean() {
+                return Err("capture pump diagnostic stop/completeness receipt missing".into());
+            }
+            if receipt["schemaVersion"] != 1 || receipt["artifactKind"] != "capture-pump-timing-diagnostic" {
+                return Err("capture pump diagnostic schema/kind mismatch".into());
+            }
+            let owner = receipt["captureOwnerId"].as_u64().filter(|id| *id > 0)
+                .ok_or("capture pump diagnostic owner missing")?;
+            let thread = receipt["threadId"].as_u64().filter(|id| *id > 0)
+                .ok_or("capture pump diagnostic thread missing")?;
+            let endpoint = receipt["endpointId"].as_str().filter(|id| !id.is_empty())
+                .ok_or("capture pump diagnostic endpoint missing")?.to_owned();
+            receipt["processId"] = json!(std::process::id());
+            let mut bytes = serde_json::to_vec(&receipt).map_err(|error| error.to_string())?;
+            bytes.push(b'\n');
+            if bytes.len() > 64 * 1024 * 1024 { return Err("capture pump diagnostic size exceeded".into()); }
+            let name = format!("aec-capture-pump-owner-{owner}.json");
+            let mut file = exclusive(live.diagnostic_directory.join(&name)).map_err(|error| error.to_string())?;
+            file.write_all(&bytes).map_err(|error| error.to_string())?;
+            file.flush().map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            self.record_lifecycle(json!({"schemaVersion":1,"kind":"native-capture-pump-timing-seal",
+                "diagnosticOnly":true,"qualityAcceptance":false,"formalCaptureClockAcceptance":false,
+                "releaseEligible":false,"captureOwnerId":owner,"threadId":thread,"endpointId":endpoint,
+                "processId":std::process::id(),"file":name,"bytes":bytes.len(),
+                "sha256":format!("{:x}",Sha256::digest(&bytes)),"flushed":true,"synced":true,
+                "diagnosticIncomplete":receipt["diagnosticIncomplete"],
+                "captureStoppedBeforePersistence":receipt["nativeStopSucceeded"]}));
+            Ok(())
+        })();
+        if let Err(error) = result { live.shared.fail(format!("capture pump diagnostic persistence: {error}")); }
     }
 
     pub(crate) fn record_lifecycle(&self, mut metadata: Value) {

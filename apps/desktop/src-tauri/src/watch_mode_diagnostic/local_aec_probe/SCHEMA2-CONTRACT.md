@@ -261,3 +261,32 @@ main/sidecar/freeze seals; a historical queue-v1 journal cannot pass through a
 processing-v1 compatibility path. Unknown/mismatched versions fail closed.
 These structural checks do not turn a source-clock failure, raw discontinuity,
 indeterminate acoustic analysis or failed operation/custody into acceptance.
+## Capture-owner scheduling diagnostics (non-authoritative)
+
+The real capture owner may retain an in-memory flight recorder when the AEC tap
+is enabled. This is separate from the local simulation/render pump timing and
+binds the capture owner, native thread, endpoint, process and observed packet
+frame/QPC identity. It brackets the real native read, packet accounting/admission,
+boundary processing, preparation, dequeue, native AEC, actual dispatch, post-work
+queries, quiet-tail work and event waits. Wait status is the returned native
+signaled/timeout/error result; observed packet spacing is never called wake
+latency. Read timing covers the existing GetBuffer/copy/ReleaseBuffer wrapper,
+not separately measured sub-calls. Long wall duration alone is not on-CPU time or
+proof that a driver caused a glitch.
+
+Raw discontinuity/timestamp-error flags and device-frame gaps select overlapping
+one-second-before/one-second-after context windows. Typed spans, phase totals and
+maximum spans remain bounded in preallocated owner-local memory. Missing clocks,
+missing startup/tail context, buffer/counter overflow, active/unwound spans and
+recording conflicts are explicit diagnostic incompleteness, not repaired data.
+Disabled instrumentation performs no additional clock reads or allocations.
+
+JSON serialization, hashing and exclusive file persistence occur only after the
+capture owner's native Stop attempt returned. The actual Stop success is retained.
+The file aec-capture-pump-owner-<owner>.json has a small hash/size/identity descriptor
+in the existing sealed closed-loop journal. I/O/identity/duplicate-file failures
+fail the tap seal; they never overwrite earlier evidence. A timing receipt cannot
+replace the packet ledger, main PCM seal, source clock, acoustic thresholds,
+physical playback receipts, open-input drain or Provider evidence. In particular,
+diagnosticIncomplete=false does not mean AEC passed. No acceptance threshold,
+watchdog, PCM, reset rule, mode or Provider input is changed by this recorder.

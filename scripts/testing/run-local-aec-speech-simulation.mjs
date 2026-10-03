@@ -24,6 +24,8 @@ export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(["apps/desktop/src-t
   "apps/desktop/src-tauri/src/audio/echo_cancel/partial_capture_tests.rs",
   "apps/desktop/src-tauri/src/audio/engine/mod.rs",
   "apps/desktop/src-tauri/src/audio/engine/workers/capture_diagnostics.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_pump_timing.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_pump_timing_tests.rs",
   "apps/desktop/src-tauri/src/audio/engine/workers/capture_pipeline.rs",
   "apps/desktop/src-tauri/src/audio/engine/workers/capture_pipeline_tests.rs",
   "apps/desktop/src-tauri/src/audio/engine/workers/capture_packet_segments.rs",

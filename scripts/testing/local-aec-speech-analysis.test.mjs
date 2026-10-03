@@ -19,7 +19,7 @@ const soft = (n) => { const d = Math.fround(n * 2.4); return Math.fround(Math.ma
 const jsonl = (rows) => Buffer.from(rows.map((e) => JSON.stringify(e)).join('\n') + '\n');
 
 function fixture(t, variant = 'good') {
-  const base = path.join(workspace, 'artifacts/testing/aec-iteration/local-speech-analysis-tests');
+  const base = path.join(workspace, 'artifacts/testing/aec-iteration/capture-pump-consumer-local-tests');
   fs.mkdirSync(base, { recursive: true });
   const root = fs.mkdtempSync(path.join(base, 'local-aec-test-'));
   t.after(() => { assert.equal(path.dirname(root), base); fs.rmSync(root, { recursive: true, force: true }); });
@@ -610,4 +610,68 @@ test('new local freeze cannot rehabilitate fully sealed v1 ledger bytes',t=>{
  fs.writeFileSync(path.join(f.root,'aec-terminal.json'),JSON.stringify(f.receipt.tap)+'\n');
  assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/time.segment.*v2.*required/u);
  rejected(f.analyze(),/time.segment/u);
+});
+
+
+function installLocalCapturePump(f, mutate = () => {}) {
+  const value={schemaVersion:1,artifactKind:'capture-pump-timing-diagnostic',captureOwnerId:1,
+    threadId:171,processId:42,endpointId:ENDPOINT,nativeStopSucceeded:true,diagnosticIncomplete:false,
+    diagnosticOnly:true,qualityAcceptance:false,formalCaptureClockAcceptance:false,releaseEligible:false};
+  const descriptor={schemaVersion:1,kind:'native-capture-pump-timing-seal',captureOwnerId:1,
+    threadId:171,processId:42,endpointId:ENDPOINT,captureStoppedBeforePersistence:true,diagnosticIncomplete:false,
+    file:'aec-capture-pump-owner-1.json',flushed:true,synced:true,
+    diagnosticOnly:true,qualityAcceptance:false,formalCaptureClockAcceptance:false,releaseEligible:false};
+  mutate(value,descriptor);
+  const file=path.join(f.root,'aec-capture-pump-owner-1.json');
+  const bytes=Buffer.from(JSON.stringify(value)+'\n');fs.writeFileSync(file,bytes);
+  descriptor.bytes??=bytes.length;descriptor.sha256??=sha(bytes);
+  const metadataFile=path.join(f.root,'aec-closed-loop-metadata.jsonl');
+  const rows=fs.readFileSync(metadataFile,'utf8').trim().split('\n').map(JSON.parse);
+  descriptor.sequence=rows.length;rows.push(descriptor);
+  const metadata=jsonl(rows);fs.writeFileSync(metadataFile,metadata);
+  const seal=f.receipt.tap.closedLoop;
+  seal.files.metadata.byteLength=metadata.length;seal.files.metadata.sha256=sha(metadata);
+  seal.lifecycleEvents+=1;
+  for(const key of ['attemptedEvents','acceptedEvents','writtenEvents'])seal[key]+=1;
+  fs.writeFileSync(path.join(f.root,'aec-closed-loop-terminal.json'),JSON.stringify(seal)+'\n');
+  fs.writeFileSync(path.join(f.root,'aec-terminal.json'),JSON.stringify(f.receipt.tap)+'\n');
+  return {file,descriptor,value};
+}
+
+test('capture pump consumer local inspection roundtrip and source failure remains failed',t=>{
+  const f=fixture(t);installLocalCapturePump(f);
+  const view=inspectLocalCaptureQueueEvidence(f.root,f.receipt);
+  assert.equal(view.reviewSatisfied,true);assert.equal(view.qualityAcceptance,false);
+  const good=f.analyze();assert.equal(good.passed,true,JSON.stringify(good));
+  const complete=f.receipt.sourceMediaComplete;
+  complete.exitCode=1;complete.passed=false;complete.sourceEvidenceValidationPassed=false;
+  complete.sourceEvidenceValidationError='source render clock origin drift exceeds frozen 1ms bound';
+  const failed=f.analyze();assert.equal(failed.passed,false);assert.equal(failed.releaseEligible,false);
+  assert.equal(failed.status,'indeterminate');assert.deepEqual(failed.stages,[]);
+  assert.equal(failed.captureQueueLedger.reviewSatisfied,true);
+});
+
+test('capture pump consumer local inspection rejects forgery missing files duplicates and redirects',async t=>{
+  for(const [name,mutate] of [
+    ['render timing',v=>{v.artifactKind='local-aec-pump-timing-diagnostic';}],
+    ['thread identity',v=>{v.threadId=99;}],
+    ['process identity',v=>{v.processId=99;}],
+    ['endpoint identity',v=>{v.endpointId='other';}],
+    ['stop identity',v=>{v.nativeStopSucceeded=false;}],
+    ['file authority',v=>{v.releaseEligible=true;}],
+    ['descriptor authority',(v,e)=>{e.qualityAcceptance=true;}],
+    ['redirect',(v,e)=>{e.file='../outside.json';}],
+  ]) await t.test(name,t=>{
+    const f=fixture(t);installLocalCapturePump(f,mutate);
+    assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/capture pump/);
+    rejected(f.analyze(),/capture pump/);
+  });
+  for(const mode of ['missing','tampered','duplicate'])await t.test(mode,t=>{
+    const f=fixture(t);const p=installLocalCapturePump(f);
+    if(mode==='missing')fs.unlinkSync(p.file);
+    else if(mode==='tampered')fs.appendFileSync(p.file,' ');
+    else installLocalCapturePump(f);
+    assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/capture pump|ENOENT/);
+    rejected(f.analyze(),/capture pump|ENOENT/);
+  });
 });

@@ -10,6 +10,7 @@ struct CaptureQueueBinding { endpoint_id: String, owner_id: u64, ledger: Capture
 pub(super) struct CapturePipeline {
     pub(super) processor: RouteProcessor,
     pub(super) diagnostics: EchoCancelDiagnostics,
+    pub(super) capture_timing: super::capture_pump_timing::Handle,
     delay_estimator: AecDelayEstimator,
     delay_samples: usize,
     queue_clock: AecTapQueueClock,
@@ -22,7 +23,7 @@ pub(super) struct CapturePipeline {
 
 impl CapturePipeline {
     pub(super) fn new(spec: RouteSpec) -> Self {
-        Self { processor: RouteProcessor::new(spec), diagnostics: EchoCancelDiagnostics::new(),
+        Self { processor: RouteProcessor::new(spec), diagnostics: EchoCancelDiagnostics::new(), capture_timing: None,
             delay_estimator: AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT),
             delay_samples: 0, queue_clock: AecTapQueueClock::default(), metadata: None,
             last_delay_diagnostic_at: None, queue_binding: None, time_segments: None, latest_append_packet_id: None }
@@ -409,9 +410,12 @@ impl CapturePipeline {
             let metadata = self.capture_metadata()?;
             let captured = bytes_to_f32_stereo(&chunk);
             if tail.is_some() && boundary.is_some() { return Err("capture cannot be both a quiet tail and a packet boundary".into()); }
-            let (cancellation, provenance, capture_identity) = if let Some(boundary) = boundary {
-                store.process_echo_capture_boundary_with_queue_receipt(&captured, self.delay_samples, Some(metadata), boundary)?
-            } else { store.process_echo_capture_with_queue_receipt(&captured, self.delay_samples, Some(metadata), tail)? };
+            let (cancellation, provenance, capture_identity) = super::capture_pump_timing::measure(
+                &self.capture_timing, super::capture_pump_timing::Part::Aec, || {
+                    if let Some(boundary) = boundary {
+                        store.process_echo_capture_boundary_with_queue_receipt(&captured, self.delay_samples, Some(metadata), boundary)
+                    } else { store.process_echo_capture_with_queue_receipt(&captured, self.delay_samples, Some(metadata), tail) }
+                })?;
             self.record_queue_input(store, direction, producer_guard, dequeue, chunk.len(), metadata,
                 capture_identity.map(|id| (id.sequence, id.reset_generation, id.post_sample_offset)));
             producer_guard.complete_aec(frames as u64);
@@ -423,8 +427,9 @@ impl CapturePipeline {
             self.consume_capture_clock(frames, chunk.len());
             (cleaned, provenance)
         } else { (chunk, None) };
-        process_captured_chunk_with_provenance(app, store, direction, &mut self.processor,
-            stt_sender, chunk, queued_bytes, provenance)?;
+        super::capture_pump_timing::measure(&self.capture_timing, super::capture_pump_timing::Part::Dispatch, ||
+            process_captured_chunk_with_provenance(app, store, direction, &mut self.processor,
+                stt_sender, chunk, queued_bytes, provenance))?;
         producer_guard.complete_dispatch(frames as u64);
         if let Some(receipt) = boundary {
             self.time_segments.as_mut().ok_or("capture boundary completion has no production owner")?

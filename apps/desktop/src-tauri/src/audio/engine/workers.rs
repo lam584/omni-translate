@@ -3,6 +3,9 @@ mod capture_diagnostics;
 #[path = "workers/capture_route.rs"]
 mod capture_route;
 use capture_diagnostics::AecTapQueueClock;
+#[path = "workers/capture_pump_timing.rs"]
+mod capture_pump_timing;
+use capture_pump_timing::{Part as CapturePart, Observation as CaptureObservation};
 #[path = "workers/capture_queue_provenance.rs"]
 mod capture_queue_provenance;
 #[path = "workers/capture_packet_segments.rs"]
@@ -135,10 +138,16 @@ fn query_native_capture_and_wait(
     tail_owner: &mut capture_tail_owner::CaptureTailOwner, native_start: &NativeCaptureStartAck,
     pipeline: &mut capture_pipeline::CapturePipeline, app: &AppHandle, store: &AudioStateStore,
     direction: &str, spec: &RouteSpec, stt_sender: &Option<mpsc::Sender<Vec<u8>>>,
+    timing: &capture_pump_timing::Handle,
 ) -> Result<bool, String> {
-    let mut size = capture_client.get_next_packet_size().map_err(|error| {
-        tail_owner.query_failed(native_start, queue);
-        error.to_string()
+    let mut size = capture_pump_timing::measure_observed(timing, CapturePart::QueryPacket, || {
+        let result = capture_client.get_next_packet_size().map_err(|error| {
+            tail_owner.query_failed(native_start, queue);
+            error.to_string()
+        });
+        let observation = result.as_ref().ok().map(|size| CaptureObservation::Query { packet_size: *size })
+            .unwrap_or(CaptureObservation::None);
+        (result, observation)
     })?;
     let at = Instant::now();
     let mut queried_at = at;
@@ -152,12 +161,18 @@ fn query_native_capture_and_wait(
             // Never publish the pre-processing Empty as proof of completed work.
             if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
             let receipt = capture_tail_owner::tail_receipt(&tail.evidence);
-            pipeline.process_chunk(app, store, direction, spec, stt_sender, tail.pcm,
-                queue.len(), guard, Some(receipt), None, dequeue.as_ref().map(|r| (r, 0)))?;
-            size = capture_client.get_next_packet_size().map_err(|error| {
-        tail_owner.query_failed(native_start, queue);
-        error.to_string()
-    })?;
+            capture_pump_timing::measure(timing, CapturePart::TailProcess, ||
+                pipeline.process_chunk(app, store, direction, spec, stt_sender, tail.pcm,
+                    queue.len(), guard, Some(receipt), None, dequeue.as_ref().map(|r| (r, 0))))?;
+            size = capture_pump_timing::measure_observed(timing, CapturePart::QueryPacket, || {
+                let result = capture_client.get_next_packet_size().map_err(|error| {
+                    tail_owner.query_failed(native_start, queue);
+                    error.to_string()
+                });
+                let observation = result.as_ref().ok().map(|size| CaptureObservation::Query { packet_size: *size })
+                    .unwrap_or(CaptureObservation::None);
+                (result, observation)
+            })?;
             let after_work = Instant::now();
             queried_at = after_work;
             if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
@@ -166,7 +181,17 @@ fn query_native_capture_and_wait(
     }
     work.residual_bytes = queue.len();
     guard.publish_query(queried_at, crate::audio::state::NativeCaptureQuery::from_packet_size(size), work);
-    if capture_event_wait_required(size) { capture_event_wait_result(event_handle.wait_for_event(20))?; }
+    if capture_event_wait_required(size) {
+        capture_pump_timing::measure_observed(timing, CapturePart::EventWait, || {
+            let result = event_handle.wait_for_event(20);
+            let status = match &result {
+                Ok(()) => capture_pump_timing::WaitStatus::Signaled,
+                Err(wasapi::WasapiError::EventTimeout) => capture_pump_timing::WaitStatus::TimedOut,
+                Err(_) => capture_pump_timing::WaitStatus::Failed,
+            };
+            (capture_event_wait_result(result), CaptureObservation::Wait { status, timeout_ms: 20 })
+        })?;
+    }
     Ok(false)
 }
 
@@ -197,7 +222,12 @@ fn run_capture_loop(
     let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(
         100 * desired_format.get_blockalign() as usize * (1024 + 2 * buffer_frame_count as usize),
     );
+    let timing = if store.aec_diagnostic_tap_enabled() {
+        capture_pump_timing::new_handle(producer_guard.diagnostic_owner_identity().0,
+            unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }, effective_device_id.clone())
+    } else { None };
     let mut pipeline = capture_pipeline::CapturePipeline::new(spec.clone());
+    pipeline.capture_timing = timing.clone();
     let mut tail_owner = capture_tail_owner::CaptureTailOwner::new(CHUNK_FRAMES)?;
     let block_align = desired_format.get_blockalign() as usize;
     pipeline.bind_capture_queue(&effective_device_id, &producer_guard, sample_queue.len(),
@@ -258,18 +288,27 @@ fn run_capture_loop(
         let chunk_len = desired_format.get_blockalign() as usize * CHUNK_FRAMES;
         let queued_bytes_before_read = sample_queue.len();
         producer_guard.begin_work(queued_bytes_before_read);
-        let buffer_info = capture_client
-            .read_from_device_to_deque(&mut sample_queue)
-            .map_err_str()?;
+        let buffer_info = capture_pump_timing::measure_observed(&timing, CapturePart::ReadPacket, || {
+            let result = capture_client.read_from_device_to_deque(&mut sample_queue).map_err_str();
+            let observation = result.as_ref().ok().map(|info| CaptureObservation::Packet {
+                device_frame_index: info.index, qpc_100ns: info.timestamp,
+                frames: (sample_queue.len() - queued_bytes_before_read) / block_align,
+                data_discontinuity: info.flags.data_discontinuity,
+                timestamp_error: info.flags.timestamp_error, silent: info.flags.silent,
+            }).unwrap_or(CaptureObservation::None);
+            (result, observation)
+        })?;
         let packet_received_at = Instant::now();
         let captured_frames = (sample_queue.len() - queued_bytes_before_read)
             / desired_format.get_blockalign() as usize;
-        let completed_work = producer_guard.record_buffer_packet(
-            captured_frames, &buffer_info, sample_queue.len(),
-            || calculate_chunk_db(&sample_queue.make_contiguous()[queued_bytes_before_read..]),
-        );
-        let boundary = pipeline.admit_native_packet(store, direction, &spec, &buffer_info,
-            captured_frames, queued_bytes_before_read, &sample_queue, block_align, &producer_guard)?;
+        let completed_work = capture_pump_timing::measure(&timing, CapturePart::WorkAccounting,
+            || Ok::<_, String>(producer_guard.record_buffer_packet(
+                captured_frames, &buffer_info, sample_queue.len(),
+                || calculate_chunk_db(&sample_queue.make_contiguous()[queued_bytes_before_read..]),
+            )))?;
+        let boundary = capture_pump_timing::measure(&timing, CapturePart::PacketAdmission, ||
+            pipeline.admit_native_packet(store, direction, &spec, &buffer_info,
+                captured_frames, queued_bytes_before_read, &sample_queue, block_align, &producer_guard))?;
         if captured_frames > 0 { tail_owner.mutated()?; }
         if let Some(permit) = boundary {
             let proof = permit.proof();
@@ -283,19 +322,22 @@ fn run_capture_loop(
             // The old real prefix finishes BEFORE new-packet reset/preparation.
             // A stop/error cannot be converted into successful segment completion.
             if accept_native_capture_stop(&stop_rx, &producer_guard)? { return Ok(()); }
-            pipeline.process_chunk(&app, store, direction, &spec, &stt_sender, prefix,
-                sample_queue.len(), &producer_guard, None, Some(receipt),
-                dequeue.as_ref().map(|r| (r, 0)))?;
+            capture_pump_timing::measure(&timing, CapturePart::BoundaryProcess, ||
+                pipeline.process_chunk(&app, store, direction, &spec, &stt_sender, prefix,
+                    sample_queue.len(), &producer_guard, None, Some(receipt),
+                    dequeue.as_ref().map(|r| (r, 0))))?;
         }
         let queued_prefix_at_prepare = sample_queue.len().checked_sub(
             captured_frames.checked_mul(block_align).ok_or("capture packet byte count overflow")?)
             .ok_or("capture packet disappeared before preparation")?;
-        pipeline.prepare_packet(&app, store, direction, &spec, &audio_client, &buffer_info,
-            captured_frames, queued_prefix_at_prepare, sample_queue.len(), block_align,
-            buffer_frame_count, &producer_guard)?;
+        capture_pump_timing::measure(&timing, CapturePart::PreparePacket, ||
+            pipeline.prepare_packet(&app, store, direction, &spec, &audio_client, &buffer_info,
+                captured_frames, queued_prefix_at_prepare, sample_queue.len(), block_align,
+                buffer_frame_count, &producer_guard))?;
         pipeline.normal_dequeue_ready()?;
         let queued_before_dequeue = sample_queue.len();
-        let chunks = drain_sample_chunks(&mut sample_queue, chunk_len);
+        let chunks = capture_pump_timing::measure(&timing, CapturePart::Dequeue,
+            || Ok::<_, String>(drain_sample_chunks(&mut sample_queue, chunk_len)))?;
         // drain_sample_chunks eagerly removes every full chunk before processing.
         // Witness that actual single FIFO mutation even if a later stop/error
         // prevents some removed chunks from reaching AEC/dispatch.
@@ -306,9 +348,10 @@ fn run_capture_loop(
         for (chunk_index, chunk) in chunks.into_iter().enumerate() {
             tail_owner.mutated()?;
             if accept_native_capture_stop(&stop_rx, &producer_guard)? { return Ok(()); }
-            pipeline.process_chunk(&app, store, direction, &spec, &stt_sender, chunk,
-                sample_queue.len(), &producer_guard, None, None, dequeue.as_ref().and_then(|r|
-                    chunk_index.checked_mul(chunk_len).map(|offset| (r, offset))))?;
+            capture_pump_timing::measure(&timing, CapturePart::FullChunkProcess, ||
+                pipeline.process_chunk(&app, store, direction, &spec, &stt_sender, chunk,
+                    sample_queue.len(), &producer_guard, None, None, dequeue.as_ref().and_then(|r|
+                        chunk_index.checked_mul(chunk_len).map(|offset| (r, offset)))))?;
         }
         if captured_frames > 0 {
             // The read's real acquisition time, bound to its remaining suffix after full chunks.
@@ -318,15 +361,29 @@ fn run_capture_loop(
         if query_native_capture_and_wait(
             &capture_client, &event_handle, &stop_rx, &producer_guard, completed_work,
             &mut sample_queue, &mut tail_owner, &native_capture_start, &mut pipeline,
-            &app, store, direction, &spec, &stt_sender,
+            &app, store, direction, &spec, &stt_sender, &timing,
         )? { break; }
       }
       Ok(())
     })();
 
+    let native_stop_succeeded = std::cell::Cell::new(false);
     producer_guard.finish_capture(capture_result,
-        || audio_client.stop_stream().map_err_str(),
-        || { if spec.echo_cancel_enabled() { pipeline.diagnostics.log_final(&app, store, direction); } },
+        || {
+            let result = audio_client.stop_stream().map_err_str();
+            native_stop_succeeded.set(result.is_ok());
+            result
+        },
+        || {
+            // Serialization/persistence is deferred until native Stop returned.
+            // Failure is retained explicitly, never labelled as a successful stop.
+            if let Some(mut receipt) = capture_pump_timing::receipt(&timing) {
+                receipt["nativeStopSucceeded"] = serde_json::json!(native_stop_succeeded.get());
+                if !native_stop_succeeded.get() { receipt["diagnosticIncomplete"] = serde_json::json!(true); }
+                store.persist_aec_capture_pump_diagnostic(receipt);
+            }
+            if spec.echo_cancel_enabled() { pipeline.diagnostics.log_final(&app, store, direction); }
+        },
     )
 }
 

@@ -138,3 +138,25 @@ fn unavailable_queue_mapping_is_preserved_as_unavailable() {
     let actual:Value=serde_json::from_str(std::fs::read_to_string(dir.0.join(RECORDS)).unwrap().trim()).unwrap();
     meta["sequence"]=json!(0);assert_eq!(actual,meta);
 }
+
+#[test]
+fn capture_pump_seal_rejects_authority_identity_path_and_durability_forgery() {
+    let valid = serde_json::json!({"schemaVersion":1,"kind":"native-capture-pump-timing-seal",
+        "diagnosticOnly":true,"qualityAcceptance":false,"formalCaptureClockAcceptance":false,
+        "releaseEligible":false,"captureOwnerId":7,"threadId":123,"processId":456,
+        "endpointId":"endpoint","file":"aec-capture-pump-owner-7.json","bytes":100,
+        "sha256":"a".repeat(64),"flushed":true,"synced":true,
+        "captureStoppedBeforePersistence":true,"diagnosticIncomplete":false});
+    assert!(validate_capture_pump_seal(&valid).is_ok());
+    for (key,value) in [("schemaVersion",serde_json::json!(2)),("qualityAcceptance",serde_json::json!(true)),
+        ("captureOwnerId",serde_json::json!(0)),("threadId",serde_json::json!(0)),
+        ("processId",serde_json::json!(0)),("endpointId",serde_json::json!("")),
+        ("file",serde_json::json!("../aec-capture-pump-owner-7.json")),
+        ("bytes",serde_json::json!(67108865)),("sha256",serde_json::json!("g".repeat(64))),
+        ("flushed",serde_json::json!(false)),("synced",serde_json::json!(false)),
+        ("captureStoppedBeforePersistence",serde_json::Value::Null),
+        ("diagnosticIncomplete",serde_json::Value::Null)] {
+        let mut forged = valid.clone(); forged[key] = value;
+        assert!(validate_capture_pump_seal(&forged).is_err(),"{key}");
+    }
+}

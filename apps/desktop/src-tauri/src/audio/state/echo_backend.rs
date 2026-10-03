@@ -116,6 +116,10 @@ impl AudioStateStore {
         self.aec_diagnostic_tap.record_lifecycle(metadata);
     }
 
+    pub(crate) fn persist_aec_capture_pump_diagnostic(&self, receipt: serde_json::Value) {
+        self.aec_diagnostic_tap.persist_capture_pump_diagnostic(receipt);
+    }
+
     pub(crate) fn aec_diagnostic_tap_enabled(&self) -> bool {
         self.aec_diagnostic_tap.enabled()
     }

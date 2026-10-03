@@ -70,6 +70,7 @@ impl ClosedLoopTap {
                 let mut meta=event.metadata;
                 let result=(|| -> io::Result<()> {
                     if meta["kind"] == "native-capture-packet" { validate_native_packet_witness(&meta)?; }
+                    if meta["kind"] == "native-capture-pump-timing-seal" { validate_capture_pump_seal(&meta)?; }
                     meta["schemaVersion"]=json!(1);
                     meta["sequence"]=json!(worker.written_events.load(Ordering::Acquire));
                     if let Some(samples)=event.physical {
@@ -90,7 +91,7 @@ impl ClosedLoopTap {
                         if matches!(meta["kind"].as_str(), Some("native-capture-queue-dequeue" | "native-capture-queue-clock"
                             | "native-capture-queue-reset" | "native-capture-queue-input")) {
                             super::native_queue_validation::validate(&meta)?;
-                        } else if !matches!(meta["kind"].as_str(),Some("render-lifecycle"|"stage-lifecycle"|"provider-lifecycle"|"native-capture-packet")) {
+                        } else if !matches!(meta["kind"].as_str(),Some("render-lifecycle"|"stage-lifecycle"|"provider-lifecycle"|"native-capture-packet"|"native-capture-pump-timing-seal")) {
                             return Err(io::Error::new(io::ErrorKind::InvalidData,"unknown closed-loop lifecycle event"));
                         }
                         lifecycle_events+=1;
@@ -147,6 +148,25 @@ impl Drop for ClosedLoopTap {
         if live.shared.admission.load(Ordering::Acquire)&CLOSED==0{live.shared.fail("closed-loop dropped without finish".into());}
         if let Ok(mut writer)=live.writer.try_lock(){if writer.as_ref().is_some_and(JoinHandle::is_finished){if let Some(writer)=writer.take(){let _=writer.join();}}}
     }}
+}
+
+fn validate_capture_pump_seal(meta: &Value) -> io::Result<()> {
+    let positive = |key: &str| meta[key].as_u64().is_some_and(|n| n > 0 && n <= 9_007_199_254_740_991);
+    let owner = meta["captureOwnerId"].as_u64().unwrap_or(0);
+    let expected = format!("aec-capture-pump-owner-{owner}.json");
+    let valid = meta["schemaVersion"] == 1 && meta["kind"] == "native-capture-pump-timing-seal"
+        && meta["diagnosticOnly"] == true && meta["qualityAcceptance"] == false
+        && meta["formalCaptureClockAcceptance"] == false && meta["releaseEligible"] == false
+        && ["captureOwnerId", "threadId", "processId"].into_iter().all(positive)
+        && meta["endpointId"].as_str().is_some_and(|s| !s.is_empty())
+        && meta["file"].as_str() == Some(expected.as_str())
+        && meta["bytes"].as_u64().is_some_and(|n| n > 0 && n <= 64 * 1024 * 1024)
+        && meta["sha256"].as_str().is_some_and(|s| s.len() == 64
+            && s.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+        && meta["flushed"] == true && meta["synced"] == true
+        && meta["captureStoppedBeforePersistence"].is_boolean() && meta["diagnosticIncomplete"].is_boolean();
+    if valid { Ok(()) } else { Err(io::Error::new(io::ErrorKind::InvalidData,
+        "invalid capture pump diagnostic seal")) }
 }
 
 #[cfg(test)]

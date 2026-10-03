@@ -678,3 +678,11 @@ test('v4 actual failed source-clock/raw-discontinuity reconstruction stays faile
  assert.equal(finalizeSpeechOutcome({passed:true},tap,quality).overallPassed,false);
  assert.deepEqual(quality.stages,[]);assert.equal(quality.status,'indeterminate');
 });
+
+
+test('real capture pump timing and its counterexamples are frozen, not render timing substitutes', () => {
+ for (const file of ['apps/desktop/src-tauri/src/audio/engine/workers/capture_pump_timing.rs',
+  'apps/desktop/src-tauri/src/audio/engine/workers/capture_pump_timing_tests.rs']) {
+  assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file));
+ }
+});

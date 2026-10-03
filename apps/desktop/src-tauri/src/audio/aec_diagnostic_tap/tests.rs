@@ -200,7 +200,7 @@
         let shared = Arc::new(Shared::default());
         let (sender, receiver) = mpsc::sync_channel(1);
         let tap = AecDiagnosticTap {
-            live: Some(LiveTap { sender, shared: shared.clone(), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }), startup_error: None, lineage_enabled: true,
+            live: Some(LiveTap { sender, shared: shared.clone(), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), diagnostic_directory: dir.0.clone(), post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }), startup_error: None, lineage_enabled: true,
         };
         tap.record_reset("accepted", None, 0);
         tap.record_reset("full", None, 0);
@@ -215,7 +215,7 @@
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(receiver);
         let tap = AecDiagnosticTap {
-            live: Some(LiveTap { sender, shared: Arc::new(Shared::default()), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }), startup_error: None, lineage_enabled: true,
+            live: Some(LiveTap { sender, shared: Arc::new(Shared::default()), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), diagnostic_directory: dir.0.clone(), post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }), startup_error: None, lineage_enabled: true,
         };
         tap.record_reset("disconnected", None, 0);
         let shared = &tap.live.as_ref().unwrap().shared;
@@ -448,3 +448,80 @@ fn capture_admission_overflow_fails_without_guessing_a_receipt() {
     let error = tap.finish(Duration::from_secs(2)).unwrap_err();
     assert!(error.contains("sample count overflow"));
 }
+
+    fn capture_pump_receipt() -> Value {
+        json!({"schemaVersion":1,"artifactKind":"capture-pump-timing-diagnostic",
+            "diagnosticOnly":true,"qualityAcceptance":false,"formalCaptureClockAcceptance":false,
+            "releaseEligible":false,"captureOwnerId":7,"threadId":123,"endpointId":"endpoint",
+            "diagnosticIncomplete":false,"nativeStopSucceeded":true,"retainedSpans":[]})
+    }
+
+    #[test]
+    fn capture_pump_file_is_exclusive_durable_and_bound_to_closed_loop_seal() {
+        let dir = Directory::new();
+        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
+        tap.persist_capture_pump_diagnostic(capture_pump_receipt());
+        let bytes = std::fs::read(dir.0.join("aec-capture-pump-owner-7.json")).unwrap();
+        let saved: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved["processId"],std::process::id());
+        assert_eq!(saved["qualityAcceptance"],false);
+        let terminal = tap.finish(Duration::from_secs(2)).unwrap();
+        assert_eq!(terminal["complete"],true);
+        let text = std::fs::read_to_string(dir.0.join("aec-closed-loop-metadata.jsonl")).unwrap();
+        let rows: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let seal = rows.iter().find(|row| row["kind"] == "native-capture-pump-timing-seal").unwrap();
+        assert_eq!(seal["sha256"],format!("{:x}",Sha256::digest(&bytes)));
+        assert_eq!(seal["bytes"],bytes.len());
+        assert_eq!(seal["captureOwnerId"],7);
+        assert_eq!(seal["threadId"],123);
+        assert_eq!(seal["captureStoppedBeforePersistence"],true);
+        assert_eq!(seal["qualityAcceptance"],false);
+        assert_eq!(seal["flushed"],true); assert_eq!(seal["synced"],true);
+    }
+
+    #[test]
+    fn capture_pump_duplicate_owner_never_replaces_original_evidence() {
+        let dir = Directory::new();
+        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
+        tap.persist_capture_pump_diagnostic(capture_pump_receipt());
+        let path = dir.0.join("aec-capture-pump-owner-7.json");
+        let original = std::fs::read(&path).unwrap();
+        let mut changed = capture_pump_receipt(); changed["threadId"] = json!(456);
+        tap.persist_capture_pump_diagnostic(changed);
+        assert_eq!(std::fs::read(path).unwrap(),original);
+        assert!(tap.finish(Duration::from_secs(2)).unwrap_err().contains("capture pump diagnostic persistence"));
+    }
+
+    #[test]
+    fn capture_pump_missing_identity_or_authority_boundary_is_not_sealed() {
+        for key in ["qualityAcceptance","captureOwnerId","threadId","endpointId","nativeStopSucceeded","diagnosticIncomplete","schemaVersion","artifactKind"] {
+            let dir = Directory::new();
+            let tap = AecDiagnosticTap::start(&dir.0).unwrap();
+            let mut value = capture_pump_receipt(); value.as_object_mut().unwrap().remove(key);
+            tap.persist_capture_pump_diagnostic(value);
+            assert!(!dir.0.join("aec-capture-pump-owner-7.json").exists());
+            assert!(tap.finish(Duration::from_secs(2)).unwrap_err().contains("capture pump diagnostic persistence"));
+        }
+    }
+
+    #[test]
+    fn capture_pump_failed_native_stop_is_retained_not_changed_to_success() {
+        let dir = Directory::new();
+        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
+        let mut value = capture_pump_receipt(); value["nativeStopSucceeded"] = json!(false);
+        value["diagnosticIncomplete"] = json!(true);
+        tap.persist_capture_pump_diagnostic(value);
+        tap.finish(Duration::from_secs(2)).unwrap();
+        let text = std::fs::read_to_string(dir.0.join("aec-closed-loop-metadata.jsonl")).unwrap();
+        let seal: Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(seal["captureStoppedBeforePersistence"],false);
+        assert_eq!(seal["diagnosticIncomplete"],true);
+        assert_eq!(seal["qualityAcceptance"],false);
+    }
+
+    #[test]
+    fn capture_pump_disabled_tap_performs_no_persistence() {
+        let tap = AecDiagnosticTap::from_optional_directory(None);
+        tap.persist_capture_pump_diagnostic(capture_pump_receipt());
+        assert!(tap.live.is_none());
+    }

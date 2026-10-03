@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
 import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
 import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS, AEC_CLOSED_LOOP_METADATA_MAX_BYTES,
-  AEC_CAPTURE_QUEUE_WITNESS_POLICY, validateCaptureQueueLedger } from './watch-mode-aec-closed-loop-evidence.mjs';
+  AEC_CAPTURE_QUEUE_WITNESS_POLICY, validateCaptureQueueLedger, verifyCapturePumpTimingSeals } from './watch-mode-aec-closed-loop-evidence.mjs';
 
 export const LOCAL_AEC_SPEECH_SCOPE = 'local-aec-speech-simulation';
 const RATE = 48_000;
@@ -202,6 +202,7 @@ export function inspectLocalCaptureQueueEvidence(root, nativeReceipt) {
     if(lane === 'metadata') sidecarBytes = bytes;
   }
   const sidecarRows = records(sidecarBytes);
+  verifyCapturePumpTimingSeals(root, sidecarRows);
   check(sidecarRows.length === seal.writtenEvents && seal.writtenEvents === seal.acceptedEvents
     && seal.writtenEvents === seal.attemptedEvents, 'queue sidecar event accounting mismatch');
   const counts = { physicalEvents:0,providerEvents:0,lifecycleEvents:0,physicalSamples:0,providerSamples:0 };

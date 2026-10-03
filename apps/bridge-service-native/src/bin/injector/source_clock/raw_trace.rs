@@ -5,6 +5,38 @@ use windows::core::Interface;
 use windows::Win32::Media::Audio::IAudioClock2;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
+use super::render::{DiagnosticEndpoint, independent_observation::{capture_time_boundary, TimeBoundary}};
+
+fn boundary_value(boundary: TimeBoundary) -> serde_json::Value {
+    serde_json::json!({"origin":"QueryUnbiasedInterruptTime-NON-Precise-around-the-same-QueryPerformanceCounter",
+        "scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
+        "rawQpcTicks":boundary.raw_qpc_ticks,"qpcFrequency":boundary.qpc_frequency,
+        "qpcRawBool":boundary.qpc_bool,
+        "qpcRawError":boundary.raw_qpc_ticks.is_none().then_some("QueryPerformanceCounter unavailable or invalid signed counter"),
+        "interruptBeforeRawBool":boundary.interrupt_before_bool,
+        "interruptBefore100ns":boundary.interrupt_before_100ns,
+        "interruptBeforeError":(boundary.interrupt_before_bool == 0).then_some("QueryUnbiasedInterruptTime returned FALSE"),
+        "interruptAfterRawBool":boundary.interrupt_after_bool,
+        "interruptAfter100ns":boundary.interrupt_after_100ns,
+        "interruptAfterError":(boundary.interrupt_after_bool == 0).then_some("QueryUnbiasedInterruptTime returned FALSE"),
+        "interruptMonotonic":boundary.interrupt_before_100ns.zip(boundary.interrupt_after_100ns).map(|(a,b)| a <= b)})
+}
+
+fn time_bracket(origin: &str, boundaries: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({"origin":origin,"scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
+        "before":boundaries.first(),"after":boundaries.get(1)})
+}
+
+// This *additional* file is optional. Failure is explicit, but cannot change the
+// existing raw journal/strict result. Existing mandatory writer errors stay errors.
+fn persist_optional_snapshot(
+    mut value: serde_json::Value,
+    write: impl FnOnce(&serde_json::Value) -> Result<(), String>,
+) -> serde_json::Value {
+    if let Err(error) = write(&value) { value["persistenceError"] = error.into(); }
+    value
+}
 
 // Capture actual bounds even if either QPC call fails. No fallback timestamp.
 fn capture_start(
@@ -98,6 +130,15 @@ pub(super) struct RawClockTrace {
     start_observation: Option<serde_json::Value>,
     device_clock: Option<Result<IAudioClock2, (i32, String)>>,
     device_clock_observation: Option<serde_json::Value>,
+    independent_time_observation: Option<serde_json::Value>,
+    format_endpoint: Option<DiagnosticEndpoint>,
+    final_observation: Option<serde_json::Value>,
+    format_before_start: Option<serde_json::Value>,
+    start_time_observation: Option<serde_json::Value>,
+    independent_path: PathBuf,
+    independent_writer: Option<std::io::BufWriter<std::fs::File>>,
+    independent_error: Option<String>,
+    independent_rows: u64,
 }
 impl RawClockTrace {
     pub(super) fn new(pcm: &Path, endpoint: &str, rate: u32) -> Result<Self, String> {
@@ -111,18 +152,37 @@ impl RawClockTrace {
         let path = pcm.with_file_name("aec-source-playback-clock-raw-diagnostic.jsonl");
         let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
             .map_err(|e| format!("create raw clock diagnostic: {e}"))?;
+        let independent_path = pcm.with_file_name("aec-source-playback-clock-independent-time.jsonl");
+        let (independent_writer, independent_error) = match std::fs::OpenOptions::new()
+            .write(true).create_new(true).open(&independent_path) {
+            Ok(file) => (Some(std::io::BufWriter::new(file)), None),
+            Err(error) => (None, Some(format!("create optional independent time journal: {error}"))),
+        };
         Ok(Self { writer: std::io::BufWriter::new(file), path, sequence: 0,
             endpoint: endpoint.into(), rate, qpc_frequency, last_clock: None, last_padding: None, last_submitted: 0,
-            start_observation: None, device_clock: None, device_clock_observation: None })
+            start_observation: None, device_clock: None, device_clock_observation: None,
+            independent_time_observation: None, format_endpoint: None, final_observation: None,
+            format_before_start: None, start_time_observation: None, independent_path,
+            independent_writer, independent_error, independent_rows: 0 })
     }
     pub(super) fn start_render(&mut self, render: &MediaRender) -> Result<std::time::Instant, String> {
-        let (mut value, result) = capture_start(|| self.independent_qpc(), || render.start_with_status());
+        self.format_endpoint = render.diagnostic_endpoint();
+        let format_before = self.observe_endpoint_format("before-Start");
+        let mut boundaries = Vec::with_capacity(2);
+        let (mut value, result) = capture_start(|| {
+            let (qpc, diagnostic) = self.independent_boundary(); boundaries.push(diagnostic); qpc
+        }, || render.start_with_status());
         // Anchor only the existing safety budget BEFORE diagnostic file I/O.
         // This Instant never supplies a source playback origin.
         let started_at = std::time::Instant::now();
         value["processId"] = std::process::id().into();
         value["endpointId"] = self.endpoint.clone().into();
         value["independentQpcFrequency"] = self.qpc_frequency.into();
+        let start_time = time_bracket("IAudioClient::Start-call-bracket", boundaries);
+        self.start_time_observation = Some(start_time.clone());
+        self.format_before_start = Some(format_before.clone());
+        value["diagnosticIndependentTime"] = start_time;
+        value["diagnosticEndpointFormat"] = format_before;
         let persisted = self.persist_start(value);
         match (result, persisted) {
             (Err(native), Err(diagnostic)) => Err(format!("{native}; {diagnostic}")),
@@ -132,7 +192,14 @@ impl RawClockTrace {
     }
     fn persist_start(&mut self, value: serde_json::Value) -> Result<(), String> {
         // Separate artifact survives a failed Start with no subsequent clock row.
-        self.start_observation = Some(value.clone());
+        let mut legacy = value.clone();
+        // Keep repeated legacy raw rows byte-compatible and under the existing
+        // 32MiB collection bound. Full additions live in Start/independent files.
+        if let Some(fields) = legacy.as_object_mut() {
+            fields.remove("diagnosticIndependentTime");
+            fields.remove("diagnosticEndpointFormat");
+        }
+        self.start_observation = Some(legacy);
         let path = self.path.with_file_name("aec-source-playback-clock-start-diagnostic.json");
         let persist = || -> Result<(), String> {
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
@@ -146,13 +213,34 @@ impl RawClockTrace {
             error
         })
     }
-    fn independent_qpc(&self) -> Result<u64, String> {
-        let mut counter = 0_i64;
-        if unsafe { QueryPerformanceCounter(&mut counter) } == 0 || counter < 0 {
-            return Err("diagnostic independent QPC unavailable".into());
+    fn independent_boundary(&self) -> (Result<u64, String>, serde_json::Value) {
+        let (qpc, boundary) = capture_time_boundary(self.qpc_frequency, || {
+            let mut counter = 0_i64;
+            let status = unsafe { QueryPerformanceCounter(&mut counter) };
+            (status, counter)
+        }, || {
+            let mut interrupt = 0_u64;
+            // Deliberately NOT QueryUnbiasedInterruptTimePrecise (QPC derived).
+            let status = unsafe { QueryUnbiasedInterruptTime(&mut interrupt) };
+            (status, interrupt)
+        });
+        (qpc, boundary_value(boundary))
+    }
+    fn observe_endpoint_format(&self, phase: &str) -> serde_json::Value {
+        if self.format_endpoint.is_none() {
+            return serde_json::json!({"scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
+                "origin":"same-render-client-IMMDevice-PKEY_AudioEngine_DeviceFormat","phase":phase,
+                "endpointId":self.endpoint,"deviceRateHz":null,"nativeApiError":"diagnostic endpoint unavailable",
+                "diagnosticIndependentTime":null});
         }
-        let ticks = counter as u128 * 10_000_000 / self.qpc_frequency as u128;
-        ticks.try_into().map_err(|_| "diagnostic independent QPC overflow".into())
+        let (_, before) = self.independent_boundary();
+        let mut value = self.format_endpoint.as_ref().map(|endpoint| endpoint.query_device_format(phase))
+            .unwrap_or_else(|| serde_json::json!({"scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
+                "origin":"same-render-client-IMMDevice-PKEY_AudioEngine_DeviceFormat", "phase":phase,
+                "endpointId":self.endpoint,"deviceRateHz":null,"nativeApiError":"diagnostic endpoint unavailable"}));
+        let (_, after) = self.independent_boundary();
+        value["diagnosticIndependentTime"] = time_bracket("PKEY_AudioEngine_DeviceFormat-query-bracket", vec![before, after]);
+        value
     }
     pub(super) fn observe(&mut self, render: &MediaRender, submitted: usize, strict: &mut SourcePlaybackClock) -> Result<(), String> {
         // Always sample the same native client, even after strict validation latches failure.
@@ -162,15 +250,23 @@ impl RawClockTrace {
                 (0, 0), None, strict, Some("source clock missing; GetPosition not called".into()));
         };
         let frequency = clock.get_frequency().map_err(error_text);
-        let before = self.independent_qpc();
+        let (before, time_before) = self.independent_boundary();
         let (hresult, reading) = clock.get_position_with_status();
-        let after = self.independent_qpc();
+        let (after, time_after) = self.independent_boundary();
+        self.independent_time_observation = Some(time_bracket("IAudioClock::GetPosition-call-bracket", vec![time_before, time_after]));
         let raw = reading.and_then(|(position, qpc)| frequency.map(|frequency| (position, frequency, qpc)));
         // QueryInterface once; optional failures never enter strict_raw or api_error.
         let optional = self.device_clock.get_or_insert_with(|| clock.diagnostic_clock2()
             .map_err(|error| (error.code().0, error_text(error)))).clone();
         self.device_clock_observation = Some(match optional {
-            Ok(clock) => capture_device_clock(|| self.independent_qpc(), || read_device_position(&clock)),
+            Ok(clock) => {
+                let mut boundaries = Vec::with_capacity(2);
+                let mut value = capture_device_clock(|| {
+                    let (qpc, diagnostic) = self.independent_boundary(); boundaries.push(diagnostic); qpc
+                }, || read_device_position(&clock));
+                value["diagnosticIndependentTime"] = time_bracket("IAudioClock2::GetDevicePosition-call-bracket", boundaries);
+                value
+            },
             Err((status, error)) => unavailable_device_clock(status, error),
         });
         let observation_error = before.as_ref().err().or(after.as_ref().err()).cloned();
@@ -205,7 +301,11 @@ impl RawClockTrace {
             "rawClockHresult":hresult,"rawClockAccuracyAvailable":hresult.is_some(),
             "strictValidationFailure":strict_failure});
         value["diagnosticStart"] = self.start_observation.clone().into();
-        value["diagnosticDeviceClock"] = self.device_clock_observation.take().into();
+        let mut device = self.device_clock_observation.take();
+        let device_time = device.as_mut().and_then(|v| v.as_object_mut())
+            .and_then(|fields| fields.remove("diagnosticIndependentTime"));
+        value["diagnosticDeviceClock"] = device.into();
+        let primary_time = self.independent_time_observation.take();
         // Legacy brackets formerly used zero on QPC loss; unknown is explicit now.
         if observation_error.is_some() {
             value["callStartQpc100ns"] = serde_json::Value::Null;
@@ -213,6 +313,7 @@ impl RawClockTrace {
         }
         serde_json::to_writer(&mut self.writer, &value).map_err(|e|format!("write raw clock diagnostic: {e}"))?;
         self.writer.write_all(b"\n").map_err(|e|format!("write raw clock diagnostic newline: {e}"))?;
+        self.record_independent_time(primary_time, device_time, &value);
         self.sequence += 1;
         // Completion cannot use failed/unreliable calls or observations not yet written.
         self.last_clock = if hresult == Some(0) && observation_error.is_none() {
@@ -221,6 +322,38 @@ impl RawClockTrace {
         self.last_padding = padding.ok();
         self.last_submitted = submitted;
         Ok(())
+    }
+    fn record_independent_time(&mut self, primary: Option<serde_json::Value>,
+        device: Option<serde_json::Value>, legacy: &serde_json::Value) {
+        if self.independent_error.is_some() { return; }
+        let value = serde_json::json!({"schemaVersion":1,
+            "artifactKind":"aec-source-independent-time-observation",
+            "scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
+            "origin":"same-legacy-raw-clock-sequence-independent-brackets",
+            "sequence":self.sequence,"endpointId":self.endpoint,"processId":std::process::id(),
+            "clock1":primary,"clock2":device,"clock1Position":legacy["clockPosition"],
+            "clock1Qpc100ns":legacy["qpc100ns"],"clock1Hresult":legacy["rawClockHresult"],
+            "clock2Position":legacy["diagnosticDeviceClock"]["clockPosition"],
+            "clock2Qpc100ns":legacy["diagnosticDeviceClock"]["qpc100ns"],
+            "clock2Hresult":legacy["diagnosticDeviceClock"]["rawClockHresult"],
+            "strictValidationFailure":legacy["strictValidationFailure"]});
+        let result = (|| {
+            let writer = self.independent_writer.as_mut().ok_or("optional independent time writer missing")?;
+            serde_json::to_writer(&mut *writer, &value).map_err(|e| e.to_string())?;
+            writer.write_all(b"\n").map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(()) => self.independent_rows += 1,
+            Err(error) => self.independent_error = Some(format!("write optional independent time journal: {error}")),
+        }
+    }
+    fn flush_independent_time(&mut self) {
+        let mut errors: Vec<String> = self.independent_error.take().into_iter().collect();
+        if let Some(writer) = self.independent_writer.as_mut() {
+            if let Err(error) = writer.flush() { errors.push(format!("flush optional independent time journal: {error}")); }
+            if let Err(error) = writer.get_ref().sync_all() { errors.push(format!("sync optional independent time journal: {error}")); }
+        }
+        self.independent_error = (!errors.is_empty()).then(|| errors.join("; "));
     }
     fn source_crossed(&self, frames: usize, rate: u32) -> bool {
         self.last_clock.is_some_and(|(position, frequency)| frequency > 0
@@ -242,6 +375,34 @@ impl RawClockTrace {
         }
     }
     pub(super) fn finish(&mut self) -> Result<(), String> {
+        // Same retained endpoint/thread after playback (including failed Start/API),
+        // before owners drop. No Stop, restart, gate alteration or deadline reset.
+        if self.final_observation.is_none() {
+            self.flush_independent_time();
+            let value = serde_json::json!({"schemaVersion":1,
+                "artifactKind":"aec-source-playback-clock-independent-diagnostic",
+                "scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
+                "origin":"optional-independent-time-and-endpoint-format-observation",
+                "endpointId":self.endpoint,"processId":std::process::id(),
+                "deviceFormatBeforeStart":self.format_before_start,
+                "startIndependentTime":self.start_time_observation,
+                "independentTimeTracePath":self.independent_path,
+                "independentTimeRowsWritten":self.independent_rows,
+                "independentTimePersistenceError":self.independent_error,
+                "deviceFormatAfterPlayback":self.observe_endpoint_format("finish-after-playback-attempt-before-render-drop"),
+                "rawClockRows":self.sequence,"persistenceError":null});
+            let path = self.path.with_file_name("aec-source-playback-clock-independent-diagnostic.json");
+            let observed = persist_optional_snapshot(value, |value| {
+                let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+                    .map_err(|e| format!("create optional independent diagnostic: {e}"))?;
+                serde_json::to_writer(&mut file, value).map_err(|e| format!("write optional independent diagnostic: {e}"))?;
+                file.write_all(b"\n").map_err(|e| format!("newline optional independent diagnostic: {e}"))?;
+                file.sync_all().map_err(|e| format!("sync optional independent diagnostic: {e}"))
+            });
+            if let Some(error) = observed["persistenceError"].as_str() { eprintln!("optional-independent-diagnostic-persistence-error: {error}"); }
+            if let Some(error) = self.independent_error.as_deref() { eprintln!("optional-independent-time-persistence-error: {error}"); }
+            self.final_observation = Some(observed);
+        }
         let mut errors = Vec::new();
         if let Some(error) = self.start_observation.as_ref()
             .and_then(|value| value["persistenceError"].as_str()) { errors.push(error.to_string()); }
@@ -551,6 +712,108 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn independent_optional_success_failure_and_malformed_fields_preserve_canonical_bytes() {
+        for fails in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut clocks=Vec::new();let mut traces=Vec::new();
+            for name in ["baseline", "augmented"] {
+                let root=dir.path().join(name);std::fs::create_dir(&root).unwrap();let pcm=root.join("source.pcm");
+                clocks.push(SourcePlaybackClock::new(Some(&pcm), "endpoint", 48000).unwrap());
+                traces.push(RawClockTrace::open(&pcm, "endpoint", 48000, 10000000).unwrap());
+            }
+            let readings=if fails {[(40,384000,3865048583818),(3880,384000,3865048661680),(7720,384000,3865048760934)]}
+                else {[(40,384000,10001041),(3880,384000,10101041),(7720,384000,10201041)]};
+            for (i, raw) in readings.into_iter().enumerate() {
+                let status=if i == 1 {0}else{1};
+                let (_, boundary)=capture_time_boundary(10000000,||(1,raw.2 as i64),||(status,u64::MAX));
+                traces[1].independent_time_observation=Some(time_bracket("fake-test-observation",
+                    vec![boundary_value(boundary.clone()),boundary_value(boundary)]));
+                traces[1].start_observation=Some(serde_json::json!({"diagnosticEndpointFormat":{
+                    "deviceRateHz":null,"getValueHresult":-1,"rawBlobHex":null,"nativeApiError":"property unavailable"}}));
+                for k in 0..2 {traces[k].observe_reading(Ok(raw),960,Ok(144),(raw.2-1,raw.2+1),Some(0),&mut clocks[k],None).unwrap();}
+                assert_eq!(clocks[0].origin,clocks[1].origin);
+                assert_eq!(clocks[0].validation_failure(),clocks[1].validation_failure());
+                assert_eq!(traces[0].last_clock,traces[1].last_clock);
+            }
+            assert_eq!(clocks[0].finish(),clocks[1].finish());
+            for trace in &mut traces {
+                // Pre-existing file must produce explicit optional create-new failure,
+                // never turn a native/strict result red or green or overwrite evidence.
+                let sidecar=trace.path.with_file_name("aec-source-playback-clock-independent-diagnostic.json");
+                std::fs::write(&sidecar,b"existing custody").unwrap();
+                assert!(trace.finish().is_ok());
+                assert!(trace.final_observation.as_ref().unwrap()["persistenceError"].is_string());
+                assert_eq!(std::fs::read(&sidecar).unwrap(),b"existing custody");
+            }
+            for name in ["aec-source-playback-clock.jsonl","aec-source-playback-clock-failures.jsonl"] {
+                assert_eq!(std::fs::read(dir.path().join("baseline").join(name)).unwrap(),
+                    std::fs::read(dir.path().join("augmented").join(name)).unwrap());
+            }
+            assert_eq!(clocks[0].validation_failure().is_some(),fails);
+            let independent_bytes=std::fs::read_to_string(&traces[1].independent_path).unwrap();
+            let independent_rows: Vec<serde_json::Value>=independent_bytes.lines()
+                .map(|line|serde_json::from_str(line).unwrap()).collect();
+            assert_eq!(independent_rows.len(),3);
+            for (i,value) in independent_rows.into_iter().enumerate() {
+                assert_eq!(value["sequence"],i as u64);assert_eq!(value["acceptanceAuthority"],false);
+                assert!(!value["clock1"].is_null());
+                if i==1 {assert!(value["clock1"]["before"]["interruptBefore100ns"].is_null());}
+            }
+            let parse=|path: &Path| -> Vec<serde_json::Value> {std::fs::read_to_string(path).unwrap().lines()
+                .map(|line|serde_json::from_str(line).unwrap()).collect()};
+            for (original,mut augmented) in parse(&traces[0].path).into_iter().zip(parse(&traces[1].path)) {
+                assert!(augmented.get("diagnosticIndependentTime").is_none());
+                augmented["diagnosticStart"]=serde_json::Value::Null;
+                assert_eq!(original,augmented);
+            }
+        }
+    }
+
+    #[test]
+    fn independent_time_false_bool_is_null_and_optional_io_failure_is_explicit() {
+        let (_, boundary)=capture_time_boundary(10000000,||(0,777),||(0,888));
+        let value=boundary_value(boundary);
+        for name in ["rawQpcTicks","interruptBefore100ns","interruptAfter100ns","interruptMonotonic"] {
+            assert!(value[name].is_null());
+        }
+        assert_eq!(value["qpcRawBool"],0);assert_eq!(value["interruptBeforeRawBool"],0);
+        assert!(value["interruptBeforeError"].is_string());assert_eq!(value["acceptanceAuthority"],false);
+        let value=persist_optional_snapshot(serde_json::json!({"acceptanceAuthority":false,"persistenceError":null}),
+            |_|Err("injected write/flush/sync loss".into()));
+        assert_eq!(value["persistenceError"],"injected write/flush/sync loss");
+        assert_eq!(value["acceptanceAuthority"],false);
+    }
+
+    #[test]
+    fn separate_time_journal_collision_does_not_change_legacy_start_or_strict_bytes() {
+        let dir=tempfile::tempdir().unwrap();let pcm=dir.path().join("source.pcm");
+        let optional=pcm.with_file_name("aec-source-playback-clock-independent-time.jsonl");
+        std::fs::write(&optional,b"existing time custody").unwrap();
+        let mut trace=RawClockTrace::open(&pcm,"endpoint",48000,10000000).unwrap();
+        let legacy=serde_json::json!({"schemaVersion":1,"artifactKind":"aec-source-playback-clock-start-diagnostic",
+            "rawStartHresult":-1,"nativeApiError":"retained failed Start","callStartQpc100ns":123});
+        let mut full=legacy.clone();full["diagnosticIndependentTime"]=serde_json::json!({"acceptanceAuthority":false,"before":null});
+        full["diagnosticEndpointFormat"]=serde_json::json!({"acceptanceAuthority":false,"deviceRateHz":null,"getValueHresult":-1});
+        trace.persist_start(full.clone()).unwrap();
+        assert_eq!(trace.start_observation.as_ref(),Some(&legacy));
+        let written: serde_json::Value=serde_json::from_slice(&std::fs::read(
+            pcm.with_file_name("aec-source-playback-clock-start-diagnostic.json")).unwrap()).unwrap();
+        assert_eq!(written,full);
+        let mut strict=SourcePlaybackClock::new(Some(&pcm),"endpoint",48000).unwrap();
+        for raw in [(40,384000,10001041),(3880,384000,10101041)] {
+            trace.observe_reading(Ok(raw),960,Ok(144),(raw.2-1,raw.2+1),Some(0),&mut strict,None).unwrap();
+        }
+        assert!(strict.finish().is_ok());assert!(trace.finish().is_ok());
+        assert_eq!(std::fs::read(&optional).unwrap(),b"existing time custody");
+        let final_value=trace.final_observation.as_ref().unwrap();
+        assert!(final_value["independentTimePersistenceError"].is_string());
+        assert_eq!(final_value["independentTimeRowsWritten"],0);
+        let rows: Vec<serde_json::Value>=std::fs::read_to_string(&trace.path).unwrap().lines()
+            .map(|line|serde_json::from_str(line).unwrap()).collect();
+        for row in rows {assert_eq!(row["diagnosticStart"],legacy);assert!(row.get("diagnosticIndependentTime").is_none());}
     }
 
 }

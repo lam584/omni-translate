@@ -2,13 +2,22 @@ use super::*;
 use windows::core::{GUID, HRESULT, Interface, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
-    IAudioClient, IAudioClock, IAudioClock2, IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+    IAudioClient, IAudioClock, IAudioClock2, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+    PKEY_AudioEngine_DeviceFormat,
     AUDCLNT_SHAREMODE, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
+use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
+use windows::Win32::System::Variant::VT_BLOB;
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use sha2::{Digest, Sha256};
+
+#[path = "source_clock/independent_observation.rs"]
+pub(super) mod independent_observation;
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
 // Keep the wasapi EventsShared configuration, including the scheduling reserve.
@@ -103,12 +112,118 @@ impl NativeAudioClock {
     }
 }
 
+// Retain the exact IMMDevice used to activate this client. Query on the same
+// thread; no CoInitialize/CoUninitialize, second activation, or borrowed COM pointers.
+#[derive(Clone)]
+pub(super) struct DiagnosticEndpoint {
+    device: IMMDevice,
+    endpoint_id: String,
+    owner_thread: u32,
+}
+
+struct OwnedPropertyVariant {
+    value: PROPVARIANT,
+    cleared: bool,
+}
+impl OwnedPropertyVariant {
+    fn clear(&mut self) -> i32 {
+        if self.cleared { return 0; }
+        self.cleared = true;
+        // The allocation (including VT_BLOB data) belongs to this PROPVARIANT.
+        unsafe { PropVariantClear(&mut self.value) }.map(|()| 0).unwrap_or_else(|e| e.code().0)
+    }
+}
+impl Drop for OwnedPropertyVariant {
+    fn drop(&mut self) { let _ = self.clear(); }
+}
+
+impl DiagnosticEndpoint {
+    pub(super) fn query_device_format(&self, phase: &str) -> serde_json::Value {
+        let thread = unsafe { GetCurrentThreadId() };
+        let mut observation = serde_json::json!({"schemaVersion":1,
+            "artifactKind":"aec-source-endpoint-device-format-diagnostic",
+            "scope":"diagnostic-only-not-c03", "acceptanceAuthority":false,
+            "origin":"same-render-client-IMMDevice-PKEY_AudioEngine_DeviceFormat",
+            "phase":phase,"endpointId":self.endpoint_id,"threadId":thread,
+            "ownerThreadId":self.owner_thread,"sameThread":thread == self.owner_thread,
+            "propertyKey":"PKEY_AudioEngine_DeviceFormat",
+            "openPropertyStoreHresult":null,"getValueHresult":null,"propVariantClearHresult":null,
+            "variantType":null,"blobBytes":null,"rawBlobHex":null,"blobSha256":null,
+            "parsedFormat":null,"deviceRateHz":null,"nativeApiError":null,"parseError":null});
+        if thread != self.owner_thread {
+            observation["nativeApiError"] = "device format query skipped: COM owner thread mismatch".into();
+            return observation;
+        }
+        // STGM_READ: observation only. The typed store owns/releases its COM reference.
+        let mut raw_store = std::ptr::null_mut();
+        let store_status = unsafe { (Interface::vtable(&self.device).OpenPropertyStore)(
+            Interface::as_raw(&self.device), STGM_READ, &mut raw_store) };
+        observation["openPropertyStoreHresult"] = store_status.0.into();
+        // A successful COM call transfers one owned reference. Unknown success
+        // also gets released, but cannot expose a property reading as S_OK.
+        let store = if store_status.0 >= 0 && !raw_store.is_null() {
+            Some(unsafe { IPropertyStore::from_raw(raw_store) })
+        } else { None };
+        if store_status.0 != 0 || store.is_none() {
+            observation["nativeApiError"] = format!("OpenPropertyStore unavailable HRESULT=0x{:08X}; null={}",
+                store_status.0 as u32, raw_store.is_null()).into();
+            return observation;
+        }
+        let store = store.expect("S_OK non-null owned store checked above");
+        let mut variant = OwnedPropertyVariant { value: PROPVARIANT::default(), cleared: false };
+        // Preserve the exact property-query HRESULT. Non-S_OK never exposes outputs.
+        let status = unsafe { (Interface::vtable(&store).GetValue)(Interface::as_raw(&store),
+            &PKEY_AudioEngine_DeviceFormat, &mut variant.value) };
+        observation["getValueHresult"] = status.0.into();
+        if status.0 != 0 {
+            observation["nativeApiError"] = format!("GetValue device format unavailable HRESULT=0x{:08X}", status.0 as u32).into();
+        } else {
+            // Union members are read ONLY after the discriminator is checked.
+            let inner = unsafe { &variant.value.Anonymous.Anonymous };
+            observation["variantType"] = inner.vt.0.into();
+            if inner.vt != VT_BLOB {
+                observation["parseError"] = "device format property is not VT_BLOB".into();
+            } else {
+                let blob = unsafe { inner.Anonymous.blob };
+                observation["blobBytes"] = blob.cbSize.into();
+                match independent_observation::validate_blob_shape(blob.cbSize as usize, blob.pBlobData.is_null()) {
+                    Err(error) => observation["parseError"] = error.into(),
+                    Ok(()) => {
+                        // GetValue guarantees cbSize bytes owned by the live PROPVARIANT.
+                        // Size/null checks occur before forming a slice. Copy before Clear.
+                        let bytes = if blob.cbSize == 0 { Vec::new() } else {
+                            unsafe { std::slice::from_raw_parts(blob.pBlobData, blob.cbSize as usize) }.to_vec()
+                        };
+                        observation["rawBlobHex"] = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>().into();
+                        observation["blobSha256"] = format!("{:x}", Sha256::digest(&bytes)).into();
+                        match independent_observation::parse_device_format(&bytes) {
+                            Err(error) => observation["parseError"] = error.into(),
+                            Ok(parsed) => {
+                                observation["deviceRateHz"] = parsed.sample_rate.into();
+                                observation["parsedFormat"] = serde_json::json!({"formatTag":parsed.format_tag,
+                                    "nChannels":parsed.channels,"nSamplesPerSec":parsed.sample_rate,
+                                    "nAvgBytesPerSec":parsed.average_bytes_per_second,"nBlockAlign":parsed.block_align,
+                                    "wBitsPerSample":parsed.bits_per_sample,"cbSize":parsed.extra_size,
+                                    "validBitsPerSample":parsed.valid_bits,"channelMask":parsed.channel_mask,
+                                    "subformatGuidBytesLE":parsed.subformat_bytes});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        observation["propVariantClearHresult"] = variant.clear().into();
+        observation
+    }
+}
+
 pub(super) struct MediaRender {
     // Fields drop in declaration order after Drop::drop stops the stream.
     // Keep ALL services and the client before the event, including open errors.
     pub(super) audio_clock: Option<NativeAudioClock>,
     render_client: Option<IAudioRenderClient>,
     audio_client: IAudioClient,
+    diagnostic_endpoint: Option<DiagnosticEndpoint>,
     event_handle: RenderEvent,
     pub(super) buffer_frames: usize,
 }
@@ -127,6 +242,7 @@ impl MediaRender {
         if endpoint_id.encode_utf16().any(|unit| unit == 0) {
             return Err("render endpoint id contains an embedded NUL".to_string().into());
         }
+        let diagnostic_endpoint_id = endpoint_id.clone();
         let endpoint_id: Vec<u16> = endpoint_id.encode_utf16().chain(Some(0)).collect();
         let enumerator: IMMDeviceEnumerator = unsafe {
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
@@ -162,6 +278,9 @@ impl MediaRender {
             audio_clock: None,
             render_client: None,
             audio_client,
+            diagnostic_endpoint: clock_requested.then(|| DiagnosticEndpoint { device: native_device,
+                endpoint_id: diagnostic_endpoint_id,
+                owner_thread: unsafe { GetCurrentThreadId() } }),
             event_handle,
             buffer_frames,
         };
@@ -180,6 +299,10 @@ impl MediaRender {
                 ))?));
         }
         Ok(render)
+    }
+
+    pub(super) fn diagnostic_endpoint(&self) -> Option<DiagnosticEndpoint> {
+        self.diagnostic_endpoint.clone()
     }
 
     pub(super) fn start(&self) -> Result<(), String> {

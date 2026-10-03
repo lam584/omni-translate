@@ -37,6 +37,39 @@ pub(crate) struct AecCaptureFrameMetadata {
     pub(crate) queue_head_clock_valid: bool,
 }
 
+/// Admission receipt from real owner-local native Empty queries and retained PCM.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AecCaptureTailEvidence {
+    pub(crate) schema_version: u32,
+    pub(crate) queue_generation: u64,
+    pub(crate) capture_owner_id: u64,
+    pub(crate) capture_reset_generation: u64,
+    pub(crate) byte_len: usize,
+    pub(crate) last_empty_query_id: u64,
+    pub(crate) empty_polls: u64,
+    pub(crate) quiet_observation_span_ms: f64,
+    pub(crate) maximum_empty_poll_gap_ms: f64,
+    pub(crate) last_nonempty_age_at_last_query_ms: f64,
+    pub(crate) all_zero: bool,
+    pub(crate) zero_samples: usize,
+    pub(crate) nonzero_samples: usize,
+    pub(crate) real_frames: usize,
+}
+
+/// Receipt from actual native calls, not inferred from a silence flag.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AecCaptureProcessing {
+    pub(crate) schema_version: u32,
+    pub(crate) input_frames: usize,
+    pub(crate) native_10ms_frames: usize,
+    pub(crate) math_padding_frames: usize,
+    pub(crate) all_input_processed: bool,
+    pub(crate) reset_before_resume_required: bool,
+    pub(crate) tail_admission: Option<AecCaptureTailEvidence>,
+}
+
 #[derive(Debug)]
 enum TapEvent {
     Render {
@@ -60,6 +93,7 @@ enum TapEvent {
         sequence: u64,
         reset_generation: u64,
         metadata: AecCaptureFrameMetadata,
+        processing: Option<AecCaptureProcessing>,
         pre: Vec<f32>,
         post: Vec<f32>,
     },
@@ -355,6 +389,11 @@ impl AecDiagnosticTap {
     }
 
     pub(crate) fn record_capture_with_provenance(&self, pre: &[f32], post: &[f32], metadata: AecCaptureFrameMetadata) -> Option<AecPostPacket> {
+        self.record_capture_with_processing(pre, post, metadata, None)
+    }
+
+    pub(crate) fn record_capture_with_processing(&self, pre: &[f32], post: &[f32],
+        metadata: AecCaptureFrameMetadata, processing: Option<AecCaptureProcessing>) -> Option<AecPostPacket> {
         let live = self.live.as_ref()?;
         let _admission = live.shared.admit()?;
         let sequence = live.shared.sequence.fetch_add(1, Ordering::Relaxed);
@@ -362,7 +401,7 @@ impl AecDiagnosticTap {
         let packet = self.lineage_enabled.then(|| live.post_provenance.lock().expect("AEC post provenance poisoned")
             .capture(sequence, post, metadata, reset_generation));
         Self::send(live, TapEvent::Capture {
-            sequence, reset_generation, metadata, pre: pre.to_vec(), post: post.to_vec(),
+            sequence, reset_generation, metadata, processing, pre: pre.to_vec(), post: post.to_vec(),
         });
         packet
     }
@@ -531,7 +570,7 @@ fn write_event(files: &mut EvidenceFiles, event: TapEvent, counts: &mut WrittenC
             counts.render_events += 1;
             (sequence, json!({"schemaVersion":3,"kind":"render-reference","sequence":sequence,"qpc100ns":qpc_100ns,"continuityId":continuity_id,"resetGeneration":reset_generation,"renderSessionId":render_session_id,"ownerGeneration":owner_generation,"physicalPrefixOffsetFrames":physical_prefix_offset_frames,"referenceStartFrame":reference_start_frame,"referenceEndFrame":reference_end_frame,"playedFrames":played_frames,"submittedFrames":submitted_frames,"endpointPaddingFrames":endpoint_padding_frames,"sampleRateHz":sample_rate_hz,"channelCount":channel_count,"sampleOffset":offset,"sampleCount":samples.len()}))
         }
-        TapEvent::Capture { sequence, reset_generation, metadata: frame, pre, post } => {
+        TapEvent::Capture { sequence, reset_generation, metadata: frame, processing, pre, post } => {
             if pre.is_empty() || pre.len() != post.len() || pre.len() % 2 != 0 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "capture tap pre/post must be equal-length stereo PCM"));
             }
@@ -543,7 +582,7 @@ fn write_event(files: &mut EvidenceFiles, event: TapEvent, counts: &mut WrittenC
             counts.post_samples += post.len() as u64;
             counts.capture_events += 1;
             if frame.timestamp_error || !frame.queue_head_clock_valid { counts.invalid_clock_events += 1; }
-            (sequence, json!({"schemaVersion":3,"kind":"capture","sequence":sequence,"packetDeviceFrameIndex":(!frame.timestamp_error).then_some(frame.packet_device_frame_index),"packetQpc100ns":(!frame.timestamp_error).then_some(frame.packet_qpc_100ns),"rawPacketDeviceFrameIndex":frame.packet_device_frame_index,"rawPacketQpc100ns":frame.packet_qpc_100ns,"queueHeadDeviceFrameIndex":frame.queue_head_clock_valid.then_some(frame.queue_head_device_frame_index),"queueHeadQpc100ns":frame.queue_head_clock_valid.then_some(frame.queue_head_qpc_100ns),"timestampError":frame.timestamp_error,"dataDiscontinuity":frame.data_discontinuity,"queueHeadClockValid":frame.queue_head_clock_valid,"observedQpc100ns":frame.observed_qpc_100ns,"continuityId":frame.continuity_id,"resetGeneration":reset_generation,"delaySamples":frame.delay_samples,"sampleRateHz":48000,"channelCount":2,"preSampleOffset":pre_offset,"preSampleCount":pre.len(),"postSampleOffset":post_offset,"postSampleCount":post.len()}))
+            (sequence, json!({"schemaVersion":3,"kind":"capture","sequence":sequence,"packetDeviceFrameIndex":(!frame.timestamp_error).then_some(frame.packet_device_frame_index),"packetQpc100ns":(!frame.timestamp_error).then_some(frame.packet_qpc_100ns),"rawPacketDeviceFrameIndex":frame.packet_device_frame_index,"rawPacketQpc100ns":frame.packet_qpc_100ns,"queueHeadDeviceFrameIndex":frame.queue_head_clock_valid.then_some(frame.queue_head_device_frame_index),"queueHeadQpc100ns":frame.queue_head_clock_valid.then_some(frame.queue_head_qpc_100ns),"timestampError":frame.timestamp_error,"dataDiscontinuity":frame.data_discontinuity,"queueHeadClockValid":frame.queue_head_clock_valid,"observedQpc100ns":frame.observed_qpc_100ns,"continuityId":frame.continuity_id,"resetGeneration":reset_generation,"delaySamples":frame.delay_samples,"sampleRateHz":48000,"channelCount":2,"preSampleOffset":pre_offset,"preSampleCount":pre.len(),"postSampleOffset":post_offset,"postSampleCount":post.len(),"aecProcessing":processing}))
         }
         TapEvent::Reset { sequence, reset_generation, qpc_100ns, continuity_id, reason } => {
             counts.reset_events += 1;

@@ -109,6 +109,8 @@ function fixture(t, variant = 'good') {
   for (let n = 0; n < physicalTotal + RATE * 2; n += 480) {
     diagnostic.push({ schemaVersion: 3, kind: 'capture', sequence: diagnostic.length, resetGeneration: 0, continuityId: 0,
       sampleRateHz: RATE, channelCount: 2, preSampleOffset: n * 2, postSampleOffset: n * 2,
+      aecProcessing: {schemaVersion:1,inputFrames:480,native10msFrames:1,mathPaddingFrames:0,
+        allInputProcessed:true,resetBeforeResumeRequired:false,tailAdmission:null},
       preSampleCount: 960, postSampleCount: 960, timestampError: false, dataDiscontinuity: false, queueHeadClockValid: true,
       rawPacketDeviceFrameIndex: n, rawPacketQpc100ns: clock(n), packetDeviceFrameIndex: n, packetQpc100ns: clock(n),
       queueHeadDeviceFrameIndex: n, queueHeadQpc100ns: clock(n), observedQpc100ns: clock(n), delaySamples: 0 });
@@ -491,3 +493,12 @@ for (const [name, mutate] of invalidCadences) {
     rejected(f.analyze(), /cadence|clock|delta/u);
   });
 }
+
+test('legacy capture receipt cannot satisfy new local acoustic acceptance',t=>{
+ const f=fixture(t); for(const event of f.diagnostic) if(event.kind==='capture')delete event.aecProcessing;
+ f.reseal();const report=f.analyze();rejected(report,/missing aecProcessing receipt/u);assert.equal(report.stages.length,0);
+});
+test('padded capture without actual tail admission cannot reach acoustic analyzer',t=>{
+ const f=fixture(t);const event=f.diagnostic.find(e=>e.kind==='capture');event.aecProcessing.mathPaddingFrames=288;
+ f.reseal();const report=f.analyze();rejected(report,/mathPaddingFrames mismatch/u);assert.equal(report.stages.length,0);
+});

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
+import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
 import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS } from './watch-mode-aec-closed-loop-evidence.mjs';
 
 export const LOCAL_AEC_SPEECH_SCOPE = 'local-aec-speech-simulation';
@@ -119,8 +120,12 @@ function nativeTapSeal(root, terminal) {
   const counts = { render: 0, capture: 0, reset: 0 };
   const samples = { render: 0, pre: 0, post: 0 };
   let generation = 0;
+  let resetBeforeResumeRequired = false;
+  const processingContext = { ownerResetGenerations: new Map() };
+  const realPre = floats(data.pre, 2);
+  const realPost = floats(data.post, 2);
   for (const [i, e] of rows.entries()) {
-    if (e.kind === 'reset') generation += 1;
+    if (e.kind === 'reset') { generation += 1; resetBeforeResumeRequired = false; }
     check(e.schemaVersion === 3 && e.sequence === i && e.resetGeneration === generation && integer(e.continuityId), 'tap schema/sequence/reset generation invalid');
     if (e.kind === 'reset') {
       check(typeof e.reason === 'string' && e.reason.length > 0 && integer(e.qpc100ns), 'tap reset metadata invalid'); counts.reset += 1;
@@ -142,6 +147,12 @@ function nativeTapSeal(root, terminal) {
         && integer(e.queueHeadDeviceFrameIndex) && integer(e.queueHeadQpc100ns)
         && integer(e.packetDeviceFrameIndex) && e.packetDeviceFrameIndex === e.rawPacketDeviceFrameIndex
         && integer(e.packetQpc100ns) && e.packetQpc100ns === e.rawPacketQpc100ns, 'tap capture frame/clock metadata invalid');
+      check(!resetBeforeResumeRequired, 'capture resumed after partial calculation without a successful native reset');
+      verifyCaptureProcessingRecord(e,
+        realPre.subarray(e.preSampleOffset, e.preSampleOffset + e.preSampleCount),
+        realPost.subarray(e.postSampleOffset, e.postSampleOffset + e.postSampleCount),
+        { strict: true }, processingContext);
+      resetBeforeResumeRequired = e.aecProcessing.resetBeforeResumeRequired;
       samples.pre += e.preSampleCount; samples.post += e.postSampleCount; counts.capture += 1;
     } else { throw new Error('unknown diagnostic tap event kind'); }
   }
@@ -151,7 +162,8 @@ function nativeTapSeal(root, terminal) {
     && terminal.resetGeneration === generation && terminal.invalidClockEvents === 0
     && isDeepStrictEqual(terminal.eventCounts, counts) && isDeepStrictEqual(terminal.sampleCounts, samples), 'tap sealed accounting mismatch');
   for (const lane of ['render', 'pre', 'post']) check(data[lane].length === samples[lane] * 4, 'tap PCM missing/unreferenced frames');
-  return { ...data, rows, terminalSha256: sha(terminalBytes) };
+  return { ...data, rows, terminalSha256: sha(terminalBytes), captureProcessingVersion: 1,
+    processingVerified: counts.capture > 0, verifiedProcessingCount: counts.capture };
 }
 function inputFile(file, expectedHash, limit) {
   check(typeof file === 'string' && path.isAbsolute(file) && /^[a-f0-9]{64}$/u.test(expectedHash ?? ''), 'input file path/hash authority missing');
@@ -540,7 +552,9 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
   const readiness = root && attempt('native-start-readiness', () => nativeStartReadiness(root, receipt, options.expectedPhysicalDeviceId));
   if (readiness) result.nativeStartReadiness = readiness;
   const tap = attempt('tap-seal', () => nativeTapSeal(root, receipt.tap));
-  if (tap) result.tapEvidence = { complete: true, terminalSha256: tap.terminalSha256 };
+  if (tap) result.tapEvidence = { complete: true, terminalSha256: tap.terminalSha256,
+    captureProcessingVersion: tap.captureProcessingVersion, processingVerified: tap.processingVerified,
+    verifiedProcessingCount: tap.verifiedProcessingCount };
   const physicalBytes = attempt('physical-seal', () => sealed(root, receipt.streamEvidence?.physical));
   const linearBytes = attempt('linear-reference-seal', () => sealed(root, receipt.streamEvidence?.linearReference));
   const events = attempt('stream-event-seal', () => {

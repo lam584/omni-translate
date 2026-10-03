@@ -82,3 +82,62 @@ Coverage includes post-activation readiness/setup returned errors and panics: ca
 sourceValidationState distinguishes accepted, rejected and not-yet-consumed at snapshot time. sourceCollectionStateBeforeCleanup distinguishes actual collector lifecycle. A collector rejection resolved only while joining cleanup is retained separately in lateSourceCollection (diagnosticOnly=true, accepted=false, exact bound evidence and evidenceFailure), and sourceEvidenceValidationPassed=false/sourceEvidenceValidationError are set. The earlier native failure snapshot is immutable; later knowledge is not backdated. I/O/child errors remain explicit cleanup failures; typed source clock rejection remains an independent source validation failure.
 
 All setup/pump guards finish before any explicit cleanup. The single pre-cleanup native snapshot is held outside those guards; later abort or source cleanup panics cannot trigger resampling. Abort and source join have independent panic guards, so one cannot suppress the other. JoinedSource retains bound media/evidenceFailure separately from cleanup_error, including simultaneous child-stop failure and source-clock rejection. Final failure strings preserve all three runtime/abort/source-cleanup errors; diagnostic fields preserve the corresponding typed provenance.
+
+## Real capture-tail processing receipt v1
+
+This extends the existing local speech simulation; it is not a new media scenario,
+translation Provider test, release acceptance, or a vm131 execution claim. API-generated
+speech remains an immutable simulated output fixture. Acoustic thresholds and the
+180/190/195-second native/Job/outer watchdogs are unchanged.
+
+The native capture owner may have 1..959 real stereo f32 frames remaining after
+normal 960-frame dequeue. It must not discard them, infer silence from the last
+packet, wait indefinitely for a packet which WASAPI need not produce, or count a
+stopped sender/recording-only route as open input.
+
+Admission requires a real packet witness bound to the retained queue bytes, queue
+generation, native owner, and native reset generation. Real GetNextPacketSize Empty
+queries must continuously cover at least 2 seconds, with no gap over 100ms. Pending,
+unavailable, failed, replayed or nonmonotonic queries revoke the permission. Any
+queue/owner/reset/content mutation revokes an old permission. Event wakes and
+consumer timestamps cannot substitute for native queries.
+
+The accepted tail traverses the same production WebRTC AEC3 and capture dispatch.
+A short final 10ms computational frame is padded only inside the native adapter;
+only the actual input length is returned, tapped, dispatched or counted as real
+capture. Even all-zero real input must call native AEC. Before any subsequent real
+capture, a successful native reset is required after a padded computational frame.
+This fence also survives native errors, malformed output, NaN and failed reset.
+After tail AEC/dispatch, another real native packet query is required before
+publishing health. No pre-processing Empty query certifies completed work.
+
+Every new production capture tap record carries `aecProcessing` schema version 1:
+
+- `inputFrames` equals both pre/post stereo sample counts divided by two;
+- `native10msFrames` equals `ceil(inputFrames / 480)`;
+- `mathPaddingFrames` equals `native10msFrames * 480 - inputFrames` and does not
+  contribute to actual capture, provider or PCM evidence counts;
+- `allInputProcessed` is true only after all successful native calls;
+- `resetBeforeResumeRequired` records the adapter continuity fence;
+- `tailAdmission` is explicitly null for regular input, or records queue generation,
+  capture owner/reset domain, byte length, last real Empty query identity, poll count,
+  quiet span, maximum gap, last real packet age, actual zero/nonzero sample counts
+  and real frame count.
+
+Native capture reset generation is a different domain from tap reset generation
+and render continuity. Route-start can create a fixed offset; validators must not
+invent equality or use render underrun to bypass a native resume reset.
+
+Strict local acoustic acceptance requires these receipts and their correspondence
+with the sealed real pre/post PCM. Legacy records remain readable as diagnostics
+but cannot satisfy the new local acceptance. A padded receipt without actual tail
+admission, one-Empty/frozen quiet proof, extra synthetic output, a resume without
+native reset, or mismatched final processing seal blocks acceptance. Structure
+verification never substitutes for the independently frozen 20dB echo attenuation,
++/-3dB source gain and >=95% source coverage tests.
+
+Queue-head provenance is retained during idle polls and advanced only by consumed
+real frames. Unknown clocks, discontinuous old prefixes and overflow are not
+rehabilitated by tail dequeue. The source clock's existing 1ms bound remains hard;
+additional endpoint format, raw QPC and non-Precise interrupt-time observations
+are diagnostic-only and cannot authorize a source origin or a pass.

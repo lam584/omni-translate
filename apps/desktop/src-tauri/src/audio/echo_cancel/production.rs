@@ -7,6 +7,9 @@ use std::time::Duration;
 /// suppression decision can influence the ASR stream.
 pub(crate) struct ProductionEchoCanceller {
     engine: EchoCanceller,
+    // A padded computational frame is not a new capture interval. A resumed
+    // real stream must reset before any subsequent native capture call.
+    partial_capture_boundary_pending: bool,
 }
 
 impl ProductionEchoCanceller {
@@ -19,6 +22,7 @@ impl ProductionEchoCanceller {
         }
         Ok(Self {
             engine: EchoCanceller::from_engine(engine),
+            partial_capture_boundary_pending: false,
         })
     }
 
@@ -40,12 +44,50 @@ impl ProductionEchoCanceller {
         delay_samples: usize,
         capture_time: Instant,
     ) -> Result<EchoCancellationResult, String> {
+        if self.partial_capture_boundary_pending {
+            return Err("capture resumed after a partial computational frame without a continuity reset".into());
+        }
         self.engine.process_capture_10ms_with_reference(
             render,
             captured,
             delay_samples,
             capture_time,
         )
+    }
+
+    /// Finish only the real suffix of a capture tail. Zeroes exist solely in
+    /// this native 10ms calculation; they are never returned, recorded as
+    /// capture PCM, dispatched to recognition, or counted as captured frames.
+    pub(crate) fn process_capture_partial_10ms_with_reference(
+        &mut self, render: Option<&[f32]>, captured: &[f32],
+        delay_samples: usize, capture_time: Instant,
+    ) -> Result<EchoCancellationResult, String> {
+        if captured.is_empty() || captured.len() >= AEC_FRAME_SAMPLES
+            || captured.len() % TARGET_CHANNEL_COUNT != 0
+            || captured.iter().any(|sample| !sample.is_finite()) {
+            return Err("partial AEC capture must be a nonempty finite stereo suffix shorter than 10ms".into());
+        }
+        let mut computational_frame = vec![0.0; AEC_FRAME_SAMPLES];
+        computational_frame[..captured.len()].copy_from_slice(captured);
+        if self.partial_capture_boundary_pending {
+            return Err("capture resumed after a partial computational frame without a continuity reset".into());
+        }
+        // Native may have advanced even when it fails or returns corrupt output.
+        // Fence BEFORE admission; only a successful native reset clears it.
+        self.partial_capture_boundary_pending = true;
+        let mut result = self.engine.process_capture_10ms_with_reference(
+            render, &computational_frame, delay_samples, capture_time,
+        )?;
+        if result.samples.len() != AEC_FRAME_SAMPLES
+            || result.samples.iter().any(|sample| !sample.is_finite()) {
+            return Err("native AEC returned invalid partial computational frame output".into());
+        }
+        result.samples.truncate(captured.len());
+        Ok(result)
+    }
+
+    pub(crate) fn partial_capture_boundary_pending(&self) -> bool {
+        self.partial_capture_boundary_pending
     }
 
     #[cfg(test)]
@@ -58,7 +100,9 @@ impl ProductionEchoCanceller {
     }
 
     pub(crate) fn reset(&mut self) -> Result<(), String> {
-        self.engine.reset()
+        self.engine.reset()?;
+        self.partial_capture_boundary_pending = false;
+        Ok(())
     }
 
     pub(crate) fn stats(&self) -> EchoCancellerEngineStats {
@@ -239,3 +283,7 @@ impl EchoCancellerEngine for WebRtcAec3Engine {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "partial_capture_tests.rs"]
+mod partial_capture_tests;

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
 
 export const AEC_TAP_FILES = Object.freeze({
   render: 'aec-render-reference-48k-stereo.f32le',
@@ -48,9 +49,40 @@ function readUtf8(file, limit) {
   return new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file));
 }
 
+function readPcmSamples(filePath, sampleOffset, sampleCount) {
+  const bytesPerSample = 4;
+  const byteOffset = sampleOffset * bytesPerSample;
+  const byteLength = sampleCount * bytesPerSample;
+  const buffer = Buffer.alloc(byteLength);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let bytesRead = 0;
+    while (bytesRead < byteLength) {
+      const n = fs.readSync(fd, buffer, bytesRead, byteLength - bytesRead, byteOffset + bytesRead);
+      if (n === 0) break;
+      bytesRead += n;
+    }
+    requireEvidence(bytesRead === byteLength, 'PCM slice read underflow');
+  } finally {
+    fs.closeSync(fd);
+  }
+  return new Float32Array(buffer.buffer, buffer.byteOffset, sampleCount);
+}
+
 /** Evidence completeness only. Invalid clocks, resets and poor audio remain
- * diagnostic findings; a complete capture never authorizes c03/release success. */
-export function verifyAecTapEvidence(outputDirectory, embeddedTerminal) {
+ * diagnostic findings; a complete capture never authorizes c03/release success.
+ *
+ * @param {string} outputDirectory
+ * @param {object} embeddedTerminal
+ * @param {object} [options]
+ * @param {boolean} [options.strict=false] - Enforce aecProcessing receipts, require reset before resume after partial blocks, reject unproven partials. Must be explicit boolean if provided.
+ */
+export function verifyAecTapEvidence(outputDirectory, embeddedTerminal, options = {}) {
+  requireEvidence(typeof options === 'object' && options !== null, 'options must be an object');
+  if (options.strict !== undefined) {
+    requireEvidence(typeof options.strict === 'boolean', 'options.strict must be boolean');
+  }
+  const strict = Boolean(options.strict);
   const root = fs.realpathSync.native(outputDirectory);
   const terminalPath = evidencePath(root, TERMINAL).candidate;
   requireEvidence(!fs.existsSync(path.join(root, `${TERMINAL}.partial`)), 'uncommitted terminal exists');
@@ -84,11 +116,28 @@ export function verifyAecTapEvidence(outputDirectory, embeddedTerminal) {
   let resetGeneration = 0;
   let invalidClockEvents = 0;
   const renderDomains = new Map();
+  const processingContext = {
+    ownerResetGenerations: new Map(),
+  };
+
+  let pendingResetBeforeCapture = false;
+  let resetSeenSincePartial = false;
+  let hasPartialFrames = false;
+  let missingReceiptCount = 0;
+  let verifiedProcessingCount = 0;
+
+  const prePath = path.join(root, AEC_TAP_FILES.pre);
+  const postPath = path.join(root, AEC_TAP_FILES.post);
+
   for (const line of text.slice(0, -1).split('\n')) {
     const event = JSON.parse(line);
     requireEvidence(event.schemaVersion === 3 && event.sequence === sequence
       && integer(event.resetGeneration) && integer(event.continuityId), `sequence/schema at ${sequence}`);
-    if (event.kind === 'reset') resetGeneration += 1;
+    if (event.kind === 'reset') {
+      resetGeneration += 1;
+      resetSeenSincePartial = true;
+      pendingResetBeforeCapture = false;
+    }
     requireEvidence(event.resetGeneration === resetGeneration, `reset ownership at ${sequence}`);
     sequence += 1;
     if (event.kind === 'render-reference') {
@@ -134,6 +183,34 @@ export function verifyAecTapEvidence(outputDirectory, embeddedTerminal) {
         ? integer(event.queueHeadDeviceFrameIndex) && integer(event.queueHeadQpc100ns)
         : event.queueHeadDeviceFrameIndex === null && event.queueHeadQpc100ns === null, 'queue-head clock authority');
       if (event.timestampError || !event.queueHeadClockValid) invalidClockEvents += 1;
+
+      // Check if previous capture required a reset before resuming capture
+      if (pendingResetBeforeCapture) {
+        requireEvidence(resetSeenSincePartial, 'capture resumed after partial computational frame without an explicit reset event');
+      }
+
+      // Read actual PCM for validation
+      let actualPreSamples = null;
+      let actualPostSamples = null;
+      if (event.aecProcessing || strict) {
+        actualPreSamples = readPcmSamples(prePath, event.preSampleOffset, event.preSampleCount);
+        actualPostSamples = readPcmSamples(postPath, event.postSampleOffset, event.postSampleCount);
+      }
+
+      const procResult = verifyCaptureProcessingRecord(event, actualPreSamples, actualPostSamples, { strict }, processingContext);
+      if (procResult.hasReceipt) {
+        verifiedProcessingCount += 1;
+        if (procResult.partial) {
+          hasPartialFrames = true;
+        }
+        if (event.aecProcessing?.resetBeforeResumeRequired) {
+          pendingResetBeforeCapture = true;
+          resetSeenSincePartial = false;
+        }
+      } else {
+        missingReceiptCount += 1;
+      }
+
       samples.pre += event.preSampleCount;
       samples.post += event.postSampleCount;
       counts.capture += 1;
@@ -151,7 +228,22 @@ export function verifyAecTapEvidence(outputDirectory, embeddedTerminal) {
   for (const lane of ['render', 'pre', 'post']) {
     requireEvidence(samples[lane] * 4 === terminal.files[lane].byteLength, `${lane} PCM coverage`);
   }
-  return { schemaVersion: 1, complete: true, releaseEligible: false, audioHealth: 'not-evaluated',
-    eventCounts: counts, sampleCounts: samples, invalidClockEvents,
-    terminalSha256: hashFile(terminalPath, fs.statSync(terminalPath).size) };
+
+  return {
+    schemaVersion: 1,
+    complete: true,
+    releaseEligible: false,
+    audioHealth: 'not-evaluated',
+    diagnosticOnly: true,
+    eventCounts: counts,
+    sampleCounts: samples,
+    invalidClockEvents,
+    hasPartialFrames,
+    verifiedProcessingCount,
+    missingReceiptCount,
+    processingVerified: verifiedProcessingCount > 0 && missingReceiptCount === 0,
+    strictMode: strict,
+    strictValidated: strict && verifiedProcessingCount > 0 && missingReceiptCount === 0,
+    terminalSha256: hashFile(terminalPath, fs.statSync(terminalPath).size)
+  };
 }

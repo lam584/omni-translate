@@ -767,7 +767,7 @@ impl RouteProcessor {
 
     fn ingest_chunk(&mut self, chunk: &[u8], queued_bytes: usize) -> RouteUpdate {
         self.chunk_index += 1;
-        self.frames_captured += CHUNK_FRAMES as u64;
+        self.frames_captured += (chunk.len() / (CHANNEL_COUNT * std::mem::size_of::<f32>())) as u64;
         let energy_db = calculate_chunk_db(chunk);
         let speech_detected = energy_db >= SPEECH_THRESHOLD_DB;
         let buffer_ahead_ms = (queued_bytes as u64 * 1_000)

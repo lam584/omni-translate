@@ -17,7 +17,20 @@ export function localSpeechJobDeadline(nowMs) {
  if(!Number.isSafeInteger(nowMs)||nowMs<0||nowMs>8640000000000000-LOCAL_SPEECH_BUDGETS.ownedJobMs)throw Error("invalid local speech launch time");
  return new Date(nowMs+LOCAL_SPEECH_BUDGETS.ownedJobMs).toISOString();
 }
-export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(['scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/run-local-aec-speech-simulation.test.mjs',
+export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(['apps/desktop/src-tauri/src/audio/state/echo_backend_capture_tail_tests.rs','apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/tests.rs','scripts/testing/watch-mode-aec-capture-processing-evidence.mjs','scripts/testing/watch-mode-aec-capture-processing-evidence.test.mjs','scripts/testing/watch-mode-aec-tap-evidence.test.mjs','scripts/testing/local-aec-speech-analysis.test.mjs',"apps/desktop/src-tauri/src/audio/aec_diagnostic_tap.rs",
+  "apps/desktop/src-tauri/src/audio/echo_cancel/production.rs",
+  "apps/desktop/src-tauri/src/audio/echo_cancel/partial_capture_tests.rs",
+  "apps/desktop/src-tauri/src/audio/engine/mod.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_diagnostics.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_pipeline.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_pipeline_tests.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_tail.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_tail_tests.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_tail_owner.rs",
+  "apps/desktop/src-tauri/src/audio/engine/workers/capture_tail_owner_tests.rs",
+  "apps/bridge-service-native/Cargo.toml",
+  "apps/bridge-service-native/src/bin/injector/source_clock/independent_observation.rs",
+  'scripts/testing/run-local-aec-speech-simulation.mjs','scripts/testing/run-local-aec-speech-simulation.test.mjs',
   'scripts/testing/local-aec-mmcss-receipt.mjs','scripts/testing/local-aec-mmcss-receipt.test.mjs',
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio.rs',
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/mmcss_audio_tests.rs',
@@ -153,7 +166,13 @@ export function inspectSpeechOperation(probe, request) {
  return {passed:failures.length===0,failures,scope:'local-aec-speech-simulation',releaseEligible:false};
 }
 export function finalizeSpeechOutcome(operation,tap,quality,collection){
- const overallPassed=operation?.passed===true&&tap?.passed===true&&quality?.passed===true&&quality?.status==='passed'
+ const processingVerified=tap?.captureProcessingVersion===1&&tap?.processingVerified===true
+  &&Number.isSafeInteger(tap?.verifiedProcessingCount)&&tap.verifiedProcessingCount>0
+  &&/^[a-f0-9]{64}$/u.test(tap?.terminalSha256??'')
+  &&quality?.tapEvidence?.captureProcessingVersion===1&&quality?.tapEvidence?.processingVerified===true
+  &&quality?.tapEvidence?.verifiedProcessingCount===tap.verifiedProcessingCount
+  &&quality?.tapEvidence?.terminalSha256===tap.terminalSha256;
+ const overallPassed=processingVerified&&operation?.passed===true&&tap?.passed===true&&quality?.passed===true&&quality?.status==='passed'
   &&quality?.scope==='local-aec-speech-simulation'&&quality?.releaseEligible===false&&quality?.providerCalls===0
   &&quality?.modelInputLeakageVerified===false&&quality?.semanticLeakageChainVerified===false
   &&(collection===undefined||(collection.readyForAnalysis===true&&collection.launcher?.passed===true
@@ -261,7 +280,7 @@ export async function runLocalAecSpeechSimulation(options){
   outcome.quality=analyzeLocalAecSpeech(outputDirectory,{nativeReceipt:probe,expectedExecutionId:executionId,expectedPhysicalDeviceId:request.physicalDeviceId,
    analyzer:{workspaceRoot:repoRoot,releaseExecutablePath:analyzer,releaseExecutableSha256:options.analyzerSha256,noBuild:true}});
   write(path.join(outputDirectory,'local-speech-quality.json'),outcome.quality);
-  outcome.tap={...outcome.quality.tapEvidence,passed:outcome.quality.tapEvidence?.complete===true,verification:'schema2-native-clock-and-PCM-seal'};
+  outcome.tap={...outcome.quality.tapEvidence,passed:outcome.quality.tapEvidence?.complete===true&&outcome.quality.tapEvidence?.processingVerified===true&&outcome.quality.tapEvidence?.captureProcessingVersion===1,verification:'schema2-native-clock-PCM-seal-and-capture-processing-v1'};
   verifyLocalSpeechSourceHashes(repoRoot,sourceHashes);
   if(sha(bytes(desktop,200*1024*1024))!==options.desktopSha256||sha(bytes(injector,100*1024*1024))!==options.injectorSha256
    ||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('frozen run executable changed');

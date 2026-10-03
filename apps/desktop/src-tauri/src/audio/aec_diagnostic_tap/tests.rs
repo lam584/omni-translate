@@ -372,3 +372,40 @@
         assert!(tap.finish_provider_packet(&[0], &raw, &bound, "session", 16_000, 99_999).unwrap_err().contains("send-clock"));
         assert!(tap.finish(Duration::from_secs(2)).is_err());
     }
+
+    #[test]
+    fn partial_capture_receipt_and_real_pcm_never_account_for_math_padding_as_input() {
+        let dir = Directory::new();
+        let tap = AecDiagnosticTap::start(&dir.0).unwrap();
+        let pre = vec![0.25; 672 * 2];
+        let post = vec![0.125; 672 * 2];
+        tap.record_capture_with_processing(&pre, &post, metadata(), Some(AecCaptureProcessing {
+            schema_version: 1, input_frames: 672, native_10ms_frames: 2, math_padding_frames: 288,
+            all_input_processed: true, reset_before_resume_required: true,
+            tail_admission: Some(AecCaptureTailEvidence {
+                schema_version: 1, queue_generation: 8, capture_owner_id: 4, capture_reset_generation: 3,
+                byte_len: 5376, last_empty_query_id: 101, empty_polls: 101,
+                quiet_observation_span_ms: 2000.0, maximum_empty_poll_gap_ms: 20.0,
+                last_nonempty_age_at_last_query_ms: 2020.0, all_zero: false,
+                zero_samples: 0, nonzero_samples: 1344, real_frames: 672,
+            }),
+        }));
+        let terminal = tap.finish(Duration::from_secs(2)).unwrap();
+        assert_eq!(terminal["sampleCounts"]["pre"], 1344);
+        assert_eq!(terminal["sampleCounts"]["post"], 1344);
+        assert_eq!(std::fs::metadata(dir.0.join(PRE_FILE)).unwrap().len(), 5376);
+        assert_eq!(std::fs::metadata(dir.0.join(POST_FILE)).unwrap().len(), 5376);
+        let rows = std::fs::read_to_string(dir.0.join(METADATA_FILE)).unwrap();
+        let row: Value = serde_json::from_str(rows.trim()).unwrap();
+        assert_eq!(row["preSampleCount"], 1344);
+        assert_eq!(row["postSampleCount"], 1344);
+        assert_eq!(row["aecProcessing"]["schemaVersion"], 1);
+        assert_eq!(row["aecProcessing"]["inputFrames"], 672);
+        assert_eq!(row["aecProcessing"]["native10msFrames"], 2);
+        assert_eq!(row["aecProcessing"]["mathPaddingFrames"], 288);
+        assert_eq!(row["aecProcessing"]["allInputProcessed"], true);
+        assert_eq!(row["aecProcessing"]["resetBeforeResumeRequired"], true);
+        assert_eq!(row["aecProcessing"]["tailAdmission"]["captureOwnerId"], 4);
+        assert_eq!(row["aecProcessing"]["tailAdmission"]["captureResetGeneration"], 3);
+        assert_eq!(row["aecProcessing"]["tailAdmission"]["byteLen"], 5376);
+    }

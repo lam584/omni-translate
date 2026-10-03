@@ -415,7 +415,35 @@ impl AudioStateStore {
     pub(crate) fn process_echo_capture_with_provenance(
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
+        self.process_echo_capture_frames(captured, delay_samples, metadata, false, None)
+    }
+
+    pub(crate) fn process_echo_capture_tail_with_provenance(
+        &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
+        tail: crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence,
+    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
+        if captured.is_empty() || captured.len() >= 960 * 2 {
+            return Err("capture tail must contain fewer than one normal 20ms chunk".into());
+        }
+        self.process_echo_capture_frames(captured, delay_samples, metadata, true, Some(tail))
+    }
+
+    pub(crate) fn echo_partial_capture_boundary_pending(&self) -> bool {
+        self.echo_canceller.lock().expect("echo canceller poisoned").as_ref()
+            .is_some_and(ProductionEchoCanceller::partial_capture_boundary_pending)
+    }
+
+    fn process_echo_capture_frames(
+        &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
+        allow_partial: bool,
+        tail: Option<crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence>,
+    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
         const AEC_FRAME_SAMPLES: usize = 480 * 2;
+        if captured.is_empty() || captured.len() % 2 != 0
+            || captured.iter().any(|sample| !sample.is_finite())
+            || (!allow_partial && captured.len() % AEC_FRAME_SAMPLES != 0) {
+            return Err("AEC input must be finite stereo PCM; only an authorized tail may be short".into());
+        }
         let render_epoch = self
             .echo_render_clock
             .lock()
@@ -428,7 +456,8 @@ impl AudioStateStore {
             "WebRTC AEC3 production engine is not active; capture cannot be processed".to_string()
         })?;
         let mut processed = Vec::with_capacity(captured.len());
-        for (index, frame) in captured.chunks_exact(AEC_FRAME_SAMPLES).enumerate() {
+        let mut native_frames = 0_usize;
+        for (index, frame) in captured.chunks(AEC_FRAME_SAMPLES).enumerate() {
             let matched = if let (Some(epoch), Some(frame_metadata)) = (render_epoch, metadata) {
                 let mut matcher = self
                     .echo_reference_matcher
@@ -449,18 +478,29 @@ impl AudioStateStore {
             } else {
                 None
             };
-            let result = canceller.process_capture_10ms_with_reference(
-                matched.as_deref(),
-                frame,
-                delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES),
-                Instant::now(),
-            ).inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+            let delay = delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES);
+            let result = if frame.len() == AEC_FRAME_SAMPLES {
+                canceller.process_capture_10ms_with_reference(matched.as_deref(), frame, delay, Instant::now())
+            } else {
+                canceller.process_capture_partial_10ms_with_reference(matched.as_deref(), frame, delay, Instant::now())
+            }.inspect_err(|error| self.aec_diagnostic_tap.abort(error))?;
+            if result.samples.len() != frame.len() {
+                self.aec_diagnostic_tap.abort("AEC native output changed the real input sample count");
+                return Err("AEC native output changed the real input sample count".into());
+            }
+            native_frames += 1;
             processed.extend_from_slice(&result.samples);
         }
-        processed.extend_from_slice(&captured[processed.len()..]);
         let result = EchoCancellationResult { samples: processed };
         let provenance = if let Some(metadata) = metadata {
-            self.aec_diagnostic_tap.record_capture_with_provenance(captured, &result.samples, metadata)
+            self.aec_diagnostic_tap.record_capture_with_processing(captured, &result.samples, metadata,
+                Some(crate::audio::aec_diagnostic_tap::AecCaptureProcessing {
+                    schema_version: 1, input_frames: captured.len() / 2, native_10ms_frames: native_frames,
+                    math_padding_frames: native_frames * 480 - captured.len() / 2,
+                    all_input_processed: true,
+                    reset_before_resume_required: canceller.partial_capture_boundary_pending(),
+                    tail_admission: tail,
+                }))
         } else {
             if self.aec_diagnostic_tap.enabled() {
                 self.aec_diagnostic_tap.abort("AEC capture processed without packet metadata");
@@ -1225,3 +1265,7 @@ fn clear_render_timing(clock: &mut EchoRenderClock, observed_at: Instant) {
 
 
 }
+
+#[cfg(test)]
+#[path = "echo_backend_capture_tail_tests.rs"]
+mod capture_tail_tests;

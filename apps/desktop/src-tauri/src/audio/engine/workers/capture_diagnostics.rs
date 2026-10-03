@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use crate::audio::diagnostics::diag_log_detail;
 use crate::audio::state::{AecCaptureFrameMetadata, AudioStateStore, EchoRenderClockSnapshot};
 use super::aec_timing::AecDelayEstimate;
-use super::{CHUNK_FRAMES, SAMPLE_RATE_HZ};
+use super::SAMPLE_RATE_HZ;
 
 #[derive(Debug, Default)]
 pub(super) struct AecTapQueueClock {
@@ -50,12 +50,10 @@ impl AecTapQueueClock {
     }
 }
 
-pub(super) fn aec_tap_chunk_metadata(
-    mut metadata: AecCaptureFrameMetadata,
-    chunk_index: usize,
-    delay_samples: usize,
+pub(super) fn aec_tap_frame_metadata(
+    mut metadata: AecCaptureFrameMetadata, frames: usize, delay_samples: usize,
 ) -> AecCaptureFrameMetadata {
-    let frame_offset = chunk_index.saturating_mul(CHUNK_FRAMES) as u64;
+    let frame_offset = frames as u64;
     let qpc_offset = frame_offset.saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
     // Raw WASAPI packet clocks identify the packet, not the 20ms chunk. Only
     // the queue head advances for later chunks drained from this same packet.
@@ -135,4 +133,13 @@ pub(super) fn log_delay(
             estimate.source,
         ),
     );
+}
+
+#[cfg(test)]
+pub(super) fn aec_tap_chunk_metadata(
+    metadata: AecCaptureFrameMetadata,
+    chunk_index: usize,
+    delay_samples: usize,
+) -> AecCaptureFrameMetadata {
+    aec_tap_frame_metadata(metadata, chunk_index.saturating_mul(super::CHUNK_FRAMES), delay_samples)
 }

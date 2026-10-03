@@ -2,7 +2,13 @@
 mod capture_diagnostics;
 #[path = "workers/capture_route.rs"]
 mod capture_route;
-use capture_diagnostics::{aec_tap_chunk_metadata, AecTapQueueClock};
+use capture_diagnostics::AecTapQueueClock;
+#[path = "workers/capture_pipeline.rs"]
+mod capture_pipeline;
+#[path = "workers/capture_tail.rs"]
+mod capture_tail;
+#[path = "workers/capture_tail_owner.rs"]
+mod capture_tail_owner;
 
 const ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL: &str = "warning";
 
@@ -111,22 +117,43 @@ fn initialize_capture_echo_diagnostics(
 
 
 /// Only called after AEC/dispatch returned. A wait never publishes health.
+#[allow(clippy::too_many_arguments)]
 fn query_native_capture_and_wait(
     capture_client: &wasapi::AudioCaptureClient, event_handle: &wasapi::Handle,
     stop_rx: &mpsc::Receiver<()>, guard: &crate::audio::state::NativeCaptureProducerGuard,
-    mut work: crate::audio::state::NativeCaptureWork, residual_bytes: usize,
+    mut work: crate::audio::state::NativeCaptureWork, queue: &mut VecDeque<u8>,
+    tail_owner: &mut capture_tail_owner::CaptureTailOwner, native_start: &NativeCaptureStartAck,
+    pipeline: &mut capture_pipeline::CapturePipeline, app: &AppHandle, store: &AudioStateStore,
+    direction: &str, spec: &RouteSpec, stt_sender: &Option<mpsc::Sender<Vec<u8>>>,
 ) -> Result<bool, String> {
-    // Drain already available packets rather than leaving a backlog until the next event.
-    let next_packet_size = capture_client.get_next_packet_size().map_err_str()?;
-    // Stop may have been requested during AEC/dispatch/query: never publish after accepting it.
+    let mut size = capture_client.get_next_packet_size().map_err(|error| {
+        tail_owner.query_failed(native_start, queue);
+        error.to_string()
+    })?;
+    let at = Instant::now();
+    let mut queried_at = at;
     if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
-    work.residual_bytes = residual_bytes;
-    guard.publish_query(Instant::now(),
-        crate::audio::state::NativeCaptureQuery::from_packet_size(next_packet_size), work);
-    if capture_event_wait_required(next_packet_size) {
-        // Preserve 100ms freshness with scheduling margin. Timeout is not progress.
-        capture_event_wait_result(event_handle.wait_for_event(20))?;
+    tail_owner.observe_query(at, native_start, queue, size)?;
+    if spec.echo_cancel_enabled() {
+        if let Some(tail) = tail_owner.take_ready(Instant::now(), native_start, queue)? {
+            // Never publish the pre-processing Empty as proof of completed work.
+            if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
+            let receipt = capture_tail_owner::tail_receipt(&tail.evidence);
+            pipeline.process_chunk(app, store, direction, spec, stt_sender, tail.pcm,
+                queue.len(), guard, Some(receipt))?;
+            size = capture_client.get_next_packet_size().map_err(|error| {
+        tail_owner.query_failed(native_start, queue);
+        error.to_string()
+    })?;
+            let after_work = Instant::now();
+            queried_at = after_work;
+            if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
+            tail_owner.observe_query(after_work, native_start, queue, size)?;
+        }
     }
+    work.residual_bytes = queue.len();
+    guard.publish_query(queried_at, crate::audio::state::NativeCaptureQuery::from_packet_size(size), work);
+    if capture_event_wait_required(size) { capture_event_wait_result(event_handle.wait_for_event(20))?; }
     Ok(false)
 }
 
@@ -157,7 +184,9 @@ fn run_capture_loop(
     let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(
         100 * desired_format.get_blockalign() as usize * (1024 + 2 * buffer_frame_count as usize),
     );
-    let mut processor = RouteProcessor::new(spec.clone());
+    let mut pipeline = capture_pipeline::CapturePipeline::new(spec.clone());
+    let mut tail_owner = capture_tail_owner::CaptureTailOwner::new(CHUNK_FRAMES)?;
+    let block_align = desired_format.get_blockalign() as usize;
 
     store.mark_route_started(
         direction,
@@ -169,13 +198,12 @@ fn run_capture_loop(
 
     initialize_capture_echo_diagnostics(&app, store, direction, &spec, &effective_device_id)?;
 
-    let mut echo_diagnostics = EchoCancelDiagnostics::new();
     if let Err(error) = native_capture_start.observe_native_start(audio_client.start_stream().map_err_str()) {
         if spec.echo_cancel_enabled() {
             // The route-start reset already happened before WASAPI start. Even
             // when start fails, close that reset event stream with one native
             // terminal snapshot so diagnostics cannot report a stale window.
-            echo_diagnostics.log_final(&app, store, direction);
+            pipeline.diagnostics.log_final(&app, store, direction);
         }
         return Err(error);
     }
@@ -185,15 +213,11 @@ fn run_capture_loop(
     // state so users can start it before pressing play.
     let capture_started_at = Instant::now();
     let mut inbound_wait_logged = false;
-    let mut aec_delay_estimator = AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT);
-    let mut current_aec_delay_samples = 0_usize;
-    let mut tap_queue_clock = AecTapQueueClock::default();
-    let mut last_delay_diagnostic_at: Option<Instant> = None;
     let capture_result = (|| -> Result<(), String> {
       loop {
         if accept_native_capture_stop(&stop_rx, &producer_guard)? { break; }
 
-        if processor.frames_captured == 0
+        if pipeline.processor.frames_captured == 0
             && capture_started_at.elapsed() >= Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS)
         {
             if should_fail_on_initial_frame_stall(direction) {
@@ -221,203 +245,32 @@ fn run_capture_loop(
         let buffer_info = capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err_str()?;
+        let packet_received_at = Instant::now();
         let captured_frames = (sample_queue.len() - queued_bytes_before_read)
             / desired_format.get_blockalign() as usize;
         let completed_work = producer_guard.record_buffer_packet(
             captured_frames, &buffer_info, sample_queue.len(),
             || calculate_chunk_db(&sample_queue.make_contiguous()[queued_bytes_before_read..]),
         );
-        let mut capture_clock_metadata = None;
-        if captured_frames > 0 && spec.echo_cancel_enabled()
-            && (sample_queue.len() >= chunk_len
-                || buffer_info.flags.data_discontinuity
-                || buffer_info.flags.timestamp_error)
-        {
-            let block_align = desired_format.get_blockalign() as usize;
-            let (queue_head_device_frame_index, queue_head_qpc_100ns, queued_capture_frames) =
-                capture_queue_head_clock(
-                    buffer_info.index,
-                    buffer_info.timestamp,
-                    queued_bytes_before_read,
-                    block_align,
-                    SAMPLE_RATE_HZ as u32,
-                );
-            let capture_padding_frames = audio_client.get_current_padding().ok();
-            let render_clock = store.echo_render_clock_snapshot();
-            let playback_active = store.inbound_speaker_playback_active();
-            let render_clock_age_ms = playback_active
-                .then(|| {
-                    render_clock
-                        .last_observed_at
-                        .map(|observed| observed.elapsed().as_secs_f64() * 1_000.0)
-                })
-                .flatten();
-            let (render_endpoint_padding_frames, render_reference_lead_frames) =
-                active_render_delay_frames(
-                    playback_active,
-                    render_clock.endpoint_padding_frames,
-                    render_clock.reference_lead_frames,
-                );
-            let observed_qpc_100ns = qpc_now_100ns();
-            let estimate = aec_delay_estimator.observe_capture(CaptureClockObservation {
-                device_frame_index: queue_head_device_frame_index,
-                packet_qpc_100ns: queue_head_qpc_100ns,
-                observed_qpc_100ns,
-                capture_padding_frames,
-                capture_buffer_frames: buffer_frame_count,
-                render_clock_age_ms,
-                // A completed playback leaves its final endpoint observation
-                // in diagnostics. Never reinterpret that stale padding as a
-                // delay for later near-end-only capture frames.
-                render_endpoint_padding_frames,
-                render_reference_lead_frames,
-                render_submitted_frames: render_clock.submitted_frames,
-                render_timeline_epoch: render_clock.timeline_epoch,
-                render_discontinuity_count: render_clock.discontinuity_count,
-                render_hard_reset_generation: render_clock.hard_reset_generation,
-                render_discontinuity_reason: render_clock.last_discontinuity_reason,
-                data_discontinuity: buffer_info.flags.data_discontinuity,
-                timestamp_error: buffer_info.flags.timestamp_error,
-            });
-            current_aec_delay_samples = estimate.delay_samples;
-            // Capture-clock ownership is a production AEC input, independent of the tap.
-            let anchor_arithmetic_valid = buffer_info.index >= queued_capture_frames as u64
-                && buffer_info.timestamp >= (queued_capture_frames as u64).saturating_mul(10_000_000) / SAMPLE_RATE_HZ as u64;
-            tap_queue_clock.observe_packet(queued_bytes_before_read, sample_queue.len(),
-                buffer_info.flags.data_discontinuity, buffer_info.flags.timestamp_error,
-                anchor_arithmetic_valid);
-            capture_clock_metadata = Some(AecCaptureFrameMetadata {
-                packet_device_frame_index: buffer_info.index,
-                packet_qpc_100ns: buffer_info.timestamp,
-                queue_head_device_frame_index,
-                queue_head_qpc_100ns,
-                observed_qpc_100ns,
-                continuity_id: render_clock.discontinuity_count,
-                delay_samples: current_aec_delay_samples,
-                timestamp_error: buffer_info.flags.timestamp_error,
-                data_discontinuity: buffer_info.flags.data_discontinuity,
-                queue_head_clock_valid: true,
-            });
-            if estimate.aec_reset_required {
-                // This capture worker is the sole reset owner. Render
-                // producers only publish a monotonic discontinuity identity;
-                // consume it here before any queued capture is processed.
-                let reset_reason = if estimate.published_render_discontinuity
-                    && estimate.aec_reset_reason
-                        == Some("wasapi-render-session-discontinuity")
-                {
-                    render_clock
-                        .last_discontinuity_reason
-                        .unwrap_or("wasapi-render-session-discontinuity")
-                } else {
-                    estimate.aec_reset_reason.unwrap_or("unknown")
-                };
-                store.reset_echo_canceller_with_diagnostic(
-                    reset_reason,
-                    observed_qpc_100ns,
-                    render_clock.discontinuity_count,
-                )?;
-                producer_guard.record_aec_reset();
-                diag_log_detail(
-                    &app,
-                    "audio",
-                    ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL,
-                    "event=echo_cancel_reset",
-                    format!(
-                        "direction={} reason={} renderDiscontinuityId={} dataDiscontinuity={} timestampError={} capturePaddingInvalid={} delayResetRequired={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} previousQueueHeadDeviceFrameIndex={:?} currentQueueHeadDeviceFrameIndex={} queueHeadDeviceFrameDelta={:?} previousQueueHeadTimestamp100ns={:?} observedQueueHeadTimestamp100ns={} currentQueueHeadTimestamp100ns={} queueHeadTimestampDelta100ns={:?} queueHeadTimestampClamped={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
-                        direction,
-                        reset_reason,
-                        render_clock.discontinuity_count,
-                        buffer_info.flags.data_discontinuity,
-                        buffer_info.flags.timestamp_error,
-                        estimate.capture_padding_invalid,
-                        estimate.delay_reset_required,
-                        buffer_info.index,
-                        queue_head_device_frame_index,
-                        buffer_info.timestamp,
-                        queue_head_qpc_100ns,
-                        queued_capture_frames,
-                        estimate.previous_device_frame_index,
-                        estimate.current_device_frame_index,
-                        estimate.device_frame_delta,
-                        estimate.previous_packet_qpc_100ns,
-                        estimate.observed_packet_qpc_100ns,
-                        estimate.current_packet_qpc_100ns,
-                        estimate.packet_qpc_delta_100ns,
-                        estimate.queue_head_qpc_clamped,
-                        estimate.capture_padding_frames,
-                        buffer_frame_count,
-                        estimate.delay_ms,
-                        estimate.source,
-                        aec_delay_estimator.reset_count(),
-                        aec_delay_estimator.timestamp_error_count(),
-                    ),
-                );
-            }
-            if last_delay_diagnostic_at
-                .map(|last| last.elapsed() >= Duration::from_secs(5))
-                .unwrap_or(true)
-            {
-                capture_diagnostics::log_delay(&app, direction, &estimate, &render_clock);
-                last_delay_diagnostic_at = Some(Instant::now());
-            }
+        pipeline.prepare_packet(&app, store, direction, &spec, &audio_client, &buffer_info,
+            captured_frames, queued_bytes_before_read, sample_queue.len(), block_align,
+            buffer_frame_count, &producer_guard)?;
+        if captured_frames > 0 { tail_owner.mutated()?; }
+        for chunk in drain_sample_chunks(&mut sample_queue, chunk_len) {
+            tail_owner.mutated()?;
+            if accept_native_capture_stop(&stop_rx, &producer_guard)? { return Ok(()); }
+            pipeline.process_chunk(&app, store, direction, &spec, &stt_sender, chunk,
+                sample_queue.len(), &producer_guard, None)?;
         }
-
-        for (chunk_index, chunk) in drain_sample_chunks(&mut sample_queue, chunk_len)
-            .into_iter()
-            .enumerate()
-        {
-            let raw_energy_db = calculate_chunk_db(&chunk);
-            producer_guard.record_raw_activity(raw_energy_db);
-            let (chunk, aec_provenance) = if spec.echo_cancel_enabled() {
-                let f32_chunk = bytes_to_f32_stereo(&chunk);
-                let delay_samples = current_aec_delay_samples.saturating_sub(
-                    chunk_index
-                        .saturating_mul(CHUNK_FRAMES)
-                        .saturating_mul(CHANNEL_COUNT),
-                );
-                let capture_metadata = capture_clock_metadata.map(|metadata| {
-                    let mut metadata = aec_tap_chunk_metadata(metadata, chunk_index, delay_samples);
-                    metadata.queue_head_clock_valid &= tap_queue_clock.next_chunk_valid();
-                    tap_queue_clock.consume_bytes(chunk_len);
-                    metadata
-                });
-                let (cancellation, provenance) = store.process_echo_capture_with_provenance(
-                    &f32_chunk,
-                    delay_samples,
-                    capture_metadata,
-                )?;
-                producer_guard.complete_aec(CHUNK_FRAMES as u64);
-                // AEC3 output is the capture stream; playback never deletes a block.
-                let playback_active = store.inbound_speaker_playback_active();
-                store.record_aec3_capture_chunk(playback_active);
-                let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
-                echo_diagnostics.record(
-                    raw_energy_db,
-                    calculate_chunk_db(&cleaned_bytes),
-                    playback_active,
-                );
-                echo_diagnostics.maybe_log(&app, store, direction);
-                (cleaned_bytes, provenance)
-            } else {
-                (chunk, None)
-            };
-
-            process_captured_chunk_with_provenance(
-                &app,
-                store,
-                direction,
-                &mut processor,
-                &stt_sender,
-                chunk,
-                sample_queue.len(),
-                aec_provenance,
-            )?;
-            producer_guard.complete_dispatch(CHUNK_FRAMES as u64);
+        if captured_frames > 0 {
+            // The read's real acquisition time, bound to its remaining suffix after full chunks.
+            tail_owner.observe_packet(packet_received_at, &native_capture_start, &sample_queue)?;
         }
 
         if query_native_capture_and_wait(
-            &capture_client, &event_handle, &stop_rx, &producer_guard, completed_work, sample_queue.len(),
+            &capture_client, &event_handle, &stop_rx, &producer_guard, completed_work,
+            &mut sample_queue, &mut tail_owner, &native_capture_start, &mut pipeline,
+            &app, store, direction, &spec, &stt_sender,
         )? { break; }
       }
       Ok(())
@@ -425,7 +278,7 @@ fn run_capture_loop(
 
     producer_guard.finish_capture(capture_result,
         || audio_client.stop_stream().map_err_str(),
-        || { if spec.echo_cancel_enabled() { echo_diagnostics.log_final(&app, store, direction); } },
+        || { if spec.echo_cancel_enabled() { pipeline.diagnostics.log_final(&app, store, direction); } },
     )
 }
 
@@ -981,7 +834,8 @@ mod placeholder_cue_tests {
 
 #[cfg(test)]
 mod aec_tap_clock_tests {
-    use super::{aec_tap_chunk_metadata, AecCaptureFrameMetadata, AecTapQueueClock, CHUNK_FRAMES};
+    use super::{AecCaptureFrameMetadata, AecTapQueueClock, CHUNK_FRAMES};
+    use super::capture_diagnostics::aec_tap_chunk_metadata;
 
     const BLOCK_ALIGN: usize = 8;
     const CHUNK_BYTES: usize = CHUNK_FRAMES * BLOCK_ALIGN;

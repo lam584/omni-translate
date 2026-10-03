@@ -74,12 +74,12 @@ test('assembler refuses altered PCM and incomplete synthesis without dropping a 
 });
 
 test('final outcome requires independent quality and cannot claim a Provider or release pass',()=>{
- const quality={passed:true,status:'passed',scope:'local-aec-speech-simulation',providerCalls:0,releaseEligible:false,modelInputLeakageVerified:false,semanticLeakageChainVerified:false};
- const result=finalizeSpeechOutcome({passed:true},{passed:true},quality);assert.equal(result.overallPassed,true);assert.equal(result.releaseEligible,false);
+ const quality=acceptedQuality();
+ const result=finalizeSpeechOutcome({passed:true},strictTap(),quality);assert.equal(result.overallPassed,true);assert.equal(result.releaseEligible,false);
  assert.equal(result.realTranslationLifecycleVerified,false);
  for(const patch of [{passed:false},{status:'indeterminate'},{scope:'pure-echo'},{releaseEligible:true},{providerCalls:1},{modelInputLeakageVerified:true},{semanticLeakageChainVerified:true}])
-  assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},{...quality,...patch}).overallPassed,false);
- assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},undefined).overallPassed,false);
+  assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),{...quality,...patch}).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),undefined).overallPassed,false);
 });
 
 test('actual Windows PowerShell 5.1 boundary restores builtin hashing under a foreign PS7 module path', {skip:process.platform!=='win32'}, async()=>{
@@ -101,7 +101,9 @@ test("native input budget stays 180s and cleanup remains within the original 195
  for(const invalid of [-1,0.5,NaN,Infinity,8640000000000000])assert.throws(()=>localSpeechJobDeadline(invalid),/launch time/u);
 });
 
-const acceptedQuality=()=>({passed:true,status:'passed',scope:'local-aec-speech-simulation',providerCalls:0,
+const strictTap=()=>({passed:true,complete:true,captureProcessingVersion:1,processingVerified:true,
+ verifiedProcessingCount:1,terminalSha256:'a'.repeat(64)});
+const acceptedQuality=()=>({tapEvidence:strictTap(),passed:true,status:'passed',scope:'local-aec-speech-simulation',providerCalls:0,
  releaseEligible:false,modelInputLeakageVerified:false,semanticLeakageChainVerified:false});
 function retainedRun(t,nativeProbe=probe()){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'aec-speech-retained-run-'));
@@ -148,16 +150,16 @@ test('launcher exit1 retains exact failed custody, raw source/probe/clock/PCM ev
  assert.ok(result.failures.some(f=>f.area==='native-operation'&&/source clock/u.test(f.detail)));
  const sealed=JSON.parse(fs.readFileSync(path.join(f.root,'local-speech-evidence-collection.json'),'utf8'));
  assert.equal(sealed.overallPassed,false);assert.equal(sealed.readyForAnalysis,false);assert.equal(sealed.nativeReceiptRetained,true);
- assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),acceptedQuality(),result).overallPassed,false);
  // Even pretending the operation/metrics passed cannot erase launcher/custody failure.
- assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 
 test('launcher failure with apparently healthy custody/probe still cannot authorize analyzer or acceptance',t=>{
  const f=retainedRun(t),result=collectLocalSpeechRunEvidence(f.root,f.request,launch({status:1}));
  assert.equal(result.custody.exitCode,0);assert.equal(result.operation.passed,true);
  assert.equal(result.custodyValidation.passed,false);assert.equal(result.readyForAnalysis,false);
- assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 
 test('successful launcher cannot hide failed native job custody or source clock evidence',t=>{
@@ -165,7 +167,7 @@ test('successful launcher cannot hide failed native job custody or source clock 
  const result=collectLocalSpeechRunEvidence(f.root,f.request,launch({stdout:JSON.stringify({ownedJobExited:true,exitCode:1})}));
  assert.equal(result.launcher.passed,true);assert.equal(result.custodyValidation.passed,false);
  assert.equal(result.operation.passed,false);assert.equal(result.readyForAnalysis,false);
- assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 
 for(const [name,patch] of [
@@ -183,7 +185,7 @@ for(const [name,patch] of [
  assert.equal(result.readyForAnalysis,false);assert.equal(result.overallPassed,false);
  assert.ok(result.failures.length>0);
  assert.deepEqual(fs.readFileSync(path.join(f.root,'local-aec-probe-result.json')),f.original);
- assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 
 test('missing or malformed native probe preserves custody without fabricating a receipt',t=>{
@@ -195,7 +197,7 @@ test('missing or malformed native probe preserves custody without fabricating a 
   assert.equal(result.custody.exitCode,0);assert.equal(result.readyForAnalysis,false);
   assert.equal(result.overallPassed,false);
   if(contents!==undefined)assert.equal(fs.readFileSync(path.join(f.root,'local-aec-probe-result.json'),'utf8'),contents);
-  assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality(),result).overallPassed,false);
+  assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),acceptedQuality(),result).overallPassed,false);
  }
 });
 
@@ -203,11 +205,11 @@ test('successful collection retains all strict gates and is not by itself accept
  const f=retainedRun(t),result=collectLocalSpeechRunEvidence(f.root,f.request,launch());
  assert.equal(result.readyForAnalysis,true);assert.equal(result.custodyValidation.passed,true);
  assert.equal(result.overallPassed,false);assert.equal(result.releaseEligible,false);
- assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},undefined,result).overallPassed,false);
- assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},acceptedQuality(),result).overallPassed,true);
+ assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),undefined,result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),acceptedQuality(),result).overallPassed,true);
  for(const quality of [{...acceptedQuality(),passed:false},{...acceptedQuality(),providerCalls:1},
   {...acceptedQuality(),status:'indeterminate'},{...acceptedQuality(),releaseEligible:true}]){
-  assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},quality,result).overallPassed,false);
+  assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),quality,result).overallPassed,false);
  }
 });
 
@@ -243,7 +245,7 @@ for(const [name,mutate] of [
  assert.equal(p.sourceMediaComplete.receipt.naturalRenderDrained,true);
  assert.equal(operation.passed,false);
  assert.match(operation.failures.join(';'),/source clock evidence/u);
- assert.equal(finalizeSpeechOutcome(operation,{passed:true},acceptedQuality()).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(operation,strictTap(),acceptedQuality()).overallPassed,false);
 });
 
 test('healthy launcher and custody cannot promote fully collected failed native operation',t=>{
@@ -251,7 +253,7 @@ test('healthy launcher and custody cannot promote fully collected failed native 
  assert.equal(result.launcher.passed,true);assert.equal(result.custodyValidation.passed,true);
  assert.equal(result.nativeReceipt.sourceMediaComplete.mediaPlaybackComplete,true);
  assert.equal(result.operation.passed,false);assert.equal(result.readyForAnalysis,false);
- assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 
 test('failure to persist collection summary blocks acceptance and retains preexisting summary',t=>{
@@ -262,7 +264,7 @@ test('failure to persist collection summary blocks acceptance and retains preexi
  assert.equal(result.operation.passed,true);assert.equal(result.readyForAnalysis,false);
  assert.ok(result.failures.some(f=>f.area==='collection-summary'));
  assert.equal(fs.readFileSync(path.join(f.root,'local-speech-evidence-collection.json'),'utf8'),existing);
- assert.equal(finalizeSpeechOutcome(result.operation,{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(result.operation,strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 
 for(const field of ['mediaPlaybackComplete','sourceEvidenceValidationPassed','sourceEvidenceValidationError','exitCode','receipt'])
@@ -394,7 +396,7 @@ for(const [name,change] of [
 });
 test('native idle success remains operation-only and cannot authorize acoustic quality',()=>{
  const operation=inspectSpeechOperation(idleProbe(),request());assert.equal(operation.passed,true);
- assert.equal(finalizeSpeechOutcome(operation,{passed:true},{passed:false}).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome(operation,strictTap(),{passed:false}).overallPassed,false);
 });
 
 test('fresh old Empty cannot authorize completion while actual capture work is in flight',()=>{
@@ -477,7 +479,7 @@ for(const [name,value] of [
   const operation=inspectSpeechOperation(p,request());
   assert.equal(operation.passed,false);
   assert.ok(operation.failures.includes('retained capture drain failure observation'));
-  assert.equal(finalizeSpeechOutcome(operation,{passed:true},acceptedQuality()).overallPassed,false);
+  assert.equal(finalizeSpeechOutcome(operation,strictTap(),acceptedQuality()).overallPassed,false);
  }
 });
 test('absent or null failure observation preserves valid completion compatibility',()=>{
@@ -498,7 +500,7 @@ test('retained failure snapshot blocks analysis despite forged successful receip
  assert.ok(result.failures.some(f=>f.area==='native-operation'&&/capture drain failure observation/u.test(f.detail)));
  const sealed=JSON.parse(fs.readFileSync(path.join(f.root,'local-speech-evidence-collection.json'),'utf8'));
  assert.equal(sealed.readyForAnalysis,false);assert.equal(sealed.overallPassed,false);
- assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality(),result).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),acceptedQuality(),result).overallPassed,false);
 });
 for(const file of [
  'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/drain_observation.rs',
@@ -537,4 +539,20 @@ test('source clock diagnostic freeze retains canonical gate and raw observation 
 for(const file of sourceClockDiagnosticFreezeSources)test('source clock diagnostic freeze rejects tampering '+file,t=>{
  const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
  assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+});
+
+const partialCaptureFrozenSources=["apps/desktop/src-tauri/src/audio/engine/workers/capture_pipeline_tests.rs","apps/desktop/src-tauri/src/audio/aec_diagnostic_tap.rs","apps/desktop/src-tauri/src/audio/echo_cancel/production.rs","apps/desktop/src-tauri/src/audio/echo_cancel/partial_capture_tests.rs","apps/desktop/src-tauri/src/audio/engine/mod.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_diagnostics.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_pipeline.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_tail.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_tail_tests.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_tail_owner.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_tail_owner_tests.rs","apps/bridge-service-native/Cargo.toml","apps/bridge-service-native/src/bin/injector/source_clock/independent_observation.rs"];
+test('real partial capture processing and independent clock observations are frozen',()=>{
+ for(const file of partialCaptureFrozenSources)assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file),file);
+});
+for(const file of partialCaptureFrozenSources)test('partial capture source freeze rejects tampering '+file,t=>{
+ const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+});
+
+test('legacy tap and mismatched processing seal cannot authorize final local outcome',()=>{
+ assert.equal(finalizeSpeechOutcome({passed:true},{passed:true},acceptedQuality()).overallPassed,false);
+ const quality=acceptedQuality();delete quality.tapEvidence;assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),quality).overallPassed,false);
+ for(const patch of [{captureProcessingVersion:0},{processingVerified:false},{verifiedProcessingCount:0},{terminalSha256:'b'.repeat(64)}])
+  assert.equal(finalizeSpeechOutcome({passed:true},{...strictTap(),...patch},acceptedQuality()).overallPassed,false);
 });

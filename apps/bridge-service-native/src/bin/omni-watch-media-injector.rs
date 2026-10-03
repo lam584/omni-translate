@@ -39,10 +39,10 @@ mod injector {
     const RENDER_ABSOLUTE_EXTRA_TIMEOUT: Duration = Duration::from_secs(120);
     // Injector-only scheduling reserve. A four-worker production run observed a
     // 1,159 ms wake delay while Windows was starting the paid desktop workload.
-    // Keep two seconds of submitted media in WASAPI so that a transient scheduler
+    // Timer-driven shared buffering retains two seconds in WASAPI so a transient scheduler
     // pause does not create an actual zero-padding underrun. Underrun detection
     // remains fail-closed once this real buffer is exhausted.
-    const INJECTOR_EVENT_BUFFER_DURATION_HNS: i64 = 20_000_000;
+    const INJECTOR_SHARED_BUFFER_DURATION_HNS: i64 = 20_000_000;
     const HUNDRED_NANOSECONDS_PER_SECOND: u64 = 10_000_000;
 
     #[derive(Serialize)]
@@ -459,7 +459,7 @@ mod injector {
             None,
         );
         let mut render =
-            MediaRender::open_event_driven_unstarted(&device, &format, render_sample_rate_hz, args.reference_pcm48k_mono_path.is_some())?;
+            MediaRender::open_timer_driven_unstarted(&device, &format, render_sample_rate_hz, args.reference_pcm48k_mono_path.is_some())?;
         let buffer_frames = render.buffer_frames;
         let total_frames = render_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(render_samples);
@@ -492,14 +492,7 @@ mod injector {
             let mut last_wake_at = render_started_at;
             rendered_frames = observed_prefill_frames;
             while !pending.is_empty() {
-                render.wait_for_refill().map_err(|error| {
-                    format!(
-                        "media refill wait failure: submittedFrames={rendered_frames} totalFrames={total_frames} remainingFrames={} wakeCount={} maxWakeIntervalMilliseconds={} detail={error}",
-                        total_frames.saturating_sub(rendered_frames),
-                        pacing_authority.wake_count,
-                        pacing_authority.max_wake_interval_ms,
-                    )
-                })?;
+                render.wait_for_refill();
                 let observed_at = Instant::now();
                 observe_source_clock(&mut source_clock, &mut raw_trace, &render, pacing_authority.submitted_frames)?;
                 let padding_frames = render.current_padding_frames().map_err(|error| {
@@ -787,28 +780,28 @@ mod injector {
         }
     }
 
-    fn injector_event_buffer_frames(render_sample_rate_hz: u32) -> usize {
+    fn injector_shared_buffer_frames(render_sample_rate_hz: u32) -> usize {
         let numerator = u64::from(render_sample_rate_hz)
-            .saturating_mul(INJECTOR_EVENT_BUFFER_DURATION_HNS as u64);
+            .saturating_mul(INJECTOR_SHARED_BUFFER_DURATION_HNS as u64);
         numerator
             .div_ceil(HUNDRED_NANOSECONDS_PER_SECOND)
             .try_into()
             .unwrap_or(usize::MAX)
     }
 
-    fn validate_injector_event_buffer_frames(
+    fn validate_injector_shared_buffer_frames(
         buffer_frames: usize,
         render_sample_rate_hz: u32,
     ) -> Result<(), String> {
         if render_sample_rate_hz == 0 {
             return Err(
-                "event render buffer cannot be validated with a zero render sample rate".to_string(),
+                "shared render buffer cannot be validated with a zero render sample rate".to_string(),
             );
         }
-        let required_buffer_frames = injector_event_buffer_frames(render_sample_rate_hz);
+        let required_buffer_frames = injector_shared_buffer_frames(render_sample_rate_hz);
         if buffer_frames < required_buffer_frames {
             return Err(format!(
-                "event render buffer is below injector scheduling tolerance: bufferFrames={buffer_frames} requiredBufferFrames={required_buffer_frames} renderSampleRateHz={render_sample_rate_hz} bufferDurationHns={INJECTOR_EVENT_BUFFER_DURATION_HNS}"
+                "shared render buffer is below injector scheduling tolerance: bufferFrames={buffer_frames} requiredBufferFrames={required_buffer_frames} renderSampleRateHz={render_sample_rate_hz} bufferDurationHns={INJECTOR_SHARED_BUFFER_DURATION_HNS}"
             ));
         }
         Ok(())
@@ -866,9 +859,7 @@ mod injector {
         let mut last_progress_at = initial_observed_at;
         while padding_frames > 0 {
             observe_clock()?;
-            render.wait_for_refill().map_err(|error| {
-                format!("media drain event wait failed: submittedFrames={submitted_frames} paddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}")
-            })?;
+            render.wait_for_refill();
             let next_padding_frames = render.current_padding_frames().map_err(|error| {
                 format!(
                     "media drain WASAPI failure: submittedFrames={submitted_frames} lastPaddingFrames={padding_frames} renderSampleRateHz={render_sample_rate_hz} detail={error}"

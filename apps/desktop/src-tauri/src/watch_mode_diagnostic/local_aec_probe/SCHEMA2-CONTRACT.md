@@ -141,3 +141,19 @@ real frames. Unknown clocks, discontinuous old prefixes and overflow are not
 rehabilitated by tail dequeue. The source clock's existing 1ms bound remains hard;
 additional endpoint format, raw QPC and non-Precise interrupt-time observations
 are diagnostic-only and cannot authorize a source origin or a pass.
+
+## Source injector native Initialize conformance
+
+The source media injector uses timer-driven shared WASAPI buffering with its
+unchanged two-second native scheduling reserve. Shared event-driven Initialize
+requires both duration and periodicity to be zero; the former helper combined an
+event flag with a two-second duration. The source helper now omits the event flag
+and SetEventHandle, pacing real GetCurrentPadding/refill observations every 10ms.
+The same-client render/clock services, endpoint, PCM, prefill coverage, zero-underrun
+requirement, stall/absolute budgets and frozen 1ms source clock gate are unchanged.
+This is a source test-tool correction, not a change to the user-selected capture
+or AEC mode. Native position/time stability still requires a new frozen run; API
+conformance or offline tests alone do not establish acoustic quality.
+
+Primary API contract (not an acceptance override):
+`https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize`

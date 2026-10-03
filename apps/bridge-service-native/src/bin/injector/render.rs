@@ -1,6 +1,5 @@
 use super::*;
 use windows::core::{GUID, HRESULT, Interface, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
     IAudioClient, IAudioClock, IAudioClock2, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
     PKEY_AudioEngine_DeviceFormat,
@@ -18,39 +17,34 @@ use sha2::{Digest, Sha256};
 
 #[path = "source_clock/independent_observation.rs"]
 pub(super) mod independent_observation;
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-
-// Keep the wasapi EventsShared configuration, including the scheduling reserve.
-// These exact values are used by Initialize/CreateEventW, not just by tests.
+// Shared event-driven Initialize requires a zero duration. This source helper
+// needs its audited two-second scheduling reserve, so use timer-driven shared
+// buffering instead. No capture/AEC mode or audio sample is changed.
 struct RenderConfiguration {
     share_mode: AUDCLNT_SHAREMODE,
     flags: u32,
     buffer_duration_hns: i64,
     periodicity_hns: i64,
     session_guid: Option<GUID>,
-    manual_reset: bool,
-    initially_signaled: bool,
 }
 
-const EVENT_RENDER_CONFIGURATION: RenderConfiguration = RenderConfiguration {
+const TIMER_RENDER_CONFIGURATION: RenderConfiguration = RenderConfiguration {
     share_mode: AUDCLNT_SHAREMODE_SHARED,
-    flags: AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-    buffer_duration_hns: INJECTOR_EVENT_BUFFER_DURATION_HNS,
+    flags: AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+    buffer_duration_hns: INJECTOR_SHARED_BUFFER_DURATION_HNS,
     periodicity_hns: 0,
     session_guid: None,
-    manual_reset: false,
-    initially_signaled: false,
 };
+const SOURCE_REFILL_PERIOD: Duration = Duration::from_millis(10);
 
-struct RenderEvent(HANDLE);
-
-impl Drop for RenderEvent {
-    fn drop(&mut self) {
-        // CreateEventW has already checked this is a valid owned handle.
-        let _ = unsafe { CloseHandle(self.0) };
+fn validate_timer_render_configuration(configuration: &RenderConfiguration) -> Result<(), String> {
+    if configuration.share_mode != AUDCLNT_SHAREMODE_SHARED
+        || configuration.flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK != 0
+        || configuration.buffer_duration_hns != INJECTOR_SHARED_BUFFER_DURATION_HNS
+        || configuration.periodicity_hns != 0 {
+        return Err("source timer-driven shared Initialize configuration is inconsistent".into());
     }
+    Ok(())
 }
 
 pub(super) struct NativeAudioClock(IAudioClock);
@@ -219,23 +213,22 @@ impl DiagnosticEndpoint {
 
 pub(super) struct MediaRender {
     // Fields drop in declaration order after Drop::drop stops the stream.
-    // Keep ALL services and the client before the event, including open errors.
     pub(super) audio_clock: Option<NativeAudioClock>,
     render_client: Option<IAudioRenderClient>,
     audio_client: IAudioClient,
     diagnostic_endpoint: Option<DiagnosticEndpoint>,
-    event_handle: RenderEvent,
     pub(super) buffer_frames: usize,
 }
 
 impl MediaRender {
-    pub(super) fn open_event_driven_unstarted(
+    pub(super) fn open_timer_driven_unstarted(
         device: &Device,
         format: &WaveFormat,
         render_sample_rate_hz: u32,
         clock_requested: bool,
     ) -> Result<Self, InjectorError> {
         validate_render_format(format, render_sample_rate_hz)?;
+        validate_timer_render_configuration(&TIMER_RENDER_CONFIGURATION)?;
         let endpoint_id = device.get_id().map_err(|error| {
             format!("query-render-endpoint-id: {}", error_text(error))
         })?;
@@ -252,7 +245,7 @@ impl MediaRender {
         // Activate once. Render and clock services are obtained from this client.
         let audio_client: IAudioClient = unsafe { native_device.Activate(CLSCTX_ALL, None) }
             .map_err(|error| format!("activate-audio-client: {}", error_text(error)))?;
-        let configuration = &EVENT_RENDER_CONFIGURATION;
+        let configuration = &TIMER_RENDER_CONFIGURATION;
         unsafe {
             audio_client.Initialize(
                 configuration.share_mode,
@@ -265,15 +258,9 @@ impl MediaRender {
         }.map_err(|error| format!("initialize-event-render: {}", error_text(error)))?;
         let buffer_frames = unsafe { audio_client.GetBufferSize() }
             .map_err(|error| format!("query-event-render-buffer: {}", error_text(error)))? as usize;
-        validate_injector_event_buffer_frames(buffer_frames, render_sample_rate_hz)
+        validate_injector_shared_buffer_frames(buffer_frames, render_sample_rate_hz)
             .map_err(|detail| InjectorError::with_buffer(detail, buffer_frames))?;
-        let event_handle = RenderEvent(unsafe {
-            CreateEventW(None, configuration.manual_reset, configuration.initially_signaled, PCWSTR::null())
-        }.map_err(|error| InjectorError::with_buffer(
-            format!("create-render-event: {}", error_text(error)), buffer_frames,
-        ))?);
-        // Install the event owner in the full RAII owner before SetEventHandle.
-        // A failure at any remaining step stops/releases COM before CloseHandle.
+        // Install client/services in their RAII owner before service queries.
         let mut render = Self {
             audio_clock: None,
             render_client: None,
@@ -281,13 +268,8 @@ impl MediaRender {
             diagnostic_endpoint: clock_requested.then(|| DiagnosticEndpoint { device: native_device,
                 endpoint_id: diagnostic_endpoint_id,
                 owner_thread: unsafe { GetCurrentThreadId() } }),
-            event_handle,
             buffer_frames,
         };
-        unsafe { render.audio_client.SetEventHandle(render.event_handle.0) }
-            .map_err(|error| InjectorError::with_buffer(
-                format!("set-render-event: {}", error_text(error)), buffer_frames,
-            ))?;
         render.render_client = Some(unsafe { render.audio_client.GetService::<IAudioRenderClient>() }
             .map_err(|error| InjectorError::with_buffer(
                 format!("get-render-client: {}", error_text(error)), buffer_frames,
@@ -319,13 +301,10 @@ impl MediaRender {
         (status.0, result)
     }
 
-    pub(super) fn wait_for_refill(&self) -> Result<(), String> {
-        match unsafe { WaitForSingleObject(self.event_handle.0, 1_000) } {
-            WAIT_OBJECT_0 => Ok(()),
-            WAIT_TIMEOUT => Err("render event wait failed: event timeout".to_string()),
-            WAIT_FAILED => Err(format!("render event wait failed: {}", windows::core::Error::from_thread())),
-            status => Err(format!("render event wait failed: unexpected status {}", status.0)),
-        }
+    pub(super) fn wait_for_refill(&self) {
+        // This only paces GetCurrentPadding; real padding and every submitted
+        // frame still determine refill, underrun, progress and natural drain.
+        std::thread::sleep(SOURCE_REFILL_PERIOD);
     }
 
     pub(super) fn write_available(&mut self, pending: &mut VecDeque<f32>) -> Result<usize, String> {
@@ -491,18 +470,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_configuration_is_equivalent_to_wasapi_events_shared() {
-        let configuration = &EVENT_RENDER_CONFIGURATION;
+    fn source_shared_initialize_obeys_documented_event_duration_contract() {
+        let configuration = &TIMER_RENDER_CONFIGURATION;
+        let event_driven = configuration.flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK != 0;
+        assert_eq!(configuration.periodicity_hns, 0);
+        if event_driven {
+            assert_eq!(configuration.buffer_duration_hns, 0,
+                "shared event-driven Initialize requires a zero buffer duration, not a scheduling reserve");
+        } else {
+            assert!(configuration.buffer_duration_hns > 0);
+        }
+    }
+
+    #[test]
+    fn native_timer_shared_configuration_keeps_reserve_without_an_event_flag() {
+        let configuration = &TIMER_RENDER_CONFIGURATION;
         assert_eq!(configuration.share_mode, AUDCLNT_SHAREMODE_SHARED);
         assert_eq!(configuration.share_mode.0, 0);
-        assert_eq!(configuration.flags, 0x8804_0000);
+        assert_eq!(configuration.flags, 0x8800_0000);
+        assert_eq!(configuration.flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0);
+        validate_timer_render_configuration(configuration).unwrap();
+        assert_eq!(SOURCE_REFILL_PERIOD, Duration::from_millis(10));
         assert_eq!(configuration.buffer_duration_hns, 20_000_000);
         assert_eq!(configuration.periodicity_hns, 0);
         assert!(configuration.session_guid.is_none());
-        assert!(!configuration.manual_reset);
-        assert!(!configuration.initially_signaled);
-        assert!(validate_injector_event_buffer_frames(96_000, 48_000).is_ok());
-        assert!(validate_injector_event_buffer_frames(95_999, 48_000).is_err());
+        assert!(validate_injector_shared_buffer_frames(96_000, 48_000).is_ok());
+        assert!(validate_injector_shared_buffer_frames(95_999, 48_000).is_err());
+    }
+
+    #[test]
+    fn timer_shared_rejects_event_flag_or_mismatched_duration_before_native_activation() {
+        for (flags, duration, period) in [
+            (0x8804_0000, 20_000_000, 0),
+            (0x8800_0000, 0, 0),
+            (0x8800_0000, 20_000_000, 1),
+        ] {
+            let invalid = RenderConfiguration { share_mode: AUDCLNT_SHAREMODE_SHARED,
+                flags, buffer_duration_hns: duration, periodicity_hns: period, session_guid: None };
+            assert!(validate_timer_render_configuration(&invalid).is_err());
+        }
     }
 
     #[test]

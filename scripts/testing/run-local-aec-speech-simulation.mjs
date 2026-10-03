@@ -59,6 +59,7 @@ export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(['apps/desktop/src-t
   'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/render_reference_tests.rs',
   'apps/bridge-service-native/src/bin/omni-watch-media-injector.rs',
   'apps/bridge-service-native/src/bin/injector/render.rs',
+  'apps/bridge-service-native/src/bin/injector/tests.rs',
   'apps/bridge-service-native/src/bin/injector/source_clock.rs',
   'apps/bridge-service-native/src/bin/injector/source_clock/raw_trace.rs',
   'apps/bridge-service-native/src/bin/injector/source_clock/tests.rs',

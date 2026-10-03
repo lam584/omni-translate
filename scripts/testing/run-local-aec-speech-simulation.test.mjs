@@ -507,3 +507,16 @@ for(const file of [
  const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,file),'tampered','utf8');
  assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
 });
+
+const capacityTopupTestSource='apps/desktop/src-tauri/src/audio/speech/output/native_streaming/capacity_topup_tests.rs';
+test('capacity topup freeze binds its deterministic regression source',()=>{
+ assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(capacityTopupTestSource));
+});
+test('capacity topup freeze rejects regression-source tampering',t=>{
+ const {root,hashes}=frozenSourceFixture(t);fs.appendFileSync(path.join(root,capacityTopupTestSource),'tampered','utf8');
+ assert.throws(()=>frozenRunner.verifyLocalSpeechSourceHashes(root,hashes),/frozen run source changed/);
+});
+
+test('capacity topup freeze includes actual matcher and delay-consumer diagnostic sources',()=>{
+ for(const file of ['apps/desktop/src-tauri/src/audio/state/echo_backend.rs','apps/desktop/src-tauri/src/audio/state/echo_backend_delay_mapping_tests.rs','apps/desktop/src-tauri/src/audio/engine/aec_timing.rs','apps/desktop/src-tauri/src/audio/speech/reference_rate_matcher.rs'])assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file),file);
+});

@@ -278,3 +278,39 @@ A timer wake only permits another unchanged padding/pump check. It is neither
 physical audio evidence nor a hard dispatch guarantee. Deterministic device-free
 facade tests and the declared vendor/consumer/provenance gates must pass before
 a separately frozen full-original vm171 run can evaluate this candidate.
+
+## 2026-10-03 capacity admission discriminator
+
+The continuous renderer separates source readiness from WASAPI free-capacity
+admission. A ready real reference block may fill a 96-frame free span of the
+existing 1056-frame endpoint instead of requiring space for all 480 frames.
+The 800ms/1000ms startup rules, two-step startup/phase prime, one-step steady
+pump, physical buffer size, owner authority and unexpected zero-padding fault
+are unchanged. The first two scenario reference budgets are clamped exactly;
+variable writes cannot overshoot the stage boundary. No input or output PCM is
+dropped, duplicated, muted or synthesized to implement this admission change.
+
+The nine deterministic capacity regressions ran against the original behavior
+(8 failed, 1 passed), then the same unchanged regression file passed all nine
+against the admission fix. They cover exact source/reference/transformed PCM,
+partial capacities, live small-delta coalescing, unchanged startup, phase
+prefixes, source budget boundaries, End tail and retained zero-padding failure.
+The fake endpoint additionally checks device-write frame/byte consistency.
+These device-free checks are not an acoustic cancellation pass.
+
+A separate current-behavior characterization compiles the exact production
+delay estimator in a test-only module. It compares the latest-write timing
+hint with the actually assembled reference-block head under a consistent
+clock, FIFO and owner history. A persistent 96-frame carry eventually produces
+22ms versus 20ms native delay inputs in this sequence. It also exercises epoch
+tail isolation and capture-owned hard reset. This demonstrates a remaining
+timing-mapping defect; it is not a timing fix or an acoustic root-cause claim.
+The characterization must not be counted as an AEC acceptance test.
+
+The worktree was restored from its archived source snapshot at c44f8289.
+Ignored historical recordings/reports/API audio did not return with that
+snapshot. Do not regenerate purported historical raw evidence from summaries
+or award an old pass. Preserve any new fixture and raw run outside the managed
+worktree as well as in the run directory before a future archive. A new API
+fixture, if required because those assets cannot be recovered, is a separately
+identified, budgeted generation batch, not the original frozen waveform.

@@ -447,12 +447,22 @@ impl NativeDesktopStream {
         }
         let startup_timed_out = !self.started && self.first_audio_at.is_some_and(|t| t.elapsed() >= STARTUP_MAX_WAIT);
         let prefix = !self.scenario.is_empty() && self.stage.prefix_remaining > 0;
-        let frames = if prefix { self.stage.prefix_remaining.min(BLOCK_FRAMES) }
-            else { self.queue.buffered_frames().min(BLOCK_FRAMES) };
-        if frames > 0 && available >= frames && (prefix || frames == BLOCK_FRAMES || self.queue.ended || startup_timed_out) {
+        let buffered = self.queue.buffered_frames();
+        // Source readiness and device admission are separate: a ready 10ms
+        // block may use a smaller free device span without inventing PCM.
+        // The original small-delta coalescing/startup rules remain unchanged.
+        let ready = prefix || buffered >= BLOCK_FRAMES || self.queue.ended || startup_timed_out;
+        let reference_limit = if !self.scenario.is_empty() && self.stage.index < 2 {
+            self.scenario_phase_frames.saturating_sub(self.stage.reference_frames)
+                .min(BLOCK_FRAMES as u64) as usize
+        } else { BLOCK_FRAMES };
+        let requested_frames = if prefix { self.stage.prefix_remaining.min(BLOCK_FRAMES) }
+            else { buffered.min(reference_limit) };
+        let frames = requested_frames.min(available);
+        if ready && frames > 0 {
             self.observe_pump(padding_qpc, buffer_frames, Some(padding), frames, pump_diagnostic::Decision::WriteRequested);
             let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
-            let reference = if prefix { Vec::new() } else { self.queue.take_reference(frames, startup_timed_out) };
+            let reference = if prefix { Vec::new() } else { self.queue.take_reference(frames, true) };
             let physical = if prefix { vec![0.0; frames * 2] } else if let Some(assignment) = self.scenario.get(self.stage.index) {
                 reference.iter().map(|s| assignment.phase.physical_sample(*s)).collect::<Vec<_>>()
             } else { reference.clone() };
@@ -510,9 +520,9 @@ impl NativeDesktopStream {
         }
         let decision = if self.queue.ended && self.queue.buffered_frames() == 0 {
             if padding == 0 { pump_diagnostic::Decision::PhysicalDrained } else { pump_diagnostic::Decision::PhysicalDraining }
-        } else if frames > 0 && available < frames { pump_diagnostic::Decision::DeviceFull }
+        } else if requested_frames > 0 && available == 0 { pump_diagnostic::Decision::DeviceFull }
         else { pump_diagnostic::Decision::AwaitingReferenceBlock };
-        self.observe_pump(padding_qpc, buffer_frames, Some(padding), frames, decision);
+        self.observe_pump(padding_qpc, buffer_frames, Some(padding), requested_frames, decision);
         if self.queue.ended && self.queue.buffered_frames() == 0 && padding == 0 {
             let prepared = self.prepared.as_ref().ok_or("native desktop client closed")?;
             if self.queue.submitted_source_frames != self.queue.accepted_source_frames * 2 {
@@ -677,6 +687,7 @@ mod tests {
         fn padding(&self) -> Result<u32,String> { Ok(self.0.borrow().padding) }
         fn write(&self, frames: usize, bytes: &[u8]) -> Result<(),String> {
             let mut s = self.0.borrow_mut();
+            if bytes.len() != frames * 8 { return Err("fake device frame/byte count mismatch".into()); }
             if s.padding as usize + frames > s.capacity as usize { return Err("fake device overflow".into()); }
             s.padding += frames as u32;
             s.writes.push(bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect());
@@ -859,14 +870,15 @@ mod tests {
         device.borrow_mut().capacity=1056;
         stream.push_pcm(&vec![100;19_200],24_000).unwrap(); stream.poll(&mut |_|Ok(())).unwrap();
         assert_eq!(device.borrow().padding,960);
+        // Use the existing device's 96 spare frames with real queued PCM.
+        stream.poll(&mut |_|Ok(())).unwrap(); assert_eq!(device.borrow().padding,1056);
         for _ in 0..30 {
-            // 96 free frames is insufficient for an unchanged 480-frame block.
             let before=stream.submitted_frames; stream.poll(&mut |_|Ok(())).unwrap();
             assert_eq!(stream.submitted_frames,before);
             device.borrow_mut().wakes.push_back((Ok(DesktopRenderWake::Signaled),480));
             assert_eq!(stream.wait_for_device(Duration::from_millis(2)),Ok(DesktopRenderWake::Signaled));
             stream.poll(&mut |_|Ok(())).unwrap();
-            assert_eq!(device.borrow().padding,960);
+            assert_eq!(device.borrow().padding,1056);
             assert_eq!(stream.submitted_frames,before+480);
         }
         assert_eq!(device.borrow().starts,1); assert_eq!(device.borrow().resets,0);
@@ -1148,6 +1160,8 @@ mod tests {
         assert_eq!(physical[third_start+7680*2],aec_live_scenario::AecLiveScenarioPhase::Nonlinear.physical_sample(reference_third));
         assert_ne!(physical[third_start+7680*2],reference_third);
     }
+
+    include!("native_streaming/capacity_topup_tests.rs");
 
     #[test]
     fn local_profile_entry_preserves_exclusive_guard_and_rejects_short_or_late_configuration() {

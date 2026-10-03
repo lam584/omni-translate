@@ -524,6 +524,8 @@ impl AudioStateStore {
 mod tests {
     use super::*;
 
+    include!("echo_backend_delay_mapping_tests.rs");
+
     struct TraceEngine(Arc<Mutex<Vec<&'static str>>>);
 
     impl crate::audio::echo_cancel::EchoCancellerEngine for TraceEngine {

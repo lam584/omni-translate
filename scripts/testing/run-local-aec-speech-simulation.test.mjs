@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import {createLocalSpeechRequest,inspectSpeechOperation,parseLocalSpeechArgs,finalizeSpeechOutcome,LOCAL_SPEECH_BUDGETS,localSpeechJobDeadline,collectLocalSpeechRunEvidence} from './run-local-aec-speech-simulation.mjs';
+import {createLocalSpeechRequest,inspectSpeechOperation,parseLocalSpeechArgs,finalizeSpeechOutcome,createLocalSpeechTapOutcome,verifyLocalSpeechTapEvidence,LOCAL_SPEECH_BUDGETS,localSpeechJobDeadline,collectLocalSpeechRunEvidence} from './run-local-aec-speech-simulation.mjs';
 import {assembleLocalSpeechFixture} from './local-aec-speech-fixture.mjs';
 import {createSpeechSynthesisPlan} from './generate-local-aec-speech-fixture.mjs';
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
@@ -104,7 +104,15 @@ test("native input budget stays 180s and cleanup remains within the original 195
 const strictTap=()=>({passed:true,complete:true,captureProcessingVersion:1,processingVerified:true,
  verifiedProcessingCount:1,terminalSha256:'a'.repeat(64)});
 const acceptedQuality=()=>({tapEvidence:strictTap(),passed:true,status:'passed',scope:'local-aec-speech-simulation',providerCalls:0,
- releaseEligible:false,modelInputLeakageVerified:false,semanticLeakageChainVerified:false});
+ releaseEligible:false,modelInputLeakageVerified:false,semanticLeakageChainVerified:false,captureQueueLedger:timeSegmentQueue()});
+function timeSegmentQueue(tap=strictTap()) {
+ return {schemaVersion:2,timeSegmentsValidated:true,diagnosticOnly:true,qualityAcceptance:false,
+  formalCaptureClockAcceptance:false,resolved:true,reviewSatisfied:true,status:'resolved',required:true,
+  owners:1,packets:tap.verifiedProcessingCount,dequeues:tap.verifiedProcessingCount,inputs:tap.verifiedProcessingCount,
+  terminalSha256:'c'.repeat(64),metadataSha256:'d'.repeat(64),mainTerminalSha256:tap.terminalSha256,
+  mainMetadataSha256:'e'.repeat(64),freezeSha256:'f'.repeat(64)};
+}
+
 function retainedRun(t,nativeProbe=probe()){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'aec-speech-retained-run-'));
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -580,4 +588,93 @@ for (const file of timeSegmentFrozenSources) test('time-segment source freeze re
  const { root, hashes } = frozenSourceFixture(t);
  fs.appendFileSync(path.join(root, file), '\nchanged', 'utf8');
  assert.throws(() => frozenRunner.verifyLocalSpeechSourceHashes(root, hashes), /frozen run source changed/);
+});
+
+test('v4 boundary processing-v2 sealed shape is accepted only as a hypothetical successful quality result',()=>{
+ // Portable projection of the real d122 run's tap/queue seal shape. Its failed
+ // source clock and not-run acoustic quality are NOT changed or accepted here.
+ const tap={...strictTap(),captureProcessingVersion:2,verifiedProcessingCount:6955,
+  terminalSha256:'769798c14506fc1331290e64b1ad858e1c49e605c22b88be0bde9641980f160a'};
+ const quality={...acceptedQuality(),tapEvidence:{...tap},captureQueueLedger:{...timeSegmentQueue(tap),packets:13895,
+  terminalSha256:'bd2b1a9d0f1f649ecb1f0d50d7b57789fcd3b32c693fe917e9eaeeaba823f1dd',
+  metadataSha256:'703e2947fb570ec34fae6bb17e683037d80795628fe05a0490dc0e91c0528824',
+  mainMetadataSha256:'5a1c19cd698555e19e61d42b346bb00356186504a7dd3d801f8a4c9449f751b1',
+  freezeSha256:'b98ec614fbc7326357d50c13df915351c967134ac807a7f03fba6380803e8d97'}};
+ assert.equal(finalizeSpeechOutcome({passed:true},tap,quality).overallPassed,true);
+ assert.equal(finalizeSpeechOutcome({passed:false},tap,quality).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},tap,{...quality,passed:false,status:'not-run'}).overallPassed,false);
+});
+test('v4 boundary-free processing-v1 still rejects legacy queue-v1 authority',()=>{
+ const quality=acceptedQuality();quality.captureQueueLedger.schemaVersion=1;
+ assert.equal(finalizeSpeechOutcome({passed:true},strictTap(),quality).overallPassed,false);
+});
+
+
+test('v4 shared live tap projection and finalizer accept verified processing-v1/v2 only with exact queue-v2 seals',()=>{
+ for(const version of [1,2]){
+  const tap={...strictTap(),captureProcessingVersion:version,verifiedProcessingCount:3};
+  const quality={...acceptedQuality(),tapEvidence:{...tap},captureQueueLedger:timeSegmentQueue(tap)};
+  const projected=createLocalSpeechTapOutcome(quality);
+  assert.equal(projected.passed,true);assert.equal(projected.captureProcessingVersion,version);
+  assert.equal(projected.verifiedProcessingCount,3);assert.equal(projected.terminalSha256,tap.terminalSha256);
+  assert.equal(verifyLocalSpeechTapEvidence(projected,quality),true);
+  assert.equal(finalizeSpeechOutcome({passed:true},projected,quality).overallPassed,true);
+  assert.equal(finalizeSpeechOutcome({passed:false},projected,quality).overallPassed,false);
+  assert.equal(finalizeSpeechOutcome({passed:true},projected,{...quality,passed:false}).overallPassed,false);
+  assert.equal(finalizeSpeechOutcome({passed:true},projected,{...quality,status:'indeterminate'}).overallPassed,false);
+  for(const collection of [{readyForAnalysis:false},{readyForAnalysis:true,launcher:{passed:false},custodyValidation:{passed:true},failures:[]},
+   {readyForAnalysis:true,launcher:{passed:true},custodyValidation:{passed:false},failures:[]},
+   {readyForAnalysis:true,launcher:{passed:true},custodyValidation:{passed:true},failures:[{detail:'1ms source clock failed'}]}])
+   assert.equal(finalizeSpeechOutcome({passed:true},projected,quality,collection).overallPassed,false);
+ }
+});
+
+test('v4 mismatched or unknown processing/clock/seal evidence cannot authorize either tap path',()=>{
+ const cases=[
+  ['missing tap',q=>{delete q.tapEvidence;}],['missing queue',q=>{delete q.captureQueueLedger;}],
+  ['tap incomplete',q=>{q.tapEvidence.complete=false;}],['tap completeness absent',q=>{delete q.tapEvidence.complete;}],
+  ['processing unverified',q=>{q.tapEvidence.processingVerified=false;}],
+  ...[0,3,'2',null,undefined].map(version=>['unknown version '+version,q=>{q.tapEvidence.captureProcessingVersion=version;}]),
+  ['zero count',q=>{q.tapEvidence.verifiedProcessingCount=0;}],['unsafe count',q=>{q.tapEvidence.verifiedProcessingCount=Number.MAX_SAFE_INTEGER+1;}],
+  ['fractional count',q=>{q.tapEvidence.verifiedProcessingCount=1.5;}],['missing count',q=>{delete q.tapEvidence.verifiedProcessingCount;}],
+  ['bad tap seal',q=>{q.tapEvidence.terminalSha256='not-a-sha256';}],
+  ['legacy queue',q=>{q.captureQueueLedger.schemaVersion=1;}],['unknown queue',q=>{q.captureQueueLedger.schemaVersion=3;}],
+  ...['timeSegmentsValidated','required','resolved','reviewSatisfied'].flatMap(key=>[
+   [key+' false',q=>{q.captureQueueLedger[key]=false;}],[key+' missing',q=>{delete q.captureQueueLedger[key];}],
+   [key+' truthy string',q=>{q.captureQueueLedger[key]='true';}]]),
+  ['legacy status',q=>{q.captureQueueLedger.status='legacy-diagnostic-only';}],
+  ['non-diagnostic authority',q=>{q.captureQueueLedger.diagnosticOnly=false;}],
+  ['invented quality authority',q=>{q.captureQueueLedger.qualityAcceptance=true;}],
+  ['invented clock authority',q=>{q.captureQueueLedger.formalCaptureClockAcceptance=true;}],
+  ['invented release authority',q=>{q.captureQueueLedger.releaseEligible=true;}],
+  ...['owners','packets','dequeues'].map(key=>[key+' zero',q=>{q.captureQueueLedger[key]=0;}]),
+  ['queue/capture count mismatch',q=>{q.captureQueueLedger.inputs++;}],
+  ['queue/main tap seal mismatch',q=>{q.captureQueueLedger.mainTerminalSha256='b'.repeat(64);}],
+  ...['terminalSha256','metadataSha256','mainTerminalSha256','mainMetadataSha256','freezeSha256'].map(key=>[
+   key+' absent',q=>{delete q.captureQueueLedger[key];}]),
+ ];
+ for(const version of [1,2])for(const [name,mutate]of cases){
+  const tap={...strictTap(),captureProcessingVersion:version};
+  const quality={...acceptedQuality(),tapEvidence:{...tap},captureQueueLedger:timeSegmentQueue(tap)};mutate(quality);
+  assert.equal(createLocalSpeechTapOutcome(quality).passed,false,version+' '+name);
+  assert.equal(finalizeSpeechOutcome({passed:true},tap,quality).overallPassed,false,version+' '+name);
+ }
+ for(const patch of [{captureProcessingVersion:2},{verifiedProcessingCount:2},{terminalSha256:'b'.repeat(64)},{complete:false}])
+  assert.equal(finalizeSpeechOutcome({passed:true},{...strictTap(),...patch},acceptedQuality()).overallPassed,false);
+ assert.equal(createLocalSpeechTapOutcome(undefined).passed,false);
+ const source=fs.readFileSync(new URL('./run-local-aec-speech-simulation.mjs',import.meta.url),'utf8');
+ assert.match(source,/outcome\.tap=createLocalSpeechTapOutcome\(outcome\.quality\)/u);
+ assert.match(source,/const processingVerified=verifyLocalSpeechTapEvidence\(tap,quality\)/u);
+});
+
+
+test('v4 actual failed source-clock/raw-discontinuity reconstruction stays failed despite resolved queue-v2',()=>{
+ const quality={...acceptedQuality(),passed:false,status:'indeterminate',tapEvidence:undefined,
+  captureQueueLedger:timeSegmentQueue({...strictTap(),verifiedProcessingCount:6955}),stages:[],
+  indeterminate:[{area:'source-clock',detail:'native independent 1ms bound failed'},
+   {area:'tap-seal',detail:'raw dataDiscontinuity capture clock metadata rejected'}]};
+ const tap=createLocalSpeechTapOutcome(quality);
+ assert.equal(tap.passed,false);assert.equal(finalizeSpeechOutcome({passed:false},tap,quality).overallPassed,false);
+ assert.equal(finalizeSpeechOutcome({passed:true},tap,quality).overallPassed,false);
+ assert.deepEqual(quality.stages,[]);assert.equal(quality.status,'indeterminate');
 });

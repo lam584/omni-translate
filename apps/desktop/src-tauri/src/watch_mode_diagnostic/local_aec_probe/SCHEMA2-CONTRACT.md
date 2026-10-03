@@ -253,3 +253,11 @@ boundary or a v1 journal blocks the new local gate. This is not acoustic accepta
 1ms and continuous open-input quiescence 2s remain unchanged. In particular this
 software boundary fix does not establish that the independent source-device clock
 failure is repaired, nor does simulated speech certify live LLM response behavior.
+The local runner's tap outcome and finalizer share one version-aware predicate.
+Verified processing v1 (no packet boundary) and v2 must match the same quality
+receipt's completeness, count and main terminal hash. Both also require the
+independently resolved queue-v2 time-segment projection, matching input count and
+main/sidecar/freeze seals; a historical queue-v1 journal cannot pass through a
+processing-v1 compatibility path. Unknown/mismatched versions fail closed.
+These structural checks do not turn a source-clock failure, raw discontinuity,
+indeterminate acoustic analysis or failed operation/custody into acceptance.

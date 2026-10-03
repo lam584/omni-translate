@@ -171,13 +171,39 @@ export function inspectSpeechOperation(probe, request) {
  const mmcssVal=validateProbeMmcssAudio(probe,request);if(!mmcssVal.valid){for(const f of mmcssVal.failures)failures.push(f);}
  return {passed:failures.length===0,failures,scope:'local-aec-speech-simulation',releaseEligible:false};
 }
+/** Bind already-verified tap processing to the independently sealed local v2
+ * time-segment queue projection. This is not an acoustic or clock validator;
+ * finalize retains every operation/quality gate below. Both run paths use this
+ * predicate so a real boundary receipt cannot be lost to a v1-only projection.
+ */
+export function verifyLocalSpeechTapEvidence(tap,quality){
+ const evidence=quality?.tapEvidence,queue=quality?.captureQueueLedger;
+ const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+ const positive=value=>Number.isSafeInteger(value)&&value>0;
+ const hash=value=>typeof value==='string'&&/^[a-f0-9]{64}$/u.test(value);
+ return object(tap)&&object(evidence)&&object(queue)
+  &&tap.complete===true&&evidence.complete===true
+  &&[1,2].includes(tap.captureProcessingVersion)
+  &&evidence.captureProcessingVersion===tap.captureProcessingVersion
+  &&tap.processingVerified===true&&evidence.processingVerified===true
+  &&positive(tap.verifiedProcessingCount)&&evidence.verifiedProcessingCount===tap.verifiedProcessingCount
+  &&hash(tap.terminalSha256)&&evidence.terminalSha256===tap.terminalSha256
+  &&queue.schemaVersion===2&&queue.timeSegmentsValidated===true&&queue.required===true
+  &&queue.resolved===true&&queue.reviewSatisfied===true&&queue.status==='resolved'
+  &&queue.diagnosticOnly===true&&queue.qualityAcceptance===false&&queue.formalCaptureClockAcceptance===false
+  &&(queue.releaseEligible===undefined||queue.releaseEligible===false)
+  &&positive(queue.owners)&&positive(queue.packets)&&positive(queue.dequeues)
+  &&queue.inputs===tap.verifiedProcessingCount
+  &&['terminalSha256','metadataSha256','mainTerminalSha256','mainMetadataSha256','freezeSha256'].every(key=>hash(queue[key]))
+  &&queue.mainTerminalSha256===tap.terminalSha256;
+}
+export function createLocalSpeechTapOutcome(quality){
+ const tap=quality?.tapEvidence;
+ return {...tap,passed:verifyLocalSpeechTapEvidence(tap,quality),
+  verification:'schema2-native-clock-PCM-seal-and-capture-processing-v1-v2-with-time-segment-queue-v2'};
+}
 export function finalizeSpeechOutcome(operation,tap,quality,collection){
- const processingVerified=tap?.captureProcessingVersion===1&&tap?.processingVerified===true
-  &&Number.isSafeInteger(tap?.verifiedProcessingCount)&&tap.verifiedProcessingCount>0
-  &&/^[a-f0-9]{64}$/u.test(tap?.terminalSha256??'')
-  &&quality?.tapEvidence?.captureProcessingVersion===1&&quality?.tapEvidence?.processingVerified===true
-  &&quality?.tapEvidence?.verifiedProcessingCount===tap.verifiedProcessingCount
-  &&quality?.tapEvidence?.terminalSha256===tap.terminalSha256;
+ const processingVerified=verifyLocalSpeechTapEvidence(tap,quality);
  const overallPassed=processingVerified&&operation?.passed===true&&tap?.passed===true&&quality?.passed===true&&quality?.status==='passed'
   &&quality?.scope==='local-aec-speech-simulation'&&quality?.releaseEligible===false&&quality?.providerCalls===0
   &&quality?.modelInputLeakageVerified===false&&quality?.semanticLeakageChainVerified===false
@@ -287,7 +313,7 @@ export async function runLocalAecSpeechSimulation(options){
   outcome.quality=analyzeLocalAecSpeech(outputDirectory,{nativeReceipt:probe,expectedExecutionId:executionId,expectedPhysicalDeviceId:request.physicalDeviceId,
    analyzer:{workspaceRoot:repoRoot,releaseExecutablePath:analyzer,releaseExecutableSha256:options.analyzerSha256,noBuild:true}});
   write(path.join(outputDirectory,'local-speech-quality.json'),outcome.quality);
-  outcome.tap={...outcome.quality.tapEvidence,passed:outcome.quality.tapEvidence?.complete===true&&outcome.quality.tapEvidence?.processingVerified===true&&outcome.quality.tapEvidence?.captureProcessingVersion===1,verification:'schema2-native-clock-PCM-seal-and-capture-processing-v1'};
+  outcome.tap=createLocalSpeechTapOutcome(outcome.quality);
   verifyLocalSpeechSourceHashes(repoRoot,sourceHashes);
   if(sha(bytes(desktop,200*1024*1024))!==options.desktopSha256||sha(bytes(injector,100*1024*1024))!==options.injectorSha256
    ||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('frozen run executable changed');

@@ -484,10 +484,8 @@ mod injector {
                 buffer_frames,
                 total_frames,
             )?;
-            render.start()?;
+            let render_started_at = source_clock_raw_trace::start_render_optional(&mut raw_trace, &render)?;
             pacing_authority.record_started();
-
-            let render_started_at = Instant::now();
             let render_absolute_timeout =
                 render_absolute_timeout(total_frames, render_sample_rate_hz);
             let mut last_progress_at = render_started_at;

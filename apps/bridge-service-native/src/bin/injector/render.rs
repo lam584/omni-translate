@@ -2,7 +2,7 @@ use super::*;
 use windows::core::{GUID, HRESULT, Interface, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
-    IAudioClient, IAudioClock, IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+    IAudioClient, IAudioClock, IAudioClock2, IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator,
     AUDCLNT_SHAREMODE, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
 };
@@ -73,6 +73,11 @@ fn reliable_clock_position(
 }
 
 impl NativeAudioClock {
+    // Optional diagnostic interface only; never supplies the strict stream clock.
+    pub(super) fn diagnostic_clock2(&self) -> windows::core::Result<IAudioClock2> {
+        self.0.cast()
+    }
+
     pub(super) fn get_frequency(&self) -> Result<u64, String> {
         unsafe { self.0.GetFrequency() }.map_err(error_text)
     }
@@ -178,8 +183,17 @@ impl MediaRender {
     }
 
     pub(super) fn start(&self) -> Result<(), String> {
-        unsafe { self.audio_client.Start() }
-            .map_err(|error| format!("start-render-stream: {}", error_text(error)))
+        self.start_with_status().1
+    }
+
+    pub(super) fn start_with_status(&self) -> (i32, Result<(), String>) {
+        // Typed vtable preserves native status without adding a second Start call.
+        let status = unsafe {
+            (Interface::vtable(&self.audio_client).Start)(Interface::as_raw(&self.audio_client))
+        };
+        let result = status.ok()
+            .map_err(|error| format!("start-render-stream: {}", error_text(error)));
+        (status.0, result)
     }
 
     pub(super) fn wait_for_refill(&self) -> Result<(), String> {

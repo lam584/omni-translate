@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { validateHostTimeOptIn, hostTimeSignaturePowerShell } from './local-aec-host-time-preflight.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isMain } from '../lib/testing-common.mjs';
@@ -128,7 +129,14 @@ Invoke-OmniInteractiveScheduledTask -Context $context
 `;
 }
 
-export function localAecProbeDesktopPowerShell({ executable, executableSha256, runtimeRoot, outputDirectory, requestPath, deadlineUtc, helperPath, helperSha256 }) {
+export function localAecProbeDesktopPowerShell({ executable, executableSha256, runtimeRoot, outputDirectory, requestPath, deadlineUtc, helperPath, helperSha256, hostTimeDiagnostic=null }) {
+  const hostBound=hostTimeDiagnostic ? validateHostTimeOptIn(hostTimeDiagnostic.dllPath,hostTimeDiagnostic.dllSha256) : null;
+  const hostScript=hostBound ? `$hostSignatureReceipt=& {
+${hostTimeSignaturePowerShell(hostBound)}}
+$env:OMNI_WATCH_MODE_AEC_HOST_TIME_DLL=${quote(hostBound.dllPath)}
+$env:OMNI_WATCH_MODE_AEC_HOST_TIME_DLL_SHA256=${quote(hostBound.dllSha256)}` : '';
+  const injectedNames=['OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY',
+    ...(hostBound?['OMNI_WATCH_MODE_AEC_HOST_TIME_DLL','OMNI_WATCH_MODE_AEC_HOST_TIME_DLL_SHA256']:[])];
   return `$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8
@@ -140,8 +148,9 @@ $allowed=@(${LOCAL_AEC_DESKTOP_ENV_ALLOWLIST.map(quote).join(',')})
 foreach($variable in @(Get-ChildItem Env:)) { if($allowed -cnotcontains $variable.Name) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') } }
 $env:OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST=${quote(requestPath)}
 $env:OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY=${quote(outputDirectory)}
+${hostScript}
 $credentialNames=@(Get-ChildItem Env: | Where-Object {$_.Name -match '(?i)(API_KEY|ACCESS_KEY|SECRET|TOKEN|CREDENTIAL)' } | ForEach-Object {$_.Name})
-$audit=[ordered]@{schemaVersion=1;artifactKind='watch-mode-local-aec-desktop-environment-audit';credentialLikeCount=$credentialNames.Count;retainedNames=@(Get-ChildItem Env: | ForEach-Object {$_.Name} | Sort-Object);injectedNames=@('OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST','OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY')}
+$audit=[ordered]@{schemaVersion=1;artifactKind='watch-mode-local-aec-desktop-environment-audit';credentialLikeCount=$credentialNames.Count;retainedNames=@(Get-ChildItem Env: | ForEach-Object {$_.Name} | Sort-Object);injectedNames=@(${injectedNames.map(quote).join(',')})}
 $auditBytes=[Text.UTF8Encoding]::new($false).GetBytes(($audit | ConvertTo-Json -Depth 4))
 $auditStream=[IO.File]::Open(${quote(path.join(outputDirectory, 'desktop-environment-audit.json'))},[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read); try{$auditStream.Write($auditBytes,0,$auditBytes.Length);$auditStream.Flush()}finally{$auditStream.Dispose()}
 if($credentialNames.Count -ne 0) {throw 'credential-like environment survived local AEC desktop scrub'}

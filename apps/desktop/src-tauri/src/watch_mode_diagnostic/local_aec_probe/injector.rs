@@ -70,6 +70,11 @@ impl InjectorChild {
             "USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA","PROGRAMDATA"] {
             if let Some(value) = std::env::var_os(name) { command.env(name, value); }
         }
+        // Only the two explicitly frozen read-only diagnostic bindings survive.
+        // The reader independently pins/verifies the fixed installed vendor DLL.
+        for name in ["OMNI_WATCH_MODE_AEC_HOST_TIME_DLL","OMNI_WATCH_MODE_AEC_HOST_TIME_DLL_SHA256"] {
+            if let Some(value) = std::env::var_os(name) { command.env(name, value); }
+        }
         #[cfg(windows)] { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
         let started_at_ms = crate::shared::time::now_unix_millis();
         let child = command.spawn().map_err(|e| e.to_string())?;

@@ -1,4 +1,5 @@
 mod closed_loop;
+mod native_queue_validation;
 mod capture_provenance;
 pub(crate) use capture_provenance::AecPostPacket;
 use capture_provenance::PostTapProvenance;
@@ -35,6 +36,15 @@ pub(crate) struct AecCaptureFrameMetadata {
     pub(crate) timestamp_error: bool,
     pub(crate) data_discontinuity: bool,
     pub(crate) queue_head_clock_valid: bool,
+}
+
+/// Identity allocated at the actual capture tap admission, independently of
+/// Provider lineage. Admission alone is not a successful writer receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AecCaptureDiagnosticIdentity {
+    pub(crate) sequence: u64,
+    pub(crate) reset_generation: u64,
+    pub(crate) post_sample_offset: u64,
 }
 
 /// Admission receipt from real owner-local native Empty queries and retained PCM.
@@ -173,6 +183,7 @@ struct LiveTap {
     writer: Mutex<Option<JoinHandle<()>>>,
     closed_loop: Arc<closed_loop::ClosedLoopTap>,
     post_provenance: Mutex<PostTapProvenance>,
+    capture_post_samples: Mutex<u64>,
 }
 
 #[derive(Debug)]
@@ -249,7 +260,7 @@ impl AecDiagnosticTap {
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            live: Some(LiveTap { sender, shared, writer: Mutex::new(Some(writer)), closed_loop, post_provenance: Mutex::new(PostTapProvenance::default()) }),
+            live: Some(LiveTap { sender, shared, writer: Mutex::new(Some(writer)), closed_loop, post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }),
             startup_error: None,
             lineage_enabled: true,
         })
@@ -394,16 +405,35 @@ impl AecDiagnosticTap {
 
     pub(crate) fn record_capture_with_processing(&self, pre: &[f32], post: &[f32],
         metadata: AecCaptureFrameMetadata, processing: Option<AecCaptureProcessing>) -> Option<AecPostPacket> {
-        let live = self.live.as_ref()?;
-        let _admission = live.shared.admit()?;
+        self.record_capture_with_processing_receipt(pre, post, metadata, processing).0
+    }
+
+    pub(crate) fn record_capture_with_processing_receipt(&self, pre: &[f32], post: &[f32],
+        metadata: AecCaptureFrameMetadata, processing: Option<AecCaptureProcessing>)
+        -> (Option<AecPostPacket>, Option<AecCaptureDiagnosticIdentity>) {
+        let Some(live) = self.live.as_ref() else { return (None, None); };
+        let Some(_admission) = live.shared.admit() else { return (None, None); };
+        // Serialize allocation AND send. The writer's post offset follows exactly
+        // this capture order, even with render/reset events interleaved. No PCM
+        // or clock changes and no Provider lineage activation are needed.
+        let Ok(mut post_samples) = live.capture_post_samples.lock() else {
+            live.shared.fail("AEC diagnostic capture admission counter poisoned".into());
+            return (None, None);
+        };
+        let Some(next_offset) = post_samples.checked_add(post.len() as u64) else {
+            live.shared.fail("AEC diagnostic capture admission sample count overflow".into());
+            return (None, None);
+        };
         let sequence = live.shared.sequence.fetch_add(1, Ordering::Relaxed);
         let reset_generation = live.shared.reset_generation.load(Ordering::Acquire);
+        let identity = AecCaptureDiagnosticIdentity { sequence, reset_generation, post_sample_offset: *post_samples };
         let packet = self.lineage_enabled.then(|| live.post_provenance.lock().expect("AEC post provenance poisoned")
             .capture(sequence, post, metadata, reset_generation));
         Self::send(live, TapEvent::Capture {
             sequence, reset_generation, metadata, processing, pre: pre.to_vec(), post: post.to_vec(),
         });
-        packet
+        *post_samples = next_offset;
+        (packet, Some(identity))
     }
 
     pub(crate) fn record_reset(&self, reason: &str, qpc_100ns: Option<u64>, continuity_id: u64) {

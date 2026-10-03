@@ -200,7 +200,7 @@
         let shared = Arc::new(Shared::default());
         let (sender, receiver) = mpsc::sync_channel(1);
         let tap = AecDiagnosticTap {
-            live: Some(LiveTap { sender, shared: shared.clone(), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), post_provenance: Mutex::new(PostTapProvenance::default()) }), startup_error: None, lineage_enabled: true,
+            live: Some(LiveTap { sender, shared: shared.clone(), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }), startup_error: None, lineage_enabled: true,
         };
         tap.record_reset("accepted", None, 0);
         tap.record_reset("full", None, 0);
@@ -215,7 +215,7 @@
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(receiver);
         let tap = AecDiagnosticTap {
-            live: Some(LiveTap { sender, shared: Arc::new(Shared::default()), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), post_provenance: Mutex::new(PostTapProvenance::default()) }), startup_error: None, lineage_enabled: true,
+            live: Some(LiveTap { sender, shared: Arc::new(Shared::default()), writer: Mutex::new(None), closed_loop: Arc::new(closed_loop::ClosedLoopTap::default()), post_provenance: Mutex::new(PostTapProvenance::default()), capture_post_samples: Mutex::new(0) }), startup_error: None, lineage_enabled: true,
         };
         tap.record_reset("disconnected", None, 0);
         let shared = &tap.live.as_ref().unwrap().shared;
@@ -409,3 +409,41 @@
         assert_eq!(row["aecProcessing"]["tailAdmission"]["captureResetGeneration"], 3);
         assert_eq!(row["aecProcessing"]["tailAdmission"]["byteLen"], 5376);
     }
+
+#[test]
+fn capture_receipt_is_real_and_sealable_without_provider_lineage() {
+    let dir = Directory::new();
+    let mut tap = AecDiagnosticTap::start(&dir.0).unwrap();
+    tap.lineage_enabled = false;
+    tap.record_reset("route-start", Some(100), 0);
+    let (packet, first) = tap.record_capture_with_processing_receipt(&[0.1; 4], &[0.05; 4], metadata(), None);
+    assert!(packet.is_none());
+    let first = first.unwrap();
+    tap.record_render(&[0.2; 2], 48_000, 2, Some(200), 0, 1, 1, 0, 0, 1, 0, 1, 1);
+    let (_, last) = tap.record_capture_with_processing_receipt(&[0.3; 2], &[0.1; 2], metadata(), None);
+    let last = last.unwrap();
+    assert_eq!(first, AecCaptureDiagnosticIdentity { sequence: 1, reset_generation: 1, post_sample_offset: 0 });
+    assert_eq!(last, AecCaptureDiagnosticIdentity { sequence: 3, reset_generation: 1, post_sample_offset: 4 });
+    let seal = tap.finish(Duration::from_secs(2)).unwrap();
+    assert_eq!(seal["sampleCounts"]["post"], 6);
+    let rows: Vec<Value> = std::fs::read_to_string(dir.0.join(METADATA_FILE)).unwrap()
+        .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    for receipt in [first, last] {
+        let row = rows.iter().find(|row| row["sequence"] == receipt.sequence).unwrap();
+        assert_eq!(row["kind"], "capture");
+        assert_eq!(row["resetGeneration"], receipt.reset_generation);
+        assert_eq!(row["postSampleOffset"], receipt.post_sample_offset);
+    }
+    assert!(tap.record_capture_with_processing_receipt(&[0.0; 2], &[0.0; 2], metadata(), None).1.is_none());
+}
+
+#[test]
+fn capture_admission_overflow_fails_without_guessing_a_receipt() {
+    let dir = Directory::new();
+    let tap = AecDiagnosticTap::start(&dir.0).unwrap();
+    *tap.live.as_ref().unwrap().capture_post_samples.lock().unwrap() = u64::MAX;
+    let (packet, identity) = tap.record_capture_with_processing_receipt(&[0.0; 2], &[0.0; 2], metadata(), None);
+    assert!(packet.is_none() && identity.is_none());
+    let error = tap.finish(Duration::from_secs(2)).unwrap_err();
+    assert!(error.contains("sample count overflow"));
+}

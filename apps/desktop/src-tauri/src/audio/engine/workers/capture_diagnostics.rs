@@ -23,6 +23,7 @@ pub(super) struct NativeCapturePacketWitness<'a> {
     pub(super) endpoint_id: Option<&'a str>,
     pub(super) capture_owner_id: Option<u64>,
     pub(super) capture_aec_reset_generation: Option<u64>,
+    pub(super) queue_append: Option<&'a super::capture_queue_provenance::QueueMutation>,
 }
 
 pub(super) fn record_native_capture_packet_witness(
@@ -59,6 +60,17 @@ pub(super) fn record_native_capture_packet_witness(
         "captureOwnerId": packet.capture_owner_id,
         "captureAecResetGeneration": packet.capture_aec_reset_generation,
         "resetGenerationDomain": "aec-diagnostic-tap",
+        "nativeResetGenerationDomain": "native-capture-owner",
+        "queueOwnerId": packet.queue_append.map(|r| r.owner_id),
+        "queueGenerationDomain": "capture-queue-ledger",
+        "packetId": packet.queue_append.and_then(|r| r.packet_id),
+        "appendStartByte": packet.queue_append.and_then(|r| r.bytes.map(|b| b.start)),
+        "appendEndByte": packet.queue_append.and_then(|r| r.bytes.map(|b| b.end)),
+        "queueGenerationBefore": packet.queue_append.map(|r| r.generation_before),
+        "queueGenerationAfter": packet.queue_append.map(|r| r.generation_after),
+        "ledgerError": packet.queue_append.and_then(|r| r.error),
+        "ledgerLastKnownHeadByte": packet.queue_append.map(|r| r.last_known_head),
+        "ledgerLastKnownTailByte": packet.queue_append.map(|r| r.last_known_tail),
     }));
 }
 
@@ -93,6 +105,11 @@ impl AecTapQueueClock {
             self.invalid_prefix_bytes = self.invalid_prefix_bytes.max(queued_bytes_before_read);
         }
         self.packet_clock_valid = true;
+    }
+
+    /// Only reads the existing production validity state; never rehabilitates bytes.
+    pub(super) fn diagnostic_state(&self) -> (usize, bool) {
+        (self.invalid_prefix_bytes, self.packet_clock_valid)
     }
 
     pub(super) fn next_chunk_valid(&self) -> bool {
@@ -196,4 +213,12 @@ pub(super) fn aec_tap_chunk_metadata(
     delay_samples: usize,
 ) -> AecCaptureFrameMetadata {
     aec_tap_frame_metadata(metadata, chunk_index.saturating_mul(super::CHUNK_FRAMES), delay_samples)
+}
+
+/// Explicit observed packet intersections, not clock/flag-based substitutions.
+pub(super) fn packet_ranges_json(ranges: &[super::capture_queue_provenance::PacketRange]) -> serde_json::Value {
+    serde_json::Value::Array(ranges.iter().map(|span| serde_json::json!({
+        "packetId": span.packet_id, "startByte": span.bytes.start, "endByte": span.bytes.end,
+        "packetOffsetStartByte": span.packet_offset_start, "packetOffsetEndByte": span.packet_offset_end,
+    })).collect())
 }

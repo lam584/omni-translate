@@ -1,5 +1,8 @@
 //! Isolated observation channel. Never supplies a successful source/c03 receipt.
 use super::{error_text, MediaRender, SourcePlaybackClock};
+#[path = "host_time_observation.rs"]
+mod host_time_observation;
+use host_time_observation::HostTimeObserver;
 use std::io::Write;
 use windows::core::Interface;
 use windows::Win32::Media::Audio::IAudioClock2;
@@ -131,6 +134,8 @@ pub(super) struct RawClockTrace {
     device_clock: Option<Result<IAudioClock2, (i32, String)>>,
     device_clock_observation: Option<serde_json::Value>,
     independent_time_observation: Option<serde_json::Value>,
+    host_time: Option<HostTimeObserver>,
+    host_time_observation: Option<serde_json::Value>,
     format_endpoint: Option<DiagnosticEndpoint>,
     final_observation: Option<serde_json::Value>,
     format_before_start: Option<serde_json::Value>,
@@ -161,7 +166,9 @@ impl RawClockTrace {
         Ok(Self { writer: std::io::BufWriter::new(file), path, sequence: 0,
             endpoint: endpoint.into(), rate, qpc_frequency, last_clock: None, last_padding: None, last_submitted: 0,
             start_observation: None, device_clock: None, device_clock_observation: None,
-            independent_time_observation: None, format_endpoint: None, final_observation: None,
+            // Pin/hash/load once BEFORE MediaRender::start_render, never in the audio pump.
+            independent_time_observation: None, host_time: Some(HostTimeObserver::from_env()), host_time_observation: None,
+            format_endpoint: None, final_observation: None,
             format_before_start: None, start_time_observation: None, independent_path,
             independent_writer, independent_error, independent_rows: 0 })
     }
@@ -243,9 +250,14 @@ impl RawClockTrace {
         value
     }
     pub(super) fn observe(&mut self, render: &MediaRender, submitted: usize, strict: &mut SourcePlaybackClock) -> Result<(), String> {
+        // Wall-time sidecar stays outside existing native GetPosition/QPC brackets.
+        // Missing opt-in never loads the DLL. Ownership lasts through the last read.
+        let host_before = self.host_time.as_ref().expect("host-time observer initialized before Start").observe(self.qpc_frequency);
         // Always sample the same native client, even after strict validation latches failure.
         let padding = render.current_padding_frames();
         let Some(clock) = render.audio_clock.as_ref() else {
+            let host_after = self.host_time.as_ref().unwrap().observe(self.qpc_frequency);
+            self.host_time_observation = Some(self.host_time.as_ref().unwrap().bracket(host_before, host_after, "host-wall-time-around-raw-GetPosition-not-called"));
             return self.observe_reading(Err("source clock missing".into()), submitted, padding,
                 (0, 0), None, strict, Some("source clock missing; GetPosition not called".into()));
         };
@@ -253,6 +265,8 @@ impl RawClockTrace {
         let (before, time_before) = self.independent_boundary();
         let (hresult, reading) = clock.get_position_with_status();
         let (after, time_after) = self.independent_boundary();
+        let host_after = self.host_time.as_ref().unwrap().observe(self.qpc_frequency);
+        self.host_time_observation = Some(self.host_time.as_ref().unwrap().bracket(host_before, host_after, "host-wall-time-around-raw-GetPosition"));
         self.independent_time_observation = Some(time_bracket("IAudioClock::GetPosition-call-bracket", vec![time_before, time_after]));
         let raw = reading.and_then(|(position, qpc)| frequency.map(|frequency| (position, frequency, qpc)));
         // QueryInterface once; optional failures never enter strict_raw or api_error.
@@ -323,15 +337,17 @@ impl RawClockTrace {
         self.last_submitted = submitted;
         Ok(())
     }
+    // Host evidence is sequence-linked here, never copied into strict/legacy clocks.
     fn record_independent_time(&mut self, primary: Option<serde_json::Value>,
         device: Option<serde_json::Value>, legacy: &serde_json::Value) {
+        let host_time = self.host_time_observation.take();
         if self.independent_error.is_some() { return; }
         let value = serde_json::json!({"schemaVersion":1,
             "artifactKind":"aec-source-independent-time-observation",
             "scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
             "origin":"same-legacy-raw-clock-sequence-independent-brackets",
             "sequence":self.sequence,"endpointId":self.endpoint,"processId":std::process::id(),
-            "clock1":primary,"clock2":device,"clock1Position":legacy["clockPosition"],
+            "clock1":primary,"clock2":device,"diagnosticHostTime":host_time,"clock1Position":legacy["clockPosition"],
             "clock1Qpc100ns":legacy["qpc100ns"],"clock1Hresult":legacy["rawClockHresult"],
             "clock2Position":legacy["diagnosticDeviceClock"]["clockPosition"],
             "clock2Qpc100ns":legacy["diagnosticDeviceClock"]["qpc100ns"],
@@ -414,6 +430,24 @@ impl RawClockTrace {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_time_unavailability_is_only_sequence_linked_optional_evidence() {
+        let dir=tempfile::tempdir().unwrap();
+        let mut trace=super::RawClockTrace::open(&dir.path().join("host.pcm"),"endpoint",48000,10_000_000).unwrap();
+        trace.host_time_observation=Some(serde_json::json!({"acceptanceAuthority":false,
+            "dllAvailable":false,"availabilityError":"SHA256 mismatch","before":null,"after":null}));
+        trace.record(Ok((48,384000,10001250)),960,Ok(144),(10001240,10001260),Some(0),Some("original strict failure"),None).unwrap();
+        trace.flush_independent_time();
+        let optional:serde_json::Value=serde_json::from_str(std::fs::read_to_string(&trace.independent_path).unwrap().trim()).unwrap();
+        trace.writer.flush().unwrap();
+        let legacy:serde_json::Value=serde_json::from_str(std::fs::read_to_string(&trace.path).unwrap().trim()).unwrap();
+        assert_eq!(optional["sequence"],legacy["sequence"]);
+        assert_eq!(optional["diagnosticHostTime"]["availabilityError"],"SHA256 mismatch");
+        assert_eq!(optional["strictValidationFailure"],"original strict failure");
+        assert!(legacy.get("diagnosticHostTime").is_none());
+        assert_eq!(legacy["qpc100ns"],10001250); assert!(legacy["nativeApiError"].is_null());
+        assert!(trace.host_time_observation.is_none());
+    }
     use super::*;
     #[test]
     fn raw_trace_keeps_post_failure_samples_without_ever_clearing_strict_failure() {

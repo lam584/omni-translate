@@ -87,7 +87,10 @@ impl ClosedLoopTap {
                         meta["sha256"]=json!(format!("{:x}",Sha256::digest(&bytes)));
                         provider.writer.write_all(&bytes)?; provider_samples+=samples.len() as u64; provider_events+=1;
                     } else {
-                        if !matches!(meta["kind"].as_str(),Some("render-lifecycle"|"stage-lifecycle"|"provider-lifecycle"|"native-capture-packet")) {
+                        if matches!(meta["kind"].as_str(), Some("native-capture-queue-dequeue" | "native-capture-queue-clock"
+                            | "native-capture-queue-reset" | "native-capture-queue-input")) {
+                            super::native_queue_validation::validate(&meta)?;
+                        } else if !matches!(meta["kind"].as_str(),Some("render-lifecycle"|"stage-lifecycle"|"provider-lifecycle"|"native-capture-packet")) {
                             return Err(io::Error::new(io::ErrorKind::InvalidData,"unknown closed-loop lifecycle event"));
                         }
                         lifecycle_events+=1;

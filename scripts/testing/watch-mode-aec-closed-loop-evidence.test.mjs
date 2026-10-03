@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS, buildAecClosedLoopEvidence,
-  verifyAecClosedLoopEvidence, createAecClosedLoopManifest, canonicalAecFreezePayload, AEC_CLOSED_LOOP_REQUIRED_ARTIFACTS } from './watch-mode-aec-closed-loop-evidence.mjs';
+  verifyAecClosedLoopEvidence, createAecClosedLoopManifest, canonicalAecFreezePayload, AEC_CLOSED_LOOP_REQUIRED_ARTIFACTS, AEC_CLOSED_LOOP_METADATA_MAX_BYTES,
+  validateCaptureQueueLedger, verifyCaptureQueueLedgerEvidence, AEC_CAPTURE_QUEUE_WITNESS_POLICY } from './watch-mode-aec-closed-loop-evidence.mjs';
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const f32 = (samples) => { const b = Buffer.alloc(samples.length * 4); samples.forEach((v, i) => b.writeFloatLE(v, i * 4)); return b; };
 const names = { render: 'aec-render-reference-48k-stereo.f32le', pre: 'aec-pre-capture-48k-stereo.f32le', post: 'aec-post-output-48k-stereo.f32le', metadata: 'aec-frame-metadata.jsonl' };
@@ -119,6 +120,17 @@ function fixture(t, responses = 1, { sourceFrames } = {}) {
       const bytes = Buffer.from(sourceClocks.map(e => JSON.stringify(e)).join("\n") + "\n");
       fs.writeFileSync(path.join(root, "aec-source-playback-clock.jsonl"), bytes);
       authority.aecClosedLoop.sourceClockSha256 = sha(bytes);
+    },
+    pinQueuePolicy(policy = AEC_CAPTURE_QUEUE_WITNESS_POLICY) {
+      const previous = JSON.parse(fs.readFileSync(path.join(root, 'aec-threshold-freeze.json'), 'utf8')).payload;
+      const newPayload = { ...previous, captureQueueWitnessPolicy: policy };
+      const bytes = Buffer.from(JSON.stringify({ payload: newPayload,
+        signatureBase64: crypto.sign(null, canonicalAecFreezePayload(newPayload), privateKey).toString('base64') }));
+      fs.writeFileSync(path.join(root, 'aec-threshold-freeze.json'), bytes);
+      manifest.freeze = { file: 'aec-threshold-freeze.json', sha256: sha(bytes), payloadSha256: sha(canonicalAecFreezePayload(newPayload)) };
+      authority.aecClosedLoop.freeze = manifest.freeze; seal.thresholdFreezeSha256 = sha(bytes);
+      fs.writeFileSync(path.join(root, 'aec-closed-loop-evidence.json'), JSON.stringify(manifest));
+      fs.writeFileSync(path.join(root, 'aec-closed-loop-terminal.json'), JSON.stringify(seal));
     },
     pinAnalyzer(executable) {
       const bytes=fs.readFileSync(executable);const inventory=[{path:'target/release/omni-benchmark.exe',sha256:sha(bytes)}];
@@ -694,4 +706,470 @@ test('native capture packet is not counted as formal output or provider input', 
   f.seal.writtenEvents += 1;
   f.saveEvents('side');
   fails(f, /sidecar final count mismatch/);
+});
+// Synthetic sealed journals exercise receipts, not a live queue/quality claim.
+function queueFixture(t) {
+  const f = fixture(t); const captures = f.base.filter(e => e.kind === 'capture');
+  let head = 0, tail = 0, generation = 0, packetId = 0, dequeueId = 0; let spans = [];
+  const additions = [];
+  const common = (kind, extra = {}) => ({ schemaVersion: 1, kind, diagnosticOnly: true,
+    qualityAcceptance: false, aecQualityAcceptance: false, formalCaptureClockAcceptance: false, releaseEligible: false,
+    direction: 'inbound', endpointId: 'initialized-native-endpoint', captureOwnerId: 41, queueOwnerId: 41,
+    captureAecResetGeneration: 0, nativeResetGenerationDomain: 'native-capture-owner',
+    queueGenerationDomain: 'capture-queue-ledger', resetGenerationDomain: 'aec-diagnostic-tap', resetGeneration: 0,
+    queueGeneration: generation, qpc100ns: 10000000, ledgerError: null,
+    ledgerLastKnownHeadByte: head, ledgerLastKnownTailByte: tail, ...extra });
+  const intersections = (start, end) => spans.flatMap(p => {
+    const left = Math.max(start, p.startByte), right = Math.min(end, p.endByte);
+    return left < right ? [{ packetId: p.packetId, startByte: left, endByte: right,
+      packetOffsetStartByte: left - p.startByte, packetOffsetEndByte: right - p.startByte }] : [];
+  });
+  for (let index = 0; index < captures.length;) {
+    // An eager batch contains multiple chunks; the final chunk is a real tail.
+    const count = Math.min(2, captures.length - index - 1) || 1;
+    const group = captures.slice(index, index + count);
+    for (const c of group) {
+      const bytes = c.preSampleCount * 4;
+      const sizes = packetId === 0 ? [768, bytes - 768] : [bytes];
+      for (const size of sizes) {
+        const before = tail - head, start = tail, genBefore = generation;
+        tail += size; generation += 1; packetId += 1;
+        spans.push({ packetId, startByte: start, endByte: tail });
+        additions.push(common('native-capture-packet', { requestedEndpointId: 'requested-native-endpoint',
+          packetId, rawFrameCount: size / 8, rawByteCount: size, blockAlignBytes: 8,
+          rawPacketDeviceFrameIndex: start / 8, rawPacketQpc100ns: Math.round(10000000 + start / 8 * 10000000 / 48000),
+          observedQpc100ns: 10000000, dataDiscontinuity: false, silent: false, timestampError: false,
+          queuedBytesBeforeRead: before, queuedBytesAfterRead: tail - head,
+          appendStartByte: start, appendEndByte: tail, queueGenerationBefore: genBefore, queueGenerationAfter: generation }));
+        additions.push(common('native-capture-queue-clock', { packetId, invalidPrefixBytes: 0,
+          invalidPrefixStartByte: head, invalidPrefixEndByte: head, invalidPrefixPacketRanges: [],
+          packetClockValid: true, queueHeadClockValidForNextChunk: true }));
+      }
+    }
+    const start = head, bytes = group.reduce((n, c) => n + c.preSampleCount * 4, 0), genBefore = generation;
+    const packetRanges = intersections(start, start + bytes);
+    head += bytes; generation += 1; dequeueId += 1;
+    const isTail = index + count === captures.length;
+    additions.push(common('native-capture-queue-dequeue', { dequeueKind: isTail ? 'partial-tail' : 'full-chunk-batch',
+      dequeueId, dequeueStartByte: start, dequeueEndByte: head, dequeuedBytes: bytes,
+      queuedBytesBefore: tail - start, queuedBytesAfter: tail - head,
+      chunkByteLength: isTail ? null : group[0].preSampleCount * 4, chunkCount: count,
+      queueGenerationBefore: genBefore, queueGenerationAfter: generation, packetRanges }));
+    let offset = start;
+    for (const [chunkIndex, c] of group.entries()) {
+      const size = c.preSampleCount * 4;
+      additions.push(common('native-capture-queue-input', { dequeueId, chunkIndex,
+        inputStartByte: offset, inputEndByte: offset + size, inputByteCount: size,
+        packetRanges: intersections(offset, offset + size), captureIdentityAvailable: true, dequeueMappingAvailable: true,
+        mainCaptureSequence: c.sequence, mainCaptureResetGeneration: c.resetGeneration,
+        mainCapturePostSampleOffset: c.postSampleOffset, timestampError: c.timestampError,
+        dataDiscontinuity: c.dataDiscontinuity, queueHeadClockValid: c.queueHeadClockValid }));
+      offset += size;
+    }
+    spans = spans.filter(p => p.endByte > head); index += count;
+  }
+  f.base.push({ schemaVersion: 3, kind: 'reset', sequence: f.base.length, resetGeneration: 1,
+    continuityId: 0, qpc100ns: 30000000, reason: 'diagnostic-final-reset' });
+  Object.assign(f.terminal, { attemptedEvents: f.base.length, acceptedEvents: f.base.length, writtenEvents: f.base.length,
+    lastAttemptedSequence: f.base.length - 1, lastWrittenSequence: f.base.length - 1, resetGeneration: 1 });
+  f.terminal.eventCounts.reset = 1; f.saveEvents('base');
+  additions.push(common('native-capture-queue-reset', { reason: 'diagnostic-final-reset', succeeded: true, error: null,
+    captureAecResetGeneration: 1, captureAecResetGenerationBefore: 0, captureAecResetGenerationAfter: 1,
+    resetGeneration: 1, queueGenerationBefore: generation, queueGenerationAfter: generation,
+    queuedBytes: 0, retainedPacketRanges: [] }));
+  f.side.push(...additions);
+  f.saveQueue = () => {
+    f.side.forEach((e, i) => { e.sequence = i; });
+    Object.assign(f.seal, { attemptedEvents: f.side.length, acceptedEvents: f.side.length, writtenEvents: f.side.length,
+      lifecycleEvents: f.side.filter(e => !['physical-output', 'provider-input'].includes(e.kind)).length });
+    f.saveEvents('side');
+  };
+  f.saveQueue(); return f;
+}
+
+test('sealed queue ledger binds short appends, eager batch chunks and tail to actual main captures', (t) => {
+  const f = queueFixture(t); const result = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(result.passed, true, result.violations.join('; '));
+  assert.equal(result.releaseEligible, false); assert.equal(result.captureQueueLedger.resolved, true);
+  assert.equal(result.captureQueueLedger.inputs, f.base.filter(e => e.kind === 'capture').length);
+  assert.equal(result.captureQueueLedger.qualityAcceptance, false);
+  assert.equal(result.captureQueueLedger.formalCaptureClockAcceptance, false);
+  assert.equal(result.captureQueueLedger.reviewSatisfied, true);
+  assert(f.side.some(e => e.kind === 'native-capture-queue-dequeue' && e.chunkCount > 1));
+  assert(f.side.some(e => e.kind === 'native-capture-queue-dequeue' && e.dequeueKind === 'partial-tail'));
+  assert(f.side.some(e => e.kind === 'native-capture-packet' && e.rawFrameCount === 96));
+  const manifest = createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey });
+  assert.equal(manifest.passed, true, manifest.violations.join('; '));
+});
+
+test('queue kinds reject authority/domain/identity failures independently', async (t) => {
+  const mutations = [
+    ['diagnostic authority', e => { e.qualityAcceptance = true; }],
+    ['native domain', e => { e.nativeResetGenerationDomain = 'aec-diagnostic-tap'; }],
+    ['queue domain', e => { e.queueGenerationDomain = 'tail-admission'; }],
+    ['tap domain', e => { e.resetGenerationDomain = 'native-capture-owner'; }],
+    ['owner unavailable', e => { e.captureOwnerId = null; }],
+    ['queue owner substitution', e => { e.queueOwnerId += 1; }],
+    ['endpoint unavailable', e => { e.endpointId = null; }],
+    ['endpoint substitution', e => { e.endpointId = 'other-endpoint'; }],
+    ['sticky ledger error', e => { e.ledgerError = 'packet-span-retention-bound'; }],
+    ['missing ledger error field', e => { delete e.ledgerError; }],
+    ['unsafe byte integer', e => { e.ledgerLastKnownTailByte = Number.MAX_SAFE_INTEGER + 1; }],
+    ['unreceipted native reset', e => { e.captureAecResetGeneration += 1; }],
+  ];
+  for (const kind of ['native-capture-queue-dequeue', 'native-capture-queue-clock', 'native-capture-queue-reset', 'native-capture-queue-input']) {
+    for (const [name, mutate] of mutations) await t.test(kind + ' / ' + name, (t) => {
+      const f = queueFixture(t); mutate(f.side.find(e => e.kind === kind)); f.saveQueue(); fails(f, /queue/);
+    });
+  }
+});
+
+test('queue append/dequeue/old-prefix evidence rejects invented or omitted ranges', async (t) => {
+  const checks = [
+    ['append range', f => { f.side.find(e => e.kind === 'native-capture-packet').appendStartByte += 8; }],
+    ['append packet replay', f => { f.side.filter(e => e.kind === 'native-capture-packet')[1].packetId = 1; }],
+    ['append generation', f => { f.side.find(e => e.kind === 'native-capture-packet').queueGenerationAfter += 1; }],
+    ['append owner unknown', f => { f.side.find(e => e.kind === 'native-capture-packet').captureOwnerId = null; }],
+    ['dequeue missing', f => { const i = f.side.findIndex(e => e.kind === 'native-capture-queue-dequeue'); f.side.splice(i, 1); }],
+    ['dequeue wrong range', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').dequeueStartByte += 8; }],
+    ['dequeue byte count', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').dequeuedBytes += 8; }],
+    ['dequeue generation', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').queueGenerationBefore += 1; }],
+    ['dequeue packet substitution', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').packetRanges[0].packetId += 1; }],
+    ['dequeue packet offset', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').packetRanges[0].packetOffsetEndByte += 8; }],
+    ['dequeue packet omission', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').packetRanges.shift(); }],
+    ['dequeue chunk count', f => { f.side.find(e => e.kind === 'native-capture-queue-dequeue').chunkCount += 1; }],
+    ['missing clock receipt', f => { for (let i = f.side.length - 1; i >= 0; i -= 1) if (f.side[i].kind === 'native-capture-queue-clock') f.side.splice(i, 1); }],
+    ['old-prefix invented packet', f => { f.side.find(e => e.kind === 'native-capture-queue-clock').invalidPrefixPacketRanges = [{ packetId: 1, startByte: 0, endByte: 8, packetOffsetStartByte: 0, packetOffsetEndByte: 8 }]; }],
+    ['old-prefix wrong head', f => { const e = f.side.find(e => e.kind === 'native-capture-queue-clock'); e.invalidPrefixStartByte = 8; e.invalidPrefixEndByte = 8; }],
+    ['old-prefix validity lie', f => { f.side.find(e => e.kind === 'native-capture-queue-clock').queueHeadClockValidForNextChunk = false; }],
+    ['tail not actually dequeued', f => { const i = f.side.findIndex(e => e.kind === 'native-capture-queue-dequeue' && e.dequeueKind === 'partial-tail'); f.side.splice(i); }],
+    ['retention beyond bound', f => { const e = f.side.find(e => e.kind === 'native-capture-queue-dequeue'); e.packetRanges = Array(2049).fill(e.packetRanges[0]); }],
+  ];
+  for (const [name, mutate] of checks) await t.test(name, (t) => {
+    const f = queueFixture(t); mutate(f); f.saveQueue(); fails(f, /queue/);
+  });
+});
+
+test('queue input must use exact sealed capture identity and byte/dequeue mapping, never latest flags', async (t) => {
+  const checks = [
+    ['missing capture sequence', e => { delete e.mainCaptureSequence; }],
+    ['null capture sequence', e => { e.mainCaptureSequence = null; }],
+    ['identity availability false', e => { e.captureIdentityAvailable = false; }],
+    ['dequeue availability false', e => { e.dequeueMappingAvailable = false; }],
+    ['noncapture sequence', e => { e.mainCaptureSequence = 0; }],
+    ['nonexistent sealed capture', e => { e.mainCaptureSequence = 100000; }],
+    ['unsafe sealed capture sequence', e => { e.mainCaptureSequence = Number.MAX_SAFE_INTEGER + 1; }],
+    ['null main reset identity', e => { e.mainCaptureResetGeneration = null; }],
+    ['null main sample offset', e => { e.mainCapturePostSampleOffset = null; }],
+    ['wrong main reset generation', e => { e.mainCaptureResetGeneration += 1; }],
+    ['wrong main sample offset', e => { e.mainCapturePostSampleOffset += 2; }],
+    ['wrong dequeue', e => { e.dequeueId += 1; }],
+    ['wrong chunk index', e => { e.chunkIndex += 1; }],
+    ['wrong input length', e => { e.inputByteCount -= 8; e.inputEndByte -= 8; }],
+    ['packet offset substitution', e => { e.packetRanges[0].packetOffsetStartByte += 8; e.packetRanges[0].packetOffsetEndByte += 8; }],
+    ['actual flags mismatch', e => { e.timestampError = true; }],
+  ];
+  for (const [name, mutate] of checks) await t.test(name, (t) => {
+    const f = queueFixture(t); mutate(f.side.find(e => e.kind === 'native-capture-queue-input')); f.saveQueue();
+    fails(f, /queue/);
+    const manifest = createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey });
+    assert.equal(manifest.passed, false); assert.match(manifest.violations.join('; '), /queue/);
+  });
+  await t.test('capture replay across distinct dequeues', (t) => {
+    const f = queueFixture(t); const inputs = f.side.filter(e => e.kind === 'native-capture-queue-input');
+    inputs[1].mainCaptureSequence = inputs[0].mainCaptureSequence;
+    inputs[1].mainCapturePostSampleOffset = inputs[0].mainCapturePostSampleOffset;
+    f.saveQueue(); fails(f, /queue/);
+  });
+  await t.test('duplicate dequeue input', (t) => {
+    const f = queueFixture(t); const i = f.side.findIndex(e => e.kind === 'native-capture-queue-input');
+    f.side.splice(i + 1, 0, structuredClone(f.side[i])); f.saveQueue(); fails(f, /queue/);
+  });
+  await t.test('missing final capture receipt', (t) => {
+    const f = queueFixture(t); const i = f.side.findLastIndex(e => e.kind === 'native-capture-queue-input');
+    f.side.splice(i, 1); f.saveQueue(); fails(f, /queue/);
+  });
+});
+
+test('queue resets cannot clear bytes, forge owner increments or replace actual main resets', async (t) => {
+  const mutations = [
+    ['failed reset', e => { e.succeeded = false; e.error = 'actual reset failed'; }],
+    ['fake native increment', e => { e.captureAecResetGenerationAfter = 2; e.captureAecResetGeneration = 2; }],
+    ['fake queue clear generation', e => { e.queueGenerationAfter += 1; e.queueGeneration += 1; }],
+    ['wrong before native owner generation', e => { e.captureAecResetGenerationBefore = 1; }],
+    ['wrong retained bytes', e => { e.queuedBytes = 8; }],
+    ['wrong actual main reset', e => { e.resetGeneration = 0; }],
+    ['missing actual main reason', e => { e.reason = 'invented-reset'; }],
+  ];
+  for (const [name, mutate] of mutations) await t.test(name, (t) => {
+    const f = queueFixture(t); mutate(f.side.find(e => e.kind === 'native-capture-queue-reset')); f.saveQueue(); fails(f, /queue/);
+  });
+});
+
+test('route-start is an actual main reset with native 0-to-0, not a forged native/tap identity', (t) => {
+  const f = queueFixture(t);
+  // Insert a real sealed main reset, preserving contiguous journal generation
+  // and every existing formal render/provider/source-clock authority.
+  for (const e of f.base) { e.sequence += 1; e.resetGeneration += 1; }
+  f.base.unshift({ schemaVersion: 3, kind: 'reset', sequence: 0, resetGeneration: 1,
+    continuityId: 0, qpc100ns: 9600000, reason: 'route-start' });
+  Object.assign(f.terminal, { attemptedEvents: f.base.length, acceptedEvents: f.base.length, writtenEvents: f.base.length,
+    lastAttemptedSequence: f.base.length - 1, lastWrittenSequence: f.base.length - 1, resetGeneration: 2 });
+  f.terminal.eventCounts.reset = 2; f.saveEvents('base');
+  for (const e of f.side) {
+    if (Number.isSafeInteger(e.resetGeneration)) e.resetGeneration += 1;
+    if (e.kind === 'native-capture-queue-input') { e.mainCaptureSequence += 1; e.mainCaptureResetGeneration += 1; }
+  }
+  for (const e of f.manifest.stages) e.resetGeneration += 1;
+  f.authority.aecClosedLoop.stages = structuredClone(f.manifest.stages); f.saveManifest();
+  const routeStart = { ...f.side.find(e => e.kind === 'native-capture-queue-reset'), reason: 'route-start',
+    qpc100ns: 9600000, resetGeneration: 1, captureAecResetGeneration: 0,
+    captureAecResetGenerationBefore: 0, captureAecResetGenerationAfter: 0,
+    queueGeneration: 0, queueGenerationBefore: 0, queueGenerationAfter: 0,
+    ledgerLastKnownHeadByte: 0, ledgerLastKnownTailByte: 0 };
+  f.side.unshift(routeStart); f.saveQueue();
+  const r = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(r.passed, true, r.violations.join('; ')); assert.equal(r.captureQueueLedger.resolved, true);
+  routeStart.captureAecResetGenerationAfter = 1; routeStart.captureAecResetGeneration = 1;
+  f.saveQueue(); fails(f, /queue.*reset/);
+});
+
+test('native-only partial upgraded ledger and duplicate real-reset receipts cannot claim completeness', async (t) => {
+  await t.test('remove all queue kinds but keep upgraded packet ranges', (t) => {
+    const f = queueFixture(t);
+    for (let i = f.side.length - 1; i >= 0; i -= 1) if (f.side[i].kind.startsWith('native-capture-queue-')) f.side.splice(i, 1);
+    f.saveQueue(); fails(f, /queue/);
+  });
+  await t.test('duplicate exact reset receipt', (t) => {
+    const f = queueFixture(t); f.side.push(structuredClone(f.side.find(e => e.kind === 'native-capture-queue-reset')));
+    f.saveQueue(); fails(f, /queue/);
+  });
+  await t.test('repeated initial clock cannot mask old prefix without consumption', (t) => {
+    const f = queueFixture(t); const clocks = f.side.filter(e => e.kind === 'native-capture-queue-clock');
+    clocks[0].invalidPrefixBytes = 768; clocks[0].invalidPrefixEndByte = 768;
+    clocks[0].queueHeadClockValidForNextChunk = false;
+    clocks[0].invalidPrefixPacketRanges = [{ packetId: 1, startByte: 0, endByte: 768, packetOffsetStartByte: 0, packetOffsetEndByte: 768 }];
+    f.side.find(e => e.kind === 'native-capture-packet').timestampError = true;
+    clocks[0].packetClockValid = false;
+    // The first clock is justified by the real raw error; the next clean append
+    // still must not erase its old prefix without actual input consumption.
+    f.saveQueue(); fails(f, /queue clock.*native packet replay/);
+  });
+});
+
+test('old no-ledger sealed evidence remains diagnostic-compatible but fails new ledger review', (t) => {
+  const f = fixture(t); const r = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(r.passed, true, r.violations.join('; '));
+  assert.equal(r.captureQueueLedger.status, 'legacy-diagnostic-only');
+  assert.equal(r.captureQueueLedger.resolved, false); assert.equal(r.captureQueueLedger.reviewSatisfied, false);
+  assert.equal(r.captureQueueLedger.qualityAcceptance, false);
+  assert.equal(r.captureQueueLedger.formalCaptureClockAcceptance, false);
+});
+
+test('metadata resource cap supports the bounded 180s ledger budget without dropping events', (t) => {
+  assert.equal(AEC_CLOSED_LOOP_METADATA_MAX_BYTES, 128 * 1024 * 1024);
+  const budget = 18000 * 1024 * 2 + 9000 * 1536 * 2 + 17 * 1024 * 1024;
+  assert(budget > 64 * 1024 * 1024 && budget < AEC_CLOSED_LOOP_METADATA_MAX_BYTES);
+  const f = queueFixture(t); const file = path.join(f.root, sideNames.metadata);
+  const original = fs.readFileSync(file);
+  // JSON whitespace exercises only the byte-resource bound. All real fixture
+  // events and sealed sequence counts remain intact, with no event thinning.
+  const bytes = Buffer.concat([original.subarray(0, -1), Buffer.alloc(65 * 1024 * 1024, 0x20), Buffer.from('\n')]);
+  fs.writeFileSync(file, bytes); f.seal.files.metadata.byteLength = bytes.length;
+  f.seal.files.metadata.sha256 = sha(bytes);
+  fs.writeFileSync(path.join(f.root, 'aec-closed-loop-terminal.json'), JSON.stringify(f.seal));
+  const r = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(r.passed, true, r.violations.join('; ')); assert.equal(r.captureQueueLedger.reviewSatisfied, true);
+  assert.equal(r.captureQueueLedger.inputs, f.base.filter(e => e.kind === 'capture').length);
+});
+
+test('metadata exceeding 128MiB fails before read/hash/parse, never silently truncates events', (t) => {
+  const f = fixture(t); const file = path.join(f.root, sideNames.metadata);
+  fs.truncateSync(file, AEC_CLOSED_LOOP_METADATA_MAX_BYTES + 1);
+  fails(f, /invalid aec-closed-loop-metadata\.jsonl size\/type/);
+});
+
+
+test('exported local ledger validator requires real ledger only when explicitly requested', (t) => {
+  const old = fixture(t);
+  const diagnostic = validateCaptureQueueLedger(old.side, old.base);
+  assert.equal(diagnostic.status, 'legacy-diagnostic-only');
+  assert.equal(diagnostic.reviewSatisfied, false); assert.equal(diagnostic.required, false);
+  assert.throws(() => validateCaptureQueueLedger(old.side, old.base, { required: true }), /complete capture queue.*required/);
+  const f = queueFixture(t); const r = validateCaptureQueueLedger(f.side, f.base, { required: true });
+  assert.equal(r.required, true); assert.equal(r.reviewSatisfied, true);
+  assert.equal(r.inputs, f.base.filter(e => e.kind === 'capture').length);
+  assert.equal(r.qualityAcceptance, false); assert.equal(r.formalCaptureClockAcceptance, false);
+  assert.equal(AEC_CAPTURE_QUEUE_WITNESS_POLICY, 'owner-range-receipt-v1');
+});
+
+test('exported validator refuses absent or forged main receipts and incomplete capture coverage', async (t) => {
+  for (const field of ['mainCaptureSequence', 'mainCaptureResetGeneration', 'mainCapturePostSampleOffset']) {
+    await t.test(field, (t) => {
+      const f = queueFixture(t); f.side.find(e => e.kind === 'native-capture-queue-input')[field] = null;
+      assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true }), /actual capture identity.*unavailable/);
+    });
+  }
+  await t.test('extra sealed main capture has no input', (t) => {
+    const f = queueFixture(t); const capture = structuredClone(f.base.find(e => e.kind === 'capture'));
+    Object.assign(capture, { sequence: f.base.length, resetGeneration: f.base.at(-1).resetGeneration });
+    f.base.push(capture);
+    assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true }), /queue ledger incomplete/);
+  });
+  await t.test('duplicate main capture sequence cannot hide in map', (t) => {
+    const f = queueFixture(t); const captures = f.base.filter(e => e.kind === 'capture');
+    captures[1].sequence = captures[0].sequence;
+    assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true }), /main journal sequence/);
+  });
+  await t.test('missing main journal is never a receipt', (t) => {
+    const f = queueFixture(t);
+    assert.throws(() => validateCaptureQueueLedger(f.side, undefined, { required: true }), /snapshots missing/);
+  });
+});
+
+test('required option blocks builder, verifier and manifest creation for old reports before analyzer work', (t) => {
+  const f = fixture(t); const options = { ...f.options, requireCaptureQueueLedger: true };
+  for (const r of [buildAecClosedLoopEvidence(f.root, options), verifyAecClosedLoopEvidence(f.root, options),
+    createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey, requireCaptureQueueLedger: true })]) {
+    assert.equal(r.passed, false); assert.match(r.violations.join('; '), /complete capture queue.*required/);
+    assert.equal(r.captureQueueLedger.reviewSatisfied, false); assert.equal(r.captureQueueLedger.required, true);
+  }
+});
+
+test('complete ledger satisfies explicit required builder and manifest structure without granting quality', (t) => {
+  const f = queueFixture(t);
+  const r = buildAecClosedLoopEvidence(f.root, { ...f.options, requireCaptureQueueLedger: true });
+  assert.equal(r.passed, true, r.violations.join('; ')); assert.equal(r.releaseEligible, false);
+  assert.equal(r.captureQueueLedger.required, true); assert.equal(r.captureQueueLedger.reviewSatisfied, true);
+  const m = createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey, requireCaptureQueueLedger: true });
+  assert.equal(m.passed, true, m.violations.join('; ')); assert.equal(m.captureQueueLedger.required, true);
+});
+
+test('signed frozen queue policy enforces complete ledger despite caller false', async (t) => {
+  await t.test('old report cannot downgrade frozen policy', (t) => {
+    const f = fixture(t); f.pinQueuePolicy();
+    for (const r of [buildAecClosedLoopEvidence(f.root, { ...f.options, requireCaptureQueueLedger: false }),
+      verifyAecClosedLoopEvidence(f.root, { ...f.options, requireCaptureQueueLedger: false }),
+      createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey, requireCaptureQueueLedger: false })]) {
+      assert.equal(r.passed, false); assert.match(r.violations.join('; '), /complete capture queue.*required/);
+      assert.equal(r.captureQueueLedger.required, true);
+    }
+  });
+  await t.test('complete frozen ledger passes structural review', (t) => {
+    const f = queueFixture(t); f.pinQueuePolicy();
+    const r = buildAecClosedLoopEvidence(f.root, { ...f.options, requireCaptureQueueLedger: false });
+    assert.equal(r.passed, true, r.violations.join('; ')); assert.equal(r.captureQueueLedger.required, true);
+    const m = createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey });
+    assert.equal(m.passed, true, m.violations.join('; '));
+  });
+  await t.test('unknown signed policy is not legacy opt-out', (t) => {
+    const f = queueFixture(t); f.pinQueuePolicy('owner-range-receipt-v999');
+    const r = buildAecClosedLoopEvidence(f.root, f.options);
+    assert.equal(r.passed, false); assert.match(r.violations.join('; '), /unknown capture queue witness policy/);
+  });
+});
+
+test('diagnostic wrapper keeps required legacy projection and refuses malformed option/policy', (t) => {
+  const f = fixture(t);
+  const old = verifyCaptureQueueLedgerEvidence(f.side, f.base);
+  assert.equal(old.passed, true); assert.equal(old.captureQueueLedger.reviewSatisfied, false);
+  const required = verifyCaptureQueueLedgerEvidence(f.side, f.base, { requireCaptureQueueLedger: true });
+  assert.equal(required.passed, false); assert.equal(required.captureQueueLedger.status, 'legacy-diagnostic-only');
+  assert.equal(required.releaseEligible, false);
+  const frozen = verifyCaptureQueueLedgerEvidence(f.side, f.base,
+    { requireCaptureQueueLedger: false, captureQueueWitnessPolicy: AEC_CAPTURE_QUEUE_WITNESS_POLICY });
+  assert.equal(frozen.passed, false); assert.equal(frozen.captureQueueLedger.required, true);
+  for (const bad of [{ requireCaptureQueueLedger: 'true' }, { captureQueueWitnessPolicy: null }]) {
+    assert.equal(verifyCaptureQueueLedgerEvidence(f.side, f.base, bad).passed, false);
+  }
+  assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: 'true' }), /must be boolean/);
+});
+
+
+test('review regression: native packet observation cannot be replaced by a clean clock declaration', async (t) => {
+  const cases = [
+    ['timestamp-error packet', p => { p.timestampError = true; }],
+    ['queue-head raw frame index underflow', p => { p.rawPacketDeviceFrameIndex = p.queuedBytesBeforeRead / 8 - 1; }],
+    ['queue-head raw QPC underflow', p => { p.rawPacketQpc100ns = Math.floor(p.queuedBytesBeforeRead / 8 * 10000000 / 48000) - 1; }],
+    ['discontinuity cannot erase the old prefix', p => { p.dataDiscontinuity = true; }],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, (t) => {
+    const f = queueFixture(t);
+    assert.equal(validateCaptureQueueLedger(f.side, f.base, { required: true }).resolved, true);
+    const packet = f.side.filter(e => e.kind === 'native-capture-packet')[1];
+    assert(packet.queuedBytesBeforeRead > 0);
+    const clock = f.side.find(e => e.kind === 'native-capture-queue-clock' && e.packetId === packet.packetId);
+    assert.equal(clock.invalidPrefixBytes, 0); assert.equal(clock.packetClockValid, true);
+    mutate(packet); f.saveQueue();
+    // Every seal/hash and all explicit clock fields remain otherwise valid.
+    // Raw WASAPI observation must independently refute this forged clean clock.
+    assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true }), /queue clock.*native packet replay/);
+  });
+});
+
+test('review regression: FIFO inputs cannot swap complete main identity triples or batch order', async (t) => {
+  for (const [name, second] of [['same batch', 1], ['across batches', 2]]) await t.test(name, (t) => {
+    const f = queueFixture(t); const inputs = f.side.filter(e => e.kind === 'native-capture-queue-input');
+    const first = inputs[0], other = inputs[second];
+    assert.equal(first.inputByteCount, other.inputByteCount);
+    for (const flag of ['timestampError', 'dataDiscontinuity', 'queueHeadClockValid']) assert.equal(first[flag], other[flag]);
+    for (const key of ['mainCaptureSequence', 'mainCaptureResetGeneration', 'mainCapturePostSampleOffset']) {
+      [first[key], other[key]] = [other[key], first[key]];
+    }
+    f.saveQueue();
+    assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true }), /queue input.*FIFO/);
+  });
+  await t.test('batch chunk one cannot be consumed before chunk zero', (t) => {
+    const f = queueFixture(t); const first = f.side.findIndex(e => e.kind === 'native-capture-queue-input');
+    assert.equal(f.side[first].dequeueId, f.side[first + 1].dequeueId);
+    assert.equal(f.side[first].chunkIndex, 0); assert.equal(f.side[first + 1].chunkIndex, 1);
+    [f.side[first], f.side[first + 1]] = [f.side[first + 1], f.side[first]];
+    f.saveQueue();
+    assert.throws(() => validateCaptureQueueLedger(f.side, f.base, { required: true }), /queue input.*FIFO/);
+  });
+});
+
+
+test('native replay permits a discontinuous or silent packet to anchor its own bytes', (t) => {
+  const f = queueFixture(t); const packet = f.side.find(e => e.kind === 'native-capture-packet');
+  assert.equal(packet.queuedBytesBeforeRead, 0); packet.dataDiscontinuity = true; packet.silent = true;
+  // No old prefix exists; neither discontinuity nor silence invalidates this
+  // packet's own anchor. A later clean packet supplies the actual input flags.
+  f.saveQueue();
+  const r = validateCaptureQueueLedger(f.side, f.base, { required: true });
+  assert.equal(r.reviewSatisfied, true); assert.equal(r.formalCaptureClockAcceptance, false);
+});
+
+test('native replay preserves old prefixes then recovers after actual FIFO input consumption', async (t) => {
+  for (const scenario of ['discontinuity-old-prefix', 'timestamp-error-old-prefix']) await t.test(scenario, (t) => {
+    const f = queueFixture(t); const packets = f.side.filter(e => e.kind === 'native-capture-packet');
+    const clocks = f.side.filter(e => e.kind === 'native-capture-queue-clock');
+    if (scenario === 'discontinuity-old-prefix') packets[1].dataDiscontinuity = true;
+    else packets[0].timestampError = true;
+    const startClock = scenario === 'discontinuity-old-prefix' ? 1 : 0;
+    for (let i = startClock; i <= 2; i += 1) {
+      Object.assign(clocks[i], { invalidPrefixBytes: 768, invalidPrefixStartByte: 0,
+        invalidPrefixEndByte: 768, queueHeadClockValidForNextChunk: false,
+        packetClockValid: !(scenario === 'timestamp-error-old-prefix' && i === 0),
+        invalidPrefixPacketRanges: [{ packetId: 1, startByte: 0, endByte: 768,
+          packetOffsetStartByte: 0, packetOffsetEndByte: 768 }] });
+    }
+    const inputs = f.side.filter(e => e.kind === 'native-capture-queue-input');
+    assert.equal(inputs[0].dequeueId, inputs[1].dequeueId);
+    inputs[0].queueHeadClockValid = false;
+    f.base.find(e => e.kind === 'capture').queueHeadClockValid = false;
+    // The first real chunk consumes 768 invalid bytes (saturating subtraction),
+    // the next chunk in the SAME eager batch is valid without another packet.
+    assert.equal(inputs[1].queueHeadClockValid, true); assert.equal(clocks[3].invalidPrefixBytes, 0);
+    f.saveQueue();
+    const r = validateCaptureQueueLedger(f.side, f.base, { required: true });
+    assert.equal(r.resolved, true); assert.equal(r.inputs, inputs.length);
+  });
+});
+
+test('native replay accepts exact frame and floor-QPC anchor boundaries without QPC reanchoring', (t) => {
+  const f = queueFixture(t); const p = f.side.filter(e => e.kind === 'native-capture-packet')[1];
+  p.rawPacketDeviceFrameIndex = p.queuedBytesBeforeRead / 8;
+  p.rawPacketQpc100ns = Number(BigInt(p.queuedBytesBeforeRead / 8) * 10000000n / 48000n);
+  f.saveQueue(); assert.equal(validateCaptureQueueLedger(f.side, f.base, { required: true }).resolved, true);
 });

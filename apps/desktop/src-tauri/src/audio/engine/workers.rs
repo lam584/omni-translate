@@ -3,6 +3,8 @@ mod capture_diagnostics;
 #[path = "workers/capture_route.rs"]
 mod capture_route;
 use capture_diagnostics::AecTapQueueClock;
+#[path = "workers/capture_queue_provenance.rs"]
+mod capture_queue_provenance;
 #[path = "workers/capture_pipeline.rs"]
 mod capture_pipeline;
 #[path = "workers/capture_tail.rs"]
@@ -106,10 +108,16 @@ fn initialize_capture_echo_diagnostics(
     direction: &str,
     spec: &RouteSpec,
     effective_device_id: &str,
+    pipeline: &capture_pipeline::CapturePipeline,
+    guard: &crate::audio::state::NativeCaptureProducerGuard,
 ) -> Result<(), String> {
     if spec.echo_cancel_enabled() {
         let tap_qpc = if store.aec_diagnostic_tap_enabled() { qpc_now_100ns() } else { None };
-        store.reset_echo_canceller_with_diagnostic("route-start", tap_qpc, 0)?;
+        let native_generation_before = guard.diagnostic_owner_identity().1;
+        let reset_result = store.reset_echo_canceller_with_diagnostic("route-start", tap_qpc, 0);
+        pipeline.record_aec_reset_receipt(store, direction, guard, "route-start",
+            native_generation_before, &reset_result);
+        reset_result?;
         capture_diagnostics::log_route_start(app, store, direction, effective_device_id)?;
     }
     Ok(())
@@ -135,12 +143,15 @@ fn query_native_capture_and_wait(
     if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
     tail_owner.observe_query(at, native_start, queue, size)?;
     if spec.echo_cancel_enabled() {
+        let queued_before_tail = queue.len();
         if let Some(tail) = tail_owner.take_ready(Instant::now(), native_start, queue)? {
+            let dequeue = pipeline.observe_dequeue(store, direction, guard, queued_before_tail,
+                queue.len(), Some(tail.pcm.len()), "partial-tail", None, 1);
             // Never publish the pre-processing Empty as proof of completed work.
             if accept_native_capture_stop(stop_rx, guard)? { return Ok(true); }
             let receipt = capture_tail_owner::tail_receipt(&tail.evidence);
             pipeline.process_chunk(app, store, direction, spec, stt_sender, tail.pcm,
-                queue.len(), guard, Some(receipt))?;
+                queue.len(), guard, Some(receipt), dequeue.as_ref().map(|r| (r, 0)))?;
             size = capture_client.get_next_packet_size().map_err(|error| {
         tail_owner.query_failed(native_start, queue);
         error.to_string()
@@ -187,6 +198,8 @@ fn run_capture_loop(
     let mut pipeline = capture_pipeline::CapturePipeline::new(spec.clone());
     let mut tail_owner = capture_tail_owner::CaptureTailOwner::new(CHUNK_FRAMES)?;
     let block_align = desired_format.get_blockalign() as usize;
+    pipeline.bind_capture_queue(&effective_device_id, &producer_guard, sample_queue.len(),
+        store.aec_diagnostic_tap_enabled());
 
     store.mark_route_started(
         direction,
@@ -196,7 +209,8 @@ fn run_capture_loop(
     );
     emit_audio_snapshot(&app, store)?;
 
-    initialize_capture_echo_diagnostics(&app, store, direction, &spec, &effective_device_id)?;
+    initialize_capture_echo_diagnostics(&app, store, direction, &spec, &effective_device_id,
+        &pipeline, &producer_guard)?;
 
     if let Err(error) = native_capture_start.observe_native_start(audio_client.start_stream().map_err_str()) {
         if spec.echo_cancel_enabled() {
@@ -256,11 +270,21 @@ fn run_capture_loop(
             captured_frames, queued_bytes_before_read, sample_queue.len(), block_align,
             buffer_frame_count, &producer_guard)?;
         if captured_frames > 0 { tail_owner.mutated()?; }
-        for chunk in drain_sample_chunks(&mut sample_queue, chunk_len) {
+        let queued_before_dequeue = sample_queue.len();
+        let chunks = drain_sample_chunks(&mut sample_queue, chunk_len);
+        // drain_sample_chunks eagerly removes every full chunk before processing.
+        // Witness that actual single FIFO mutation even if a later stop/error
+        // prevents some removed chunks from reaching AEC/dispatch.
+        let dequeued_bytes = chunks.iter().try_fold(0_usize, |total, chunk| total.checked_add(chunk.len()));
+        let dequeue = pipeline.observe_dequeue(store, direction, &producer_guard,
+            queued_before_dequeue, sample_queue.len(), dequeued_bytes,
+            "full-chunk-batch", Some(chunk_len), chunks.len());
+        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
             tail_owner.mutated()?;
             if accept_native_capture_stop(&stop_rx, &producer_guard)? { return Ok(()); }
             pipeline.process_chunk(&app, store, direction, &spec, &stt_sender, chunk,
-                sample_queue.len(), &producer_guard, None)?;
+                sample_queue.len(), &producer_guard, None, dequeue.as_ref().and_then(|r|
+                    chunk_index.checked_mul(chunk_len).map(|offset| (r, offset))))?;
         }
         if captured_frames > 0 {
             // The read's real acquisition time, bound to its remaining suffix after full chunks.

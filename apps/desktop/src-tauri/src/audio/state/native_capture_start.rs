@@ -58,6 +58,12 @@ pub(crate) struct NativeCaptureProducerGuard {
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl NativeCaptureProducerGuard {
+    /// Coherent identity of this real Start/reset owner. Read-only: never derive
+    /// identity from endpoint names, tail permits, or a mutable route snapshot.
+    pub(crate) fn diagnostic_owner_identity(&self) -> (u64, u64) {
+        self.owner.with_health(|health| (health.snapshot.owner_id, health.snapshot.aec_reset_generation))
+    }
+
     /// Actual GetBuffer metadata is published before AEC, without query freshness.
     pub(crate) fn record_buffer_packet(&self, captured_frames: usize,
         buffer_info: &wasapi::BufferInfo, residual_bytes: usize,

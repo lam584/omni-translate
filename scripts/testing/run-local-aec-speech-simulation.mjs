@@ -8,6 +8,8 @@ import { analyzeLocalAecSpeech } from './local-aec-speech-analysis.mjs';
 import { verifyApiSpeechProvenance } from './local-aec-speech-provenance.mjs';
 import { windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
 import { validateProbeMmcssAudio } from './local-aec-mmcss-receipt.mjs';
+import { preflightHostTimeDiagnostic } from './local-aec-host-time-preflight.mjs';
+import { AEC_CAPTURE_QUEUE_WITNESS_POLICY, AEC_CLOSED_LOOP_METADATA_MAX_BYTES } from './watch-mode-aec-closed-loop-evidence.mjs';
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const EXPECTED_BIOS = '4FCA4D56-0439-2E76-E21B-8F067FF78FBE';
 // The original 195s outer cap includes native startup and failure evidence sealing.
@@ -17,7 +19,7 @@ export function localSpeechJobDeadline(nowMs) {
  if(!Number.isSafeInteger(nowMs)||nowMs<0||nowMs>8640000000000000-LOCAL_SPEECH_BUDGETS.ownedJobMs)throw Error("invalid local speech launch time");
  return new Date(nowMs+LOCAL_SPEECH_BUDGETS.ownedJobMs).toISOString();
 }
-export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(["apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop.rs","apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop_packet_tests.rs","scripts/testing/watch-mode-aec-closed-loop-evidence.test.mjs",'apps/desktop/src-tauri/src/audio/state/echo_backend_capture_tail_tests.rs','apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/tests.rs','scripts/testing/watch-mode-aec-capture-processing-evidence.mjs','scripts/testing/watch-mode-aec-capture-processing-evidence.test.mjs','scripts/testing/watch-mode-aec-tap-evidence.test.mjs','scripts/testing/local-aec-speech-analysis.test.mjs',"apps/desktop/src-tauri/src/audio/aec_diagnostic_tap.rs",
+export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(["apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/native_queue_validation.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_queue_provenance.rs","apps/desktop/src-tauri/src/audio/engine/workers/capture_queue_provenance_tests.rs","apps/bridge-service-native/src/bin/injector/source_clock/host_time_observation.rs","apps/bridge-service-native/src/bin/injector/source_clock/host_time_observation_pure.rs","scripts/testing/local-aec-host-time-preflight.mjs","scripts/testing/local-aec-host-time-preflight.test.mjs","apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop.rs","apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/closed_loop_packet_tests.rs","scripts/testing/watch-mode-aec-closed-loop-evidence.test.mjs",'apps/desktop/src-tauri/src/audio/state/echo_backend_capture_tail_tests.rs','apps/desktop/src-tauri/src/audio/aec_diagnostic_tap/tests.rs','scripts/testing/watch-mode-aec-capture-processing-evidence.mjs','scripts/testing/watch-mode-aec-capture-processing-evidence.test.mjs','scripts/testing/watch-mode-aec-tap-evidence.test.mjs','scripts/testing/local-aec-speech-analysis.test.mjs',"apps/desktop/src-tauri/src/audio/aec_diagnostic_tap.rs",
   "apps/desktop/src-tauri/src/audio/echo_cancel/production.rs",
   "apps/desktop/src-tauri/src/audio/echo_cancel/partial_capture_tests.rs",
   "apps/desktop/src-tauri/src/audio/engine/mod.rs",
@@ -225,7 +227,7 @@ export function collectLocalSpeechRunEvidence(outputDirectory,request,launchResu
  collection.readyForAnalysis=failures.length===0&&operation?.passed===true;
  return {...collection,nativeReceipt};
 }
-export const parseLocalSpeechArgs=argv=>parseCliArgs(argv,{defaults:{desktopExecutable:'',desktopSha256:'',injectorExecutable:'',injectorSha256:'',fixtureDirectory:'',synthesisDirectory:'',synthesisUsageSha256:'',synthesisPlanFileSha256:'',analyzerExecutable:'',analyzerSha256:'',physicalDeviceId:'',outputRoot:'artifacts/testing/aec-iteration/local-speech-runs'}});
+export const parseLocalSpeechArgs=argv=>parseCliArgs(argv,{defaults:{desktopExecutable:'',desktopSha256:'',injectorExecutable:'',injectorSha256:'',fixtureDirectory:'',synthesisDirectory:'',synthesisUsageSha256:'',synthesisPlanFileSha256:'',analyzerExecutable:'',analyzerSha256:'',physicalDeviceId:'',hostTimeDll:'',hostTimeSha256:'',outputRoot:'artifacts/testing/aec-iteration/local-speech-runs'}});
 export async function runLocalAecSpeechSimulation(options){
  if(process.platform!=='win32')throw Error('local speech hardware test requires Windows');
  const fixtureRoot=fs.realpathSync.native(path.resolve(options.fixtureDirectory));
@@ -245,6 +247,7 @@ export async function runLocalAecSpeechSimulation(options){
  const localIdentity=JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
   '[ordered]@{uuidBios=(Get-CimInstance Win32_ComputerSystemProduct).UUID;sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId;user=[Environment]::UserName}|ConvertTo-Json -Compress'],{encoding:'utf8',windowsHide:true,timeout:10000,env:windowsPowerShellEnvironment()}).replace(/^\uFEFF/u,''));
  if(localIdentity.uuidBios.toUpperCase()!==EXPECTED_BIOS||localIdentity.sessionId===0||localIdentity.user.toLowerCase()!=='vmuser')throw Error('this execution is not the bound interactive vm171 worker');
+ const hostTimeDiagnostic=preflightHostTimeDiagnostic(options.hostTimeDll,options.hostTimeSha256);
  const analyzer=path.resolve(options.analyzerExecutable);
  if(analyzer!==path.join(repoRoot,'target','release','omni-benchmark.exe')||sha(bytes(analyzer,512*1024*1024))!==options.analyzerSha256)throw Error('explicitly selected workspace release analyzer hash mismatch');
  const buildCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8',windowsHide:true}).trim();
@@ -264,13 +267,13 @@ export async function runLocalAecSpeechSimulation(options){
  const freeze={schemaVersion:1,artifactKind:'local-aec-speech-run-freeze',executionId,workerId:'vm171',localIdentity,scope:'local-aec-speech-simulation',releaseEligible:false,
   providerCalls:0,translationProviderCalls:0,requestSha256:sha(fs.readFileSync(requestPath)),fixtureSha256:sha(bytes(path.join(fixtureRoot,'fixture.json'),1024*1024)),
   desktopSha256:options.desktopSha256,injectorSha256:options.injectorSha256,analyzerSha256:options.analyzerSha256,buildCommit,sourceHashes,thresholds:{echoAttenuationDb:20,sourceGainToleranceDb:3,sourceCoverage:.95},
-  apiProvenance,inputWatchdogMs:LOCAL_SPEECH_BUDGETS.inputMs,ownedJobWatchdogMs:LOCAL_SPEECH_BUDGETS.ownedJobMs,outerWatchdogMs:LOCAL_SPEECH_BUDGETS.outerMs,frozenAt:new Date().toISOString()};write(path.join(outputDirectory,'run-freeze.json'),freeze);
+  apiProvenance,hostTimeDiagnostic,captureQueueWitnessPolicy:AEC_CAPTURE_QUEUE_WITNESS_POLICY,collectionResources:{closedLoopMetadataMaxBytes:AEC_CLOSED_LOOP_METADATA_MAX_BYTES},inputWatchdogMs:LOCAL_SPEECH_BUDGETS.inputMs,ownedJobWatchdogMs:LOCAL_SPEECH_BUDGETS.ownedJobMs,outerWatchdogMs:LOCAL_SPEECH_BUDGETS.outerMs,frozenAt:new Date().toISOString()};write(path.join(outputDirectory,'run-freeze.json'),freeze);
  let outcome={schemaVersion:1,artifactKind:'local-aec-speech-simulation-result',executionId,workerId:'vm171',scope:'local-aec-speech-simulation',releaseEligible:false,
   providerCalls:0,translationProviderCalls:0,overallPassed:false,status:'failed',quality:{status:'not-run'},outputDirectory};
  try{
   const helper=path.resolve(repoRoot,AEC_PROBE_JOB_HELPER),deadlineUtc=localSpeechJobDeadline(Date.now());
   const script=localAecProbeDesktopPowerShell({executable:desktop,executableSha256:options.desktopSha256,runtimeRoot:repoRoot,outputDirectory,requestPath,
-   deadlineUtc,helperPath:helper,helperSha256:sha(bytes(helper,1024*1024))});
+   deadlineUtc,helperPath:helper,helperSha256:sha(bytes(helper,1024*1024)),hostTimeDiagnostic});
   write(path.join(outputDirectory,'process-launch-authority.json'),{schemaVersion:1,executionId,helperSha256:sha(bytes(helper,1024*1024)),deadlineUtc,scriptSha256:sha(Buffer.from(script,'utf8'))});
   const r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
    {encoding:'utf8',windowsHide:true,cwd:repoRoot,timeout:LOCAL_SPEECH_BUDGETS.outerMs,maxBuffer:4*1024*1024,env:windowsPowerShellEnvironment()});

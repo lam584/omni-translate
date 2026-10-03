@@ -415,9 +415,10 @@ impl AudioStateStore {
     pub(crate) fn process_echo_capture_with_provenance(
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
     ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
-        self.process_echo_capture_frames(captured, delay_samples, metadata, false, None)
+        self.process_echo_capture_frames(captured, delay_samples, metadata, false, None).map(|(result, packet, _)| (result, packet))
     }
 
+    #[cfg(test)]
     pub(crate) fn process_echo_capture_tail_with_provenance(
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
         tail: crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence,
@@ -425,7 +426,20 @@ impl AudioStateStore {
         if captured.is_empty() || captured.len() >= 960 * 2 {
             return Err("capture tail must contain fewer than one normal 20ms chunk".into());
         }
-        self.process_echo_capture_frames(captured, delay_samples, metadata, true, Some(tail))
+        self.process_echo_capture_frames(captured, delay_samples, metadata, true, Some(tail)).map(|(result, packet, _)| (result, packet))
+    }
+
+    /// Worker-only cross-point: return the identity from this exact processed
+    /// capture, even when diagnostic-only runs have Provider lineage disabled.
+    pub(crate) fn process_echo_capture_with_queue_receipt(
+        &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
+        tail: Option<crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence>,
+    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>,
+        Option<crate::audio::aec_diagnostic_tap::AecCaptureDiagnosticIdentity>), String> {
+        if tail.is_some() && (captured.is_empty() || captured.len() >= 960 * 2) {
+            return Err("capture tail must contain fewer than one normal 20ms chunk".into());
+        }
+        self.process_echo_capture_frames(captured, delay_samples, metadata, tail.is_some(), tail)
     }
 
     pub(crate) fn echo_partial_capture_boundary_pending(&self) -> bool {
@@ -437,7 +451,8 @@ impl AudioStateStore {
         &self, captured: &[f32], delay_samples: usize, metadata: Option<AecCaptureFrameMetadata>,
         allow_partial: bool,
         tail: Option<crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence>,
-    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>), String> {
+    ) -> Result<(EchoCancellationResult, Option<crate::audio::aec_diagnostic_tap::AecPostPacket>,
+        Option<crate::audio::aec_diagnostic_tap::AecCaptureDiagnosticIdentity>), String> {
         const AEC_FRAME_SAMPLES: usize = 480 * 2;
         if captured.is_empty() || captured.len() % 2 != 0
             || captured.iter().any(|sample| !sample.is_finite())
@@ -492,8 +507,8 @@ impl AudioStateStore {
             processed.extend_from_slice(&result.samples);
         }
         let result = EchoCancellationResult { samples: processed };
-        let provenance = if let Some(metadata) = metadata {
-            self.aec_diagnostic_tap.record_capture_with_processing(captured, &result.samples, metadata,
+        let (provenance, capture_identity) = if let Some(metadata) = metadata {
+            self.aec_diagnostic_tap.record_capture_with_processing_receipt(captured, &result.samples, metadata,
                 Some(crate::audio::aec_diagnostic_tap::AecCaptureProcessing {
                     schema_version: 1, input_frames: captured.len() / 2, native_10ms_frames: native_frames,
                     math_padding_frames: native_frames * 480 - captured.len() / 2,
@@ -505,12 +520,12 @@ impl AudioStateStore {
             if self.aec_diagnostic_tap.enabled() {
                 self.aec_diagnostic_tap.abort("AEC capture processed without packet metadata");
             }
-            None
+            (None, None)
         };
         // Keep native processing and tap admission in one total order, also
         // shared by reset/render and the bounded finalization fence.
         drop(canceller_guard);
-        Ok((result, provenance))
+        Ok((result, provenance, capture_identity))
     }
 
     #[cfg(test)]

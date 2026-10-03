@@ -74,3 +74,67 @@ fn unknown_native_observation_and_impossible_append_remain_diagnostic_evidence()
     meta["sequence"]=json!(0);assert_eq!(row,meta);
     assert_eq!(row["formalCaptureClockAcceptance"],false);
 }
+
+fn queue_witness(kind: &str) -> Value {
+    let mut value: Value = serde_json::from_str(r#"{"schemaVersion":1,"kind":"placeholder","diagnosticOnly":true,
+        "qualityAcceptance":false,"aecQualityAcceptance":false,"releaseEligible":false,
+        "formalCaptureClockAcceptance":false,"direction":"inbound","endpointId":"actual-loopback",
+        "captureOwnerId":9,"captureAecResetGeneration":0,"nativeResetGenerationDomain":"native-capture-owner",
+        "queueOwnerId":9,"queueGenerationDomain":"capture-queue-ledger","queueGeneration":2,
+        "ledgerError":null,"ledgerLastKnownHeadByte":0,"ledgerLastKnownTailByte":768,
+        "qpc100ns":210000,"resetGeneration":1,"resetGenerationDomain":"aec-diagnostic-tap",
+        "dequeueKind":"partial-tail","dequeueId":1,"dequeueStartByte":0,"dequeueEndByte":768,
+        "dequeuedBytes":768,"queuedBytesBefore":768,"queuedBytesAfter":0,"chunkByteLength":null,"chunkCount":1,
+        "queueGenerationBefore":1,"queueGenerationAfter":2,"packetRanges":[{"packetId":0,"startByte":0,
+            "endByte":768,"packetOffsetStartByte":0,"packetOffsetEndByte":768}],
+        "packetId":0,"invalidPrefixBytes":0,"packetClockValid":true,"queueHeadClockValidForNextChunk":true,
+        "invalidPrefixStartByte":0,"invalidPrefixEndByte":0,"invalidPrefixPacketRanges":[],
+        "reason":"route-start","succeeded":true,"error":null,"captureAecResetGenerationBefore":0,
+        "captureAecResetGenerationAfter":0,"queuedBytes":0,"retainedPacketRanges":[],
+        "chunkIndex":0,"inputStartByte":0,"inputEndByte":768,"inputByteCount":768,
+        "dequeueMappingAvailable":true,"captureIdentityAvailable":true,"queueHeadClockValid":true,
+        "timestampError":false,"dataDiscontinuity":false,"mainCaptureSequence":1,
+        "mainCaptureResetGeneration":1,"mainCapturePostSampleOffset":0}"#).unwrap();
+    value["kind"] = json!(kind);
+    value
+}
+
+#[test]
+fn queue_witnesses_seal_without_pcm_or_acceptance_authority() {
+    let dir=Directory::new(); let tap=ClosedLoopTap::start(&dir.0).unwrap();
+    for kind in ["dequeue","clock","reset","input"] {
+        tap.record(None,None,queue_witness(&format!("native-capture-queue-{kind}")));
+    }
+    let seal=tap.finish(Duration::from_secs(2)).unwrap();
+    assert_eq!(seal["writtenEvents"],4);assert_eq!(seal["lifecycleEvents"],4);
+    assert_eq!(seal["physicalSamples"],0);assert_eq!(seal["providerSamples"],0);
+    let rows:Vec<Value>=std::fs::read_to_string(dir.0.join(RECORDS)).unwrap().lines()
+        .map(|line|serde_json::from_str(line).unwrap()).collect();
+    assert!(rows.iter().all(|r| r["qualityAcceptance"]==false && r["formalCaptureClockAcceptance"]==false));
+}
+
+#[test]
+fn queue_admission_rejects_authority_and_domain_forgery() {
+    for (key,value) in [("diagnosticOnly",json!(false)),("aecQualityAcceptance",json!(true)),
+        ("releaseEligible",json!(true)),("formalCaptureClockAcceptance",json!(true)),
+        ("nativeResetGenerationDomain",json!("aec-diagnostic-tap")),
+        ("queueGenerationDomain",json!("render-owner")),("captureOwnerId",json!("guessed")),
+        ("packetRanges",json!([{"packetId":0}])),("mainCaptureSequence",json!(-1))] {
+        let dir=Directory::new(); let tap=ClosedLoopTap::start(&dir.0).unwrap();
+        let mut meta=queue_witness("native-capture-queue-input");meta[key]=value;tap.record(None,None,meta);
+        assert!(tap.finish(Duration::from_secs(2)).is_err(),"{key}");
+    }
+}
+
+#[test]
+fn unavailable_queue_mapping_is_preserved_as_unavailable() {
+    let dir=Directory::new();let tap=ClosedLoopTap::start(&dir.0).unwrap();
+    let mut meta=queue_witness("native-capture-queue-input");
+    meta["ledgerError"]=json!("span capacity exceeded");
+    for key in ["dequeueId","chunkIndex","inputStartByte","inputEndByte","packetRanges",
+        "mainCaptureSequence","mainCaptureResetGeneration","mainCapturePostSampleOffset"] { meta[key]=Value::Null; }
+    meta["dequeueMappingAvailable"]=json!(false);meta["captureIdentityAvailable"]=json!(false);
+    tap.record(None,None,meta.clone());assert_eq!(tap.finish(Duration::from_secs(2)).unwrap()["writtenEvents"],1);
+    let actual:Value=serde_json::from_str(std::fs::read_to_string(dir.0.join(RECORDS)).unwrap().trim()).unwrap();
+    meta["sequence"]=json!(0);assert_eq!(actual,meta);
+}

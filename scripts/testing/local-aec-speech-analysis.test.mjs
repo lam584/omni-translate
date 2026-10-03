@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyzeLocalAecSpeech, LOCAL_AEC_SPEECH_SCOPE } from './local-aec-speech-analysis.mjs';
+import { analyzeLocalAecSpeech, inspectLocalCaptureQueueEvidence, LOCAL_AEC_SPEECH_SCOPE } from './local-aec-speech-analysis.mjs';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -168,6 +168,53 @@ function fixture(t, variant = 'good') {
       hashAlgorithm: 'sha256', files, errors: [], droppedEvents: 0, attemptedEvents: diagnostic.length,
       acceptedEvents: diagnostic.length, writtenEvents: diagnostic.length, lastWrittenSequence: diagnostic.length - 1,
       lastAttemptedSequence: diagnostic.length - 1, resetGeneration: 0, eventCounts, sampleCounts, invalidClockEvents: 0 };
+    const queueRows = []; let generation = 0; let packetId = 0; let byteOffset = 0;
+    const addQueue = value => queueRows.push({ ...value, sequence: queueRows.length });
+    for(const capture of diagnostic.filter(e => e.kind === 'capture')) {
+      const bytes = capture.preSampleCount * 4; const end = byteOffset + bytes; packetId += 1;
+      const common = { schemaVersion:1,diagnosticOnly:true,qualityAcceptance:false,aecQualityAcceptance:false,
+        releaseEligible:false,formalCaptureClockAcceptance:false,direction:'inbound',endpointId:ENDPOINT,
+        captureOwnerId:1,captureAecResetGeneration:0,nativeResetGenerationDomain:'native-capture-owner',
+        queueOwnerId:1,queueGenerationDomain:'capture-queue-ledger',resetGeneration:capture.resetGeneration,
+        resetGenerationDomain:'aec-diagnostic-tap',ledgerError:null,qpc100ns:capture.observedQpc100ns };
+      addQueue({...common,kind:'native-capture-packet',requestedEndpointId:ENDPOINT,packetId,
+        rawFrameCount:capture.preSampleCount/2,rawByteCount:bytes,blockAlignBytes:8,
+        rawPacketDeviceFrameIndex:capture.rawPacketDeviceFrameIndex,rawPacketQpc100ns:capture.rawPacketQpc100ns,
+        observedQpc100ns:capture.observedQpc100ns,timestampError:capture.timestampError,
+        dataDiscontinuity:capture.dataDiscontinuity,silent:false,queuedBytesBeforeRead:0,queuedBytesAfterRead:bytes,
+        appendStartByte:byteOffset,appendEndByte:end,queueGenerationBefore:generation,queueGenerationAfter:++generation,
+        ledgerLastKnownHeadByte:byteOffset,ledgerLastKnownTailByte:end});
+      addQueue({...common,kind:'native-capture-queue-clock',packetId,queueGeneration:generation,
+        invalidPrefixBytes:0,packetClockValid:true,queueHeadClockValidForNextChunk:true,
+        invalidPrefixStartByte:byteOffset,invalidPrefixEndByte:byteOffset,invalidPrefixPacketRanges:[],
+        ledgerLastKnownHeadByte:byteOffset,ledgerLastKnownTailByte:end});
+      const packetRanges=[{packetId,startByte:byteOffset,endByte:end,packetOffsetStartByte:0,packetOffsetEndByte:bytes}];
+      addQueue({...common,kind:'native-capture-queue-dequeue',dequeueKind:'full-chunk-batch',dequeueId:packetId,
+        dequeueStartByte:byteOffset,dequeueEndByte:end,dequeuedBytes:bytes,queuedBytesBefore:bytes,queuedBytesAfter:0,
+        chunkByteLength:bytes,chunkCount:1,queueGenerationBefore:generation,queueGenerationAfter:++generation,
+        queueGeneration:generation,packetRanges,ledgerLastKnownHeadByte:end,ledgerLastKnownTailByte:end});
+      addQueue({...common,kind:'native-capture-queue-input',dequeueId:packetId,chunkIndex:0,
+        inputStartByte:byteOffset,inputEndByte:end,inputByteCount:bytes,packetRanges,queueGeneration:generation,
+        dequeueMappingAvailable:true,captureIdentityAvailable:true,queueHeadClockValid:capture.queueHeadClockValid,
+        timestampError:capture.timestampError,dataDiscontinuity:capture.dataDiscontinuity,
+        mainCaptureSequence:capture.sequence,mainCaptureResetGeneration:capture.resetGeneration,
+        mainCapturePostSampleOffset:capture.postSampleOffset,ledgerLastKnownHeadByte:end,ledgerLastKnownTailByte:end});
+      byteOffset = end;
+    }
+    const physicalQueueRows = events.filter(e => e.kind === 'physical-render');
+    for(const row of physicalQueueRows) addQueue({...row,kind:'physical-output',schemaVersion:1,resetGeneration:0,
+      sampleRateHz:RATE,channelCount:2,sampleOffset:row.physicalStartFrame*2,
+      sampleCount:(row.physicalEndFrame-row.physicalStartFrame)*2});
+    const closedFiles = {};
+    for(const [lane,name,bytes] of [['metadata','aec-closed-loop-metadata.jsonl',jsonl(queueRows)],
+      ['physical','aec-physical-output-48k-stereo.f32le',fs.readFileSync(receipt.streamEvidence.physical.path)],['provider','aec-provider-input.s16le',Buffer.alloc(0)]]) {
+      write(name,bytes);closedFiles[lane]={name,byteLength:bytes.length,sha256:sha(bytes),flushed:true,synced:true,unwrittenBufferedBytes:0};
+    }
+    receipt.tap.closedLoop={schemaVersion:1,kind:'aec-closed-loop-terminal',complete:true,countsFinal:true,errors:[],
+      droppedEvents:0,attemptedEvents:queueRows.length,acceptedEvents:queueRows.length,writtenEvents:queueRows.length,
+      physicalEvents:physicalQueueRows.length,providerEvents:0,lifecycleEvents:queueRows.length-physicalQueueRows.length,
+      physicalSamples:physical.length,providerSamples:0,files:closedFiles};
+    write('aec-closed-loop-terminal.json',Buffer.from(JSON.stringify(receipt.tap.closedLoop)+'\n'));
     write('aec-terminal.json', Buffer.from(JSON.stringify(receipt.tap) + '\n'));
     const eventBytes = jsonl(events);
     receipt.streamEvidence.events = { path: write('local-aec-stream-events.jsonl', eventBytes), sha256: sha(eventBytes),
@@ -197,7 +244,7 @@ function fixture(t, variant = 'good') {
   write('request.json', Buffer.from(JSON.stringify(request) + '\n'));
   const freeze = { schemaVersion: 1, executionId, scope: LOCAL_AEC_SPEECH_SCOPE, releaseEligible: false,
     providerCalls: 0, translationProviderCalls: 0, requestSha256: sha(fs.readFileSync(path.join(root, 'request.json'))),
-    injectorSha256: simulation.injectorExecutableSha256, inputWatchdogMs: 180000,
+    injectorSha256: simulation.injectorExecutableSha256, inputWatchdogMs: 180000, captureQueueWitnessPolicy:'owner-range-receipt-v1',
     thresholds: { echoAttenuationDb: 20, sourceGainToleranceDb: 3, sourceCoverage: 0.95 } };
   write('run-freeze.json', Buffer.from(JSON.stringify(freeze) + '\n'));
   write('local-aec-ready.json', Buffer.from(JSON.stringify({schemaVersion:2,artifactKind:'watch-mode-local-aec-ready',
@@ -501,4 +548,51 @@ test('legacy capture receipt cannot satisfy new local acoustic acceptance',t=>{
 test('padded capture without actual tail admission cannot reach acoustic analyzer',t=>{
  const f=fixture(t);const event=f.diagnostic.find(e=>e.kind==='capture');event.aecProcessing.mathPaddingFrames=288;
  f.reseal();const report=f.analyze();rejected(report,/mathPaddingFrames mismatch/u);assert.equal(report.stages.length,0);
+});
+
+test('sealed owner/range ledger is required independently of acoustic/source-clock acceptance',t=>{
+ const f=fixture(t);
+ const nativeReceipt=JSON.parse(fs.readFileSync(path.join(f.root,'aec-terminal.json'),'utf8'));
+ // This projection is diagnostic-only; acoustic acceptance remains separate.
+ const view=inspectLocalCaptureQueueEvidence(f.root,f.receipt);
+ assert.equal(view.reviewSatisfied,true);assert.equal(view.qualityAcceptance,false);
+ assert.equal(view.inputs,nativeReceipt.eventCounts.capture);
+ const meta=path.join(f.root,'aec-closed-loop-metadata.jsonl');fs.appendFileSync(meta,'{}\n');
+ assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/hash.*seal/u);
+});
+test('old local frozen reports cannot satisfy new owner/range witness policy',t=>{
+ const f=fixture(t);const file=path.join(f.root,'run-freeze.json');const freeze=JSON.parse(fs.readFileSync(file,'utf8'));
+ delete freeze.captureQueueWitnessPolicy;fs.writeFileSync(file,JSON.stringify(freeze));
+ const result=f.analyze();assert.equal(result.passed,false);
+ assert.ok(result.indeterminate.some(e=>/capture queue witness policy/u.test(e.detail)));
+});
+
+test('local sealed ledger rejects missing or forged classification/sample counters despite correct hashes',async t=>{
+ for(const key of ['physicalEvents','providerEvents','lifecycleEvents','physicalSamples','providerSamples']) {
+  for(const missing of [true,false]) await t.test(key+(missing?' missing':' forged'),t=>{
+   const f=fixture(t);const seal=f.receipt.tap.closedLoop;
+   if(missing)delete seal[key];else seal[key]+=1;
+   fs.writeFileSync(path.join(f.root,'aec-closed-loop-terminal.json'),JSON.stringify(seal)+'\n');
+   fs.writeFileSync(path.join(f.root,'aec-terminal.json'),JSON.stringify(f.receipt.tap)+'\n');
+   assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/sidecar.*accounting|zero.provider/u);
+  });
+ }
+});
+
+test('local ledger forbids provider rows even when all counters and file hashes agree',t=>{
+ const f=fixture(t);const seal=f.receipt.tap.closedLoop;const meta=path.join(f.root,'aec-closed-loop-metadata.jsonl');
+ const rows=fs.readFileSync(meta,'utf8').trim().split('\n').map(JSON.parse);
+ rows.push({schemaVersion:1,sequence:rows.length,kind:'provider-input',sampleOffset:0,sampleCount:1});
+ const metadata=jsonl(rows);fs.writeFileSync(meta,metadata);
+ seal.files.metadata.byteLength=metadata.length;seal.files.metadata.sha256=sha(metadata);
+ const provider=Buffer.from([0,0]);fs.writeFileSync(path.join(f.root,'aec-provider-input.s16le'),provider);
+ seal.files.provider.byteLength=provider.length;seal.files.provider.sha256=sha(provider);
+ seal.providerEvents=1;seal.providerSamples=1;seal.attemptedEvents+=1;seal.acceptedEvents+=1;seal.writtenEvents+=1;
+ fs.writeFileSync(path.join(f.root,'aec-closed-loop-terminal.json'),JSON.stringify(seal)+'\n');
+ fs.writeFileSync(path.join(f.root,'aec-terminal.json'),JSON.stringify(f.receipt.tap)+'\n');
+ assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/zero.provider/u);
+});
+test('queue physical PCM must match owned stream recording identity',t=>{
+ const f=fixture(t);f.receipt.streamEvidence.physical.sha256='0'.repeat(64);
+ assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/physical PCM differs/u);
 });

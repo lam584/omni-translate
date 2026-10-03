@@ -82,3 +82,24 @@ fn native_capture_health_pre_aec_chunk_activity_cannot_be_hidden_by_packet_avera
     producer.record_raw_activity(-90.0);
     assert_eq!(owner.health().raw_activity_generation,1);
 }
+
+#[test]
+fn native_capture_guard_diagnostic_identity_is_actual_owner_and_read_only_reset_domain() {
+    let ack=NativeCaptureStartAck::new();
+    let other=NativeCaptureStartAck::new();
+    let guard=ack.producer_guard();
+    let before=ack.health();
+    assert_eq!(guard.diagnostic_owner_identity(),(before.owner_id,before.aec_reset_generation));
+    assert_ne!(guard.diagnostic_owner_identity().0,other.health().owner_id);
+    for _ in 0..100 { assert_eq!(guard.diagnostic_owner_identity(),(before.owner_id,0)); }
+    let after=ack.health();
+    assert_eq!((after.successful_queries,after.progress_epoch,after.aec_reset_generation),
+        (before.successful_queries,before.progress_epoch,before.aec_reset_generation));
+    ack.observe_native_start(Ok::<_, ()>(())).unwrap();
+    guard.record_aec_reset();
+    assert_eq!(guard.diagnostic_owner_identity(),(before.owner_id,1));
+    assert_eq!(ack.health().aec_reset_generation,1);
+    guard.stopping();
+    guard.record_aec_reset();
+    assert_eq!(guard.diagnostic_owner_identity(),(before.owner_id,1));
+}

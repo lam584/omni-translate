@@ -182,3 +182,27 @@ provider PCM. Unknown event kinds still fail closed. Writer, producer and strict
 consumer changes are source-hash frozen before a new hardware run. Existing
 1ms source clock, unknown-prefix, zero-drop, source preservation, per-stage 20dB
 echo attenuation and open-input drain gates are unchanged.
+
+
+## Capture owner/range receipt witness v1 and host wall-time diagnostics
+
+The local API-speech AEC iteration remains bound to **vm171**, canonical English, real same-endpoint loopback and production AEC3. It makes zero translation Provider calls; the already generated API speech fixture is a frozen simulated model-output stimulus. This can test physical AEC suppression/source retention and streaming playback, but cannot certify a real model response-chain or end-to-end latency.
+
+The optional capture queue witness uses four explicitly admitted diagnostic kinds:
+
+- `native-capture-queue-dequeue`: the actual eager batch or partial-tail mutation;
+- `native-capture-queue-clock`: the existing queue clock state, exact invalid prefix and native packet intersections;
+- `native-capture-queue-reset`: the real native reset result, with separate native-capture-owner, capture-queue-ledger and diagnostic-tap generations;
+- `native-capture-queue-input`: the actual processed input byte interval linked to the main capture sequence/reset/post **f32 sample** offset admission.
+
+The capture admission identity is allocated even when Provider lineage is disabled. It does not prove writer success: sealed main/sidecar accounting and the corresponding main capture row must corroborate every identity and range. Unknown mappings are explicit nulls with sticky ledger errors, never guessed from latest packet flags. The ledger retains at most 2048 live native packet spans, without changing PCM, queue mutation order, queue clock validity, AEC arithmetic, reset or drain behavior.
+
+The larger ledger journal has a bounded **128 MiB** collection resource ceiling. This accommodates 180s of 10ms native packets/clock observations, 20ms capture input/dequeue receipts and the existing physical journal. It is not a quality threshold; exceeding it fails collection, and no row may be silently discarded.
+
+Opt-in host diagnostics require the fixed installed `vmtools.dll` path and its explicit SHA256. The runner verifies a valid Authenticode signature with organization `Broadcom Inc`, freezes the certificate subject/thumbprint and byte hash, and the launcher checks again before injecting only the two diagnostic environment fields. The native reader pins the regular, non-reparse file and parent directories, checks ABI/hash, safely loads only DLL-directory/System32 dependencies, and calls only read-only GETTIMEFULL command46. Initialization finishes **before source Start**.
+
+Host wall time observations bracket GetPosition outside the unchanged formal QPC/API brackets. They retain raw register/QPC/error values, may jump, and have no formal precision authority. They are diagnostic-only: no clock fitting, reanchoring, clamping, drift correction, quality acceptance or release eligibility is granted. Missing opt-in never loads the DLL. Bad ABI/path/hash/load or unavailable responses remain explicit unavailable evidence.
+
+The 20dB echo suppression, source gain ±3dB, 95% coverage, source clock 1ms, continuous open-input quiescence 2s and 180/190/195s budgets remain unchanged.
+
+The strict consumer independently replays queue clock invalidation from native flags/anchor arithmetic (not declared validity), and binds every input in FIFO order to the next sealed main capture identity. Local inspection additionally verifies event classes, contiguous PCM offsets/sample counts, zero Provider PCM, and exact physical PCM identity against the owned stream recording. Rehashed counter forgery, complete capture-identity swaps and undeclared invalid prefixes must be rejected.

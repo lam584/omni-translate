@@ -6,7 +6,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
 import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
-import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS } from './watch-mode-aec-closed-loop-evidence.mjs';
+import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS, AEC_CLOSED_LOOP_METADATA_MAX_BYTES,
+  AEC_CAPTURE_QUEUE_WITNESS_POLICY, validateCaptureQueueLedger } from './watch-mode-aec-closed-loop-evidence.mjs';
 
 export const LOCAL_AEC_SPEECH_SCOPE = 'local-aec-speech-simulation';
 const RATE = 48_000;
@@ -165,6 +166,69 @@ function nativeTapSeal(root, terminal) {
   return { ...data, rows, terminalSha256: sha(terminalBytes), captureProcessingVersion: 1,
     processingVerified: counts.capture > 0, verifiedProcessingCount: counts.capture };
 }
+/** Independent sealed-journal custody. Invalid formal capture clocks remain
+ * visible here without being promoted to acoustic or source-clock acceptance. */
+export function inspectLocalCaptureQueueEvidence(root, nativeReceipt) {
+  const freezeBytes = raw(root, 'run-freeze.json', MAX_TEXT); const freeze = parse(freezeBytes);
+  check(freeze.executionId === nativeReceipt.executionId
+    && freeze.captureQueueWitnessPolicy === AEC_CAPTURE_QUEUE_WITNESS_POLICY, 'new frozen capture queue witness policy required');
+  const mainBytes = raw(root, 'aec-terminal.json', MAX_TEXT); const main = parse(mainBytes);
+  check(isDeepStrictEqual(main, nativeReceipt.tap) && main.complete === true && main.countsFinal === true
+    && main.errors?.length === 0 && main.droppedEvents === 0, 'main queue journal seal incomplete');
+  const mainMetadata = raw(root, 'aec-frame-metadata.jsonl', MAX_TEXT);
+  const mainEntry = main.files?.metadata;
+  check(mainEntry?.name === 'aec-frame-metadata.jsonl' && mainEntry.sha256 === sha(mainMetadata)
+    && mainEntry.byteLength === mainMetadata.length && mainEntry.flushed === true && mainEntry.synced === true
+    && mainEntry.unwrittenBufferedBytes === 0, 'main queue journal hash/seal mismatch');
+  const mainRows = records(mainMetadata);
+  check(mainRows.length === main.writtenEvents && main.writtenEvents === main.acceptedEvents
+    && main.writtenEvents === main.attemptedEvents, 'main queue journal accounting mismatch');
+  const sealBytes = raw(root, 'aec-closed-loop-terminal.json', MAX_TEXT); const seal = parse(sealBytes);
+  check(isDeepStrictEqual(main.closedLoop, seal) && seal.schemaVersion === 1 && seal.kind === 'aec-closed-loop-terminal'
+    && seal.complete === true && seal.countsFinal === true && seal.errors?.length === 0 && seal.droppedEvents === 0
+    && !fs.existsSync(path.join(root, 'aec-closed-loop-terminal.json.partial')), 'queue sidecar seal incomplete/mismatched');
+  check(Object.keys(seal.files ?? {}).sort().join(',') === 'metadata,physical,provider', 'queue sidecar file inventory mismatch');
+  let sidecarBytes; const sidecarLengths = {};
+  const filenames = { metadata: 'aec-closed-loop-metadata.jsonl', physical: 'aec-physical-output-48k-stereo.f32le', provider: 'aec-provider-input.s16le' };
+  for (const [lane,name] of Object.entries(filenames)) {
+    const file = path.join(root,name); noRedirect(file); const stat = fs.statSync(file);
+    const limit = lane === 'metadata' ? AEC_CLOSED_LOOP_METADATA_MAX_BYTES : MAX_PCM;
+    check(stat.isFile() && stat.size <= limit, 'queue sidecar file unbounded/nonregular');
+    const bytes = fs.readFileSync(file); const entry = seal.files[lane];
+    check(entry?.name === name && entry.byteLength === bytes.length && entry.sha256 === sha(bytes)
+      && entry.flushed === true && entry.synced === true && entry.unwrittenBufferedBytes === 0,
+    'queue sidecar bytes/hash/seal mismatch');
+    sidecarLengths[lane] = bytes.length;
+    if(lane === 'metadata') sidecarBytes = bytes;
+  }
+  const sidecarRows = records(sidecarBytes);
+  check(sidecarRows.length === seal.writtenEvents && seal.writtenEvents === seal.acceptedEvents
+    && seal.writtenEvents === seal.attemptedEvents, 'queue sidecar event accounting mismatch');
+  const counts = { physicalEvents:0,providerEvents:0,lifecycleEvents:0,physicalSamples:0,providerSamples:0 };
+  for(const row of sidecarRows) {
+    if(row.kind === 'physical-output' || row.kind === 'provider-input') {
+      const physical = row.kind === 'physical-output';
+      const sampleKey = physical ? 'physicalSamples' : 'providerSamples';
+      const eventKey = physical ? 'physicalEvents' : 'providerEvents';
+      check(integer(row.sampleCount) && row.sampleCount > 0 && row.sampleOffset === counts[sampleKey],
+        'queue sidecar PCM offset/sample accounting mismatch');
+      counts[eventKey] += 1; counts[sampleKey] += row.sampleCount;
+    } else counts.lifecycleEvents += 1;
+  }
+  check(Object.entries(counts).every(([key,value]) => seal[key] === value)
+    && counts.physicalSamples * 4 === sidecarLengths.physical
+    && counts.providerSamples * 2 === sidecarLengths.provider, 'queue sidecar classification/sample accounting mismatch');
+  check(counts.providerEvents === 0 && counts.providerSamples === 0 && sidecarLengths.provider === 0,
+    'local zero-provider sidecar contains actual provider input');
+  const physical = nativeReceipt.streamEvidence?.physical;
+  check(counts.physicalEvents > 0 && counts.physicalSamples === physical?.sampleCount
+    && sidecarLengths.physical === physical.bytes && seal.files.physical.sha256 === physical.sha256,
+    'queue sidecar physical PCM differs from owned local stream recording');
+  const projection = validateCaptureQueueLedger(sidecarRows, mainRows, { required: true });
+  return { ...projection, terminalSha256: sha(sealBytes), metadataSha256: sha(sidecarBytes),
+    mainTerminalSha256: sha(mainBytes), mainMetadataSha256: sha(mainMetadata), freezeSha256: sha(freezeBytes) };
+}
+
 function inputFile(file, expectedHash, limit) {
   check(typeof file === 'string' && path.isAbsolute(file) && /^[a-f0-9]{64}$/u.test(expectedHash ?? ''), 'input file path/hash authority missing');
   noRedirect(file); const stat = fs.statSync(file);
@@ -551,6 +615,8 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
   attempt('workspace-ownership', () => check(root.startsWith(path.resolve(options.analyzer?.workspaceRoot ?? '') + path.sep), 'run directory outside analyzer workspace'));
   const readiness = root && attempt('native-start-readiness', () => nativeStartReadiness(root, receipt, options.expectedPhysicalDeviceId));
   if (readiness) result.nativeStartReadiness = readiness;
+  const queueEvidence = attempt('capture-queue-ledger', () => inspectLocalCaptureQueueEvidence(root, receipt));
+  if(queueEvidence) result.captureQueueLedger = queueEvidence;
   const tap = attempt('tap-seal', () => nativeTapSeal(root, receipt.tap));
   if (tap) result.tapEvidence = { complete: true, terminalSha256: tap.terminalSha256,
     captureProcessingVersion: tap.captureProcessingVersion, processingVerified: tap.processingVerified,
@@ -564,7 +630,7 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
   });
   const source = events && attempt('source-clock-seal', () => sourceTimeline(root, receipt, events, options.expectedPhysicalDeviceId));
   const stimulus = events && linearBytes && attempt('original-stimulus-custody', () => stimulusCustody(root, receipt, events, linearBytes));
-  if (!readiness || !tap || !physicalBytes || !linearBytes || !events || !source || !stimulus || !executable || result.indeterminate.length) return result;
+  if (!readiness || !queueEvidence || !tap || !physicalBytes || !linearBytes || !events || !source || !stimulus || !executable || result.indeterminate.length) return result;
   const built = attempt('native-clock-reconstruction', () => reconstruct(root, receipt, options.expectedPhysicalDeviceId, {
     events, physicalBytes, linearBytes, source, diagnostic: tap.rows,
     preBytes: tap.pre, postBytes: tap.post, renderBytes: tap.render,
@@ -618,6 +684,8 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
     }
     // Recheck all raw custody after metric execution; changed evidence cannot certify an older snapshot.
     check(nativeStartReadiness(root, receipt, options.expectedPhysicalDeviceId).sha256 === readiness.sha256, 'native Start readiness changed during analysis');
+    const finalQueueEvidence = inspectLocalCaptureQueueEvidence(root, receipt);
+    check(isDeepStrictEqual(finalQueueEvidence, queueEvidence), 'capture queue evidence changed during analysis');
     const finalTap = nativeTapSeal(root, receipt.tap);
     check(finalTap.terminalSha256 === tap.terminalSha256, 'tap terminal changed during analysis');
     sealed(root, receipt.streamEvidence.physical); sealed(root, receipt.streamEvidence.linearReference); sealed(root, receipt.streamEvidence.events, true);

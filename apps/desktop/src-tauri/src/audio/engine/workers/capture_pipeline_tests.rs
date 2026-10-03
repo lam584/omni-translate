@@ -76,7 +76,7 @@ fn packet_witness<'a>(buffer_info: &'a wasapi::BufferInfo, frames: usize, before
         queued_bytes_after_read: (before_frames + frames) * 8, block_align: 8,
         observed_qpc_100ns: Some(9_000_000), direction: "inbound",
         requested_endpoint_id: "requested-endpoint", endpoint_id: None,
-        capture_owner_id: None, capture_aec_reset_generation: None,
+        capture_owner_id: None, capture_aec_reset_generation: None, queue_append: None,
     }
 }
 
@@ -189,4 +189,76 @@ fn native_capture_packet_witness_does_not_invent_bytes_on_queue_underflow() {
     capture_diagnostics::record_native_capture_packet_witness(packet, |record| records.push(record));
     assert_eq!(records[0]["rawFrameCount"], 96);
     assert!(records[0]["rawByteCount"].is_null());
+}
+
+#[test]
+fn native_capture_packet_ledger_receipt_keeps_real_byte_ranges_and_reset_domains_separate() {
+    let mut ledger=CaptureQueueLedger::new(41,0);
+    let first=ledger.observe_append(41,0,768,Some(768));
+    let second=ledger.observe_append(41,768,4608,Some(3840));
+    let info=wasapi::BufferInfo::new(0,6672096,4207119107588);
+    let mut packet=packet_witness(&info,480,96);
+    packet.endpoint_id=Some("initialized-effective-endpoint");
+    packet.capture_owner_id=Some(41); packet.capture_aec_reset_generation=Some(3);
+    packet.queue_append=Some(&second);
+    let mut records=Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet,|row| records.push(row));
+    let row=&records[0];
+    assert_eq!(first.packet_id,Some(1)); assert_eq!(row["packetId"],2);
+    assert_eq!(row["appendStartByte"],768); assert_eq!(row["appendEndByte"],4608);
+    assert_eq!(row["queueGenerationBefore"],1); assert_eq!(row["queueGenerationAfter"],2);
+    assert_eq!(row["queueOwnerId"],41); assert_eq!(row["captureAecResetGeneration"],3);
+    assert_eq!(row["nativeResetGenerationDomain"],"native-capture-owner");
+    assert_eq!(row["resetGenerationDomain"],"aec-diagnostic-tap");
+    assert_eq!(row["queueGenerationDomain"],"capture-queue-ledger");
+    assert!(row["ledgerError"].is_null()); assert!(row.get("resetGeneration").is_none());
+}
+#[test]
+fn native_capture_packet_failed_ledger_keeps_raw_packet_without_fabricated_append_range() {
+    let mut ledger=CaptureQueueLedger::new(41,0);
+    ledger.observe_append(41,0,768,Some(768));
+    let failed=ledger.observe_append(42,768,4608,Some(3840));
+    let info=wasapi::BufferInfo::new(0,6672096,4207119107588);
+    let mut packet=packet_witness(&info,480,96); packet.queue_append=Some(&failed);
+    packet.capture_owner_id=Some(42);
+    let mut records=Vec::new();
+    capture_diagnostics::record_native_capture_packet_witness(packet,|row| records.push(row));
+    let row=&records[0];
+    assert_eq!(row["rawByteCount"],3840); assert_eq!(row["rawPacketDeviceFrameIndex"],6672096);
+    assert_eq!(row["ledgerError"],"capture-owner-mismatch");
+    assert_eq!(row["captureOwnerId"],42); assert_eq!(row["queueOwnerId"],41);
+    for field in ["packetId","appendStartByte","appendEndByte"] { assert!(row[field].is_null()); }
+    assert_eq!(row["ledgerLastKnownTailByte"],768);
+}
+#[test]
+fn initialized_queue_binding_reads_actual_guard_not_requested_route_or_tail_identity() {
+    let mut pipeline=pipeline();
+    let ack=crate::audio::state::NativeCaptureStartAck::new();
+    let guard=ack.producer_guard();
+    let other=crate::audio::state::NativeCaptureStartAck::new();
+    pipeline.bind_capture_queue("initialized-effective-endpoint",&guard,0,true);
+    let before=ack.health();
+    let row=pipeline.queue_record("native-capture-queue-reset","inbound",&guard).unwrap();
+    assert_eq!(row["endpointId"],"initialized-effective-endpoint");
+    assert_eq!(row["captureOwnerId"],json!(before.owner_id));
+    assert_eq!(row["queueOwnerId"],json!(before.owner_id));
+    assert_ne!(row["captureOwnerId"],json!(other.health().owner_id));
+    assert_eq!(row["captureAecResetGeneration"],0);
+    assert_eq!(row["queueGeneration"],0);
+    assert_eq!(ack.health().aec_reset_generation,before.aec_reset_generation);
+    for field in ["qualityAcceptance","aecQualityAcceptance","releaseEligible","formalCaptureClockAcceptance"] {
+        assert_eq!(row[field],false);
+    }
+}
+#[test]
+fn queue_clock_diagnostic_snapshot_does_not_change_existing_invalid_prefix_decision() {
+    let mut pipeline=pipeline();
+    pipeline.queue_clock.observe_packet(672*8,768*8,true,false,true);
+    for _ in 0..100 {
+        assert_eq!(pipeline.queue_clock.diagnostic_state(),(672*8,true));
+        assert!(!pipeline.capture_metadata().unwrap().queue_head_clock_valid);
+    }
+    pipeline.consume_capture_clock(672,672*8);
+    assert_eq!(pipeline.queue_clock.diagnostic_state(),(0,true));
+    assert!(pipeline.capture_metadata().unwrap().queue_head_clock_valid);
 }

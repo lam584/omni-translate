@@ -7,6 +7,11 @@ use std::{collections::HashSet, fs, io::{Read, Write}, path::{Component, Path, P
 #[cfg(feature = "webrtc-aec3")]
 use std::time::{Duration, Instant};
 
+mod apm_telemetry;
+use apm_telemetry::ApmTelemetry;
+#[cfg(feature = "webrtc-aec3")]
+use apm_telemetry::{ApmStatsObservation, ApmTelemetryCollector};
+
 const RATE: u32 = 48_000;
 const FRAME: usize = 480;
 const MAX_SAMPLES: usize = RATE as usize * 180;
@@ -44,6 +49,8 @@ struct Manifest {
     schema_version: u32, artifact_kind: String, benchmark_id: String, definition_sha256: String,
     sample_rate_hz: u32,
     channel_count: u16, frame_samples: usize, cases: Vec<Case>,
+    #[serde(default)]
+    diagnostic_apm_stats: bool,
 }
 
 fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
@@ -364,9 +371,13 @@ fn prepare_output(path: &Path, allowed_root: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(feature = "webrtc-aec3")]
-fn run_backend(id: &str, a: &Audio) -> Result<(Vec<f32>, serde_json::Value)> {
+fn run_backend(id: &str, a: &Audio, diagnostic_apm_stats: bool)
+    -> Result<(Vec<f32>, serde_json::Value, Option<ApmTelemetry>)> {
     let frame_count = a.input.len() / FRAME;
     let mut output = Vec::with_capacity(a.input.len() * 2);
+    let stats_source = if id == "production" { "production-cached-native-stats" }
+        else { "linked-direct-public-stats" };
+    let mut telemetry = ApmTelemetryCollector::new(diagnostic_apm_stats, a.input.len(), stats_source);
     let counters = if id == "production" {
         let mut aec = super::create_production_echo_canceller()?;
         let base = Instant::now();
@@ -376,6 +387,8 @@ fn run_backend(id: &str, a: &Audio) -> Result<(Vec<f32>, serde_json::Value)> {
             let result = aec.process_capture_10ms_with_reference(Some(&r), &c, 0, time)?;
             validate_pcm(&result.samples, FRAME * 2)?;
             output.extend(result.samples);
+            telemetry.after_capture_frame((i + 1) * FRAME, ||
+                Ok(ApmStatsObservation::from_production(aec.stats())));
         }
         let stats = aec.stats();
         if stats.backend != "webrtc-aec3" || stats.render_10ms_frames != frame_count as u64
@@ -388,13 +401,17 @@ fn run_backend(id: &str, a: &Audio) -> Result<(Vec<f32>, serde_json::Value)> {
             "rejectedFrameCount":stats.rejected_frame_count,"statsReadFailureCount":stats.stats_read_failure_count})
     } else if id == "linked-direct" {
         let mut aec = omni_webrtc_aec3::Aec3::new().map_err(|e| e.to_string())?;
-        for (r, c) in a.render.chunks_exact(FRAME).zip(a.input.chunks_exact(FRAME)) {
+        for (i, (r, c)) in a.render.chunks_exact(FRAME).zip(a.input.chunks_exact(FRAME)).enumerate() {
             aec.push_render_10ms(&stereo(r)).map_err(|e| e.to_string())?;
             let mut capture = stereo(c);
             aec.process_capture_10ms(&mut capture, 0).map_err(|e| e.to_string())?;
             validate_pcm(&capture, FRAME * 2)?;
             output.extend(capture);
+            telemetry.after_capture_frame((i + 1) * FRAME, || aec.stats()
+                .map(ApmStatsObservation::from_linked_direct).map_err(|e| e.to_string()));
         }
+        // Preserve the pre-existing final identity query/continuity guard.
+        // Optional collector read errors above never propagate into PCM flow.
         let stats = aec.stats().map_err(|e| e.to_string())?;
         if stats.render_10ms_frames != frame_count as u64 || stats.capture_10ms_frames != frame_count as u64 || stats.reset_count != 0 {
             return Err("direct backend frame continuity validation failed".into());
@@ -403,13 +420,15 @@ fn run_backend(id: &str, a: &Audio) -> Result<(Vec<f32>, serde_json::Value)> {
             "captureFrames":stats.capture_10ms_frames,"resetCount":stats.reset_count})
     } else { return Err("unknown real backend".into()); };
     validate_pcm(&output, a.input.len() * 2)?;
-    Ok((output, counters))
+    Ok((output, counters, telemetry.finish()))
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackendReport {
     id: &'static str, role: &'static str, output_files: OutputFiles,
     frame_counters: serde_json::Value, #[serde(flatten)] analysis: Analysis,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apm_telemetry: Option<ApmTelemetry>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -436,6 +455,7 @@ struct BenchmarkReport {
     window_energy_convention: &'static str, source_raw_error_energy_convention: &'static str,
     quiet_assessment_scope: &'static str,
     energy_envelope_interpretation: &'static str, source_distortion_interpretation: &'static str,
+    diagnostic_apm_stats_enabled: bool,
     formal_acceptance: bool, cases: Vec<CaseReport>, negative_controls: Vec<ControlReport>,
 }
 #[cfg(feature = "webrtc-aec3")]
@@ -469,15 +489,17 @@ fn benchmark(manifest_path: &Path, output_path: &Path, identity_path: &Path) -> 
         quiet_assessment_scope: "core minimumReferenceRms only; quiet nonzero flag/count is descriptive, never a bit-exact-zero gate",
         energy_envelope_interpretation: "conservative energy envelope, all unexplained residual charged to echo; not statistical proof",
         source_distortion_interpretation: "core residual / coherent source energy, and raw post-minus-source energy/RMS; both include residual echo and are not uniquely attributable to source timbre",
+        diagnostic_apm_stats_enabled: manifest.diagnostic_apm_stats,
         formal_acceptance: false, cases: Vec::new(), negative_controls: Vec::new() };
     for c in manifest.cases {
         let a = load_audio(base, &c)?;
         let mut backends = Vec::new();
         for id in ["production", "linked-direct"] {
-            let (pcm, counters) = run_backend(id, &a)?;
+            let (pcm, counters, apm_telemetry) = run_backend(id, &a, manifest.diagnostic_apm_stats)?;
             let (files, post) = save_output(&output, &format!("case-{}-{id}", c.id), &pcm, c.sample_count)?;
             backends.push(BackendReport { id, role: "real-linked-algorithm-output", output_files: files,
-                frame_counters: counters, analysis: analyze(&a.input, &post, &a.source, &a.echo) });
+                frame_counters: counters, analysis: analyze(&a.input, &post, &a.source, &a.echo),
+                apm_telemetry });
         }
         // Controls are deliberately NOT attributed to either real backend.
         let double_talk = backends[0].analysis.metrics.windows.iter().any(|w| w.source_active && w.echo_active);

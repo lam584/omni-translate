@@ -207,6 +207,64 @@ function descriptor(root,f){
   check(sha256(b)===f.sha256&&(!integer(f.bytes)||f.bytes===b.length),'audio bytes/hash identity');return b;
 }
 const audioIdentity=files=>Object.fromEntries(['render','source','echo','input'].map(k=>[k,{path:files?.[k]?.path,sha256:files?.[k]?.sha256}]));
+
+export const APM_TELEMETRY_DOMAIN='capture-input-sample-ordinal-not-output-latency-or-clock';
+export const APM_TELEMETRY_MEANING='point-after-last-frame-not-window-average';
+const apmSource=id=>id==='production'?'production-cached-native-stats':id==='linked-direct'?'linked-direct-public-stats':null;
+const nullable=(x,predicate)=>x===null||predicate(x);
+export function validateApmTelemetry(t,{enabled,backendId,sampleCount}){
+  if(!enabled){check(t===undefined,'disabled APM telemetry must be absent');return null;}
+  check(t&&t.version===1&&t.cadenceSamples===4800&&t.sampleRangeAuthority===APM_TELEMETRY_DOMAIN&&t.observationMeaning===APM_TELEMETRY_MEANING,'APM telemetry version/cadence/domain/point meaning');
+  check(apmSource(backendId)&&t.statsSource===apmSource(backendId),'APM backend stats source identity');
+  check(t.signalSampleAuthority==='public-statistics-payload-has-no-origin-sample-ordinal'&&t.freshnessMeaning==='getter-counters-match-processed-frames-not-signal-payload-age','APM payload age must remain unproven');
+  check(integer(sampleCount)&&sampleCount>0&&sampleCount%480===0,'APM complete capture frames required');
+  check(Array.isArray(t.snapshots)&&t.snapshots.length===Math.ceil(sampleCount/4800),'APM complete snapshot inventory including short tail');
+  let lastFailures=0,lastProductionFailures=0;
+  const counts={'fresh-counter-matched':0,'stale-or-counter-mismatch':0,'read-error':0};
+  const missing={erleDb:0,residualEchoLikelihood:0,reportedDelayMs:0};
+  for(const [i,s] of t.snapshots.entries()){
+    const start=i*4800,end=Math.min(start+4800,sampleCount),frames=end/480;
+    check(s&&s.startSample===start&&s.endSample===end&&s.expectedRenderFrames===frames&&s.expectedCaptureFrames===frames,'APM contiguous exact sample/counter ranges');
+    for(const k of ['observedRenderFrames','observedCaptureFrames','nativeResetCount'])check(nullable(s[k],integer),'APM explicit nullable counter '+k);
+    check(integer(s.collectionReadFailureCount)&&s.collectionReadFailureCount===lastFailures+(s.status==='read-error'?1:0),'APM exact cumulative collection failure count');lastFailures=s.collectionReadFailureCount;
+    if(backendId==='production'){check(integer(s.productionStatsReadFailureCount)&&s.productionStatsReadFailureCount>=lastProductionFailures,'APM monotonic production failure count');lastProductionFailures=s.productionStatsReadFailureCount;}
+    else check(s.productionStatsReadFailureCount===null,'direct APM production failure count must be null');
+    check(Object.hasOwn(counts,s.status),'APM known freshness status');counts[s.status]++;
+    const matched=s.observedRenderFrames===frames&&s.observedCaptureFrames===frames;
+    if(s.status==='fresh-counter-matched')check(matched&&s.error===null,'APM fresh snapshot counter/error identity');
+    if(s.status==='stale-or-counter-mismatch')check(!matched&&s.error===null,'APM stale snapshot must expose counter mismatch');
+    if(s.status==='read-error')check(typeof s.error==='string'&&s.error.length>0&&s.collectionReadFailureCount>0,'APM collection error witness');
+    check(nullable(s.erleDb,finite),'APM finite-or-null ERLE');
+    check(nullable(s.residualEchoLikelihood,x=>finite(x)&&x>=0&&x<=1),'APM bounded-or-null residual likelihood');
+    check(nullable(s.reportedDelayMs,integer),'APM nonnegative integer-or-null reported delay');
+    for(const k of Object.keys(missing)){if(s[k]===null)missing[k]++;if(s.status!=='fresh-counter-matched')check(s[k]===null,'APM stale/error signals must remain unknown');}
+  }
+  return {snapshotCount:t.snapshots.length,statusCounts:counts,missingSignals:missing,collectionReadFailureCount:lastFailures,
+    productionStatsReadFailureCount:backendId==='production'?lastProductionFailures:null,signalOriginSampleUnknown:true,diagnosticOnly:true,notQualityOrClockAcceptance:true};
+}
+const csvCell=x=>x===null?'':String(x).match(/[",\n\r]/)?'"'+String(x).replaceAll('"','""')+'"':String(x);
+export function apmTelemetryCsv(t){
+  const keys=['startSample','endSample','expectedRenderFrames','expectedCaptureFrames','observedRenderFrames','observedCaptureFrames','nativeResetCount','erleDb','residualEchoLikelihood','reportedDelayMs','productionStatsReadFailureCount','collectionReadFailureCount','status','error'];
+  return ['sampleRangeAuthority,observationMeaning,statsSource,signalSampleAuthority,freshnessMeaning,'+keys.join(','),...t.snapshots.map(s=>[t.sampleRangeAuthority,t.observationMeaning,t.statsSource,t.signalSampleAuthority,t.freshnessMeaning,...keys.map(k=>s[k])].map(csvCell).join(','))].join('\n')+'\n';
+}
+export function apmTelemetrySvg(t,caseInput){
+  const width=1100,height=690,left=65,right=25,duration=caseInput.sampleCount/48000;
+  const delays=t.snapshots.filter(s=>s.status==='fresh-counter-matched'&&s.reportedDelayMs!==null).map(s=>s.reportedDelayMs);
+  const maxDelay=Math.max(200,...delays);
+  const panels=[{key:'erleDb',label:'Internal ERLE dB (not external echo contribution)',min:-20,max:60},
+    {key:'residualEchoLikelihood',label:'Internal residual likelihood (not residual PCM energy)',min:0,max:1},
+    {key:'reportedDelayMs',label:'Reported APM delay ms (not a per-frame physical/acceptance clock)',min:0,max:maxDelay}];
+  let svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'"><rect width="100%" height="100%" fill="#fff"/><text x="20" y="24" font-family="sans-serif">'+esc(caseInput.id)+' / '+esc(t.statsSource)+' — getter points; payload origin unknown; missing/stale gaps retained</text>';
+  for(const [i,p] of panels.entries()){
+    const top=55+i*200,h=150,x=sample=>left+sample/48000/duration*(width-left-right),y=value=>top+h-(Math.max(p.min,Math.min(p.max,value))-p.min)/(p.max-p.min)*h;
+    svg+='<text x="20" y="'+(top-10)+'" font-family="sans-serif">'+p.label+'</text><path d="M'+left+','+top+'V'+(top+h)+'H'+(width-right)+'" fill="none" stroke="#777"/>';
+    svg+='<text x="4" y="'+top+'" font-size="11">'+p.max+'</text><text x="4" y="'+(top+h)+'" font-size="11">'+p.min+'</text>';
+    for(const phase of caseInput.phases.slice(1))svg+='<path d="M'+x(phase.startSample)+','+top+'V'+(top+h)+'" stroke="#999" stroke-dasharray="2 3"/>';
+    for(const s of t.snapshots)if(s.status==='fresh-counter-matched'&&finite(s[p.key]))svg+='<circle cx="'+x(s.endSample).toFixed(2)+'" cy="'+y(s[p.key]).toFixed(2)+'" r="1.3" fill="#1675a9"/>';
+  }
+  return svg+'<text x="190" y="675" font-family="sans-serif">Capture input sample ordinal / 48000 (seconds), NOT output latency; no interpolation or acceptance threshold</text></svg>';
+}
+
 export function validateResults(manifest,results,expected){
   check(manifest.schemaVersion===1&&manifest.artifactKind==='production-aec-offline-benchmark-inputs'&&results.schemaVersion===1&&results.artifactKind==='production-aec-offline-benchmark-results','input/result artifact identities');
   equal(results.manifestSha256??results.inputManifestSha256,expected.manifestSha256??expected.inputManifestSha256,'external expected manifest hash');
@@ -219,17 +277,23 @@ export function validateResults(manifest,results,expected){
   equal([results.externalCaptureQueueSamples,results.externalReferenceLeadSamples],[0,0],'no external oracle timing');
   equal(results.windowEnergyConvention,'sum-of-squares','native energy units must be centered SUM');
   check(results.formalAcceptance===false,'not formal acceptance');
+  check(manifest.diagnosticApmStats===undefined||typeof manifest.diagnosticApmStats==='boolean','APM manifest opt-in must be boolean');
+  const diagnosticApmStats=manifest.diagnosticApmStats===true;
+  if(diagnosticApmStats)check(results.diagnosticApmStatsEnabled===true,'requested APM evidence cannot be missing');
+  else check(results.diagnosticApmStatsEnabled===undefined||results.diagnosticApmStatsEnabled===false,'unsolicited APM evidence cannot rewrite legacy scope');
   const controlIds=['bypass','silence','gain-0.1'];
   check(Array.isArray(results.negativeControls)&&results.negativeControls.length===controlIds.length&&
     results.negativeControls.every(c=>c&&c.caseId==='double-talk'&&controlIds.includes(c.id))&&
     new Set(results.negativeControls.map(c=>c.id)).size===controlIds.length,'exact unique negative-control inventory required');
+  for(const c of results.negativeControls)check(c.apmTelemetry===undefined,'negative controls cannot carry algorithm APM evidence');
   equal(results.cases.map(c=>c.id),manifest.cases.map(c=>c.id),'exact case inventory');
   for(const [i,c] of results.cases.entries()){
     const m=manifest.cases[i];equal(audioIdentity(c.files??c.inputFiles),audioIdentity(m.files),'worker input audio identity (path/hash projection)');
     equal([c.sampleCount,c.delayHintMs,c.sourceEndSample,c.renderEndSample,c.negativeControl],[m.sampleCount,0,m.sourceEndSample,m.renderEndSample,m.negativeControl],'worker case timeline');
     equal(c.changes,m.changes,'worker changes');equal(c.segments,m.segments,'worker segments');
-    check(c.backends.some(b=>b.id==='production')&&c.backends.some(b=>b.id==='linked-direct')&&new Set(c.backends.map(b=>b.id)).size===c.backends.length,'production + linked-direct required, no duplicate outputs');
+    equal(c.backends.map(b=>b.id).sort(),['linked-direct','production'],'exact production + linked-direct inventory');
     for(const b of c.backends){check(/^[a-z0-9-]+$/.test(b.id)&&b.role==='real-linked-algorithm-output','real backend role');
+      validateApmTelemetry(b.apmTelemetry,{enabled:diagnosticApmStats,backendId:b.id,sampleCount:m.sampleCount});
       const frames=m.sampleCount/480;check(b.frameCounters?.renderFrames===frames&&b.frameCounters?.captureFrames===frames,'worker frame continuity');
       if(b.id==='production')check(b.frameCounters.backend==='webrtc-aec3'&&b.frameCounters.resetCount===0&&b.frameCounters.rejectedFrameCount===0,'production backend no fallback/reset/rejection');
     }
@@ -258,6 +322,7 @@ export function markdownReport(report){let s='# Production linked-AEC offline be
   for(const c of report.cases){s+=`\n## ${c.id}\n`;if(c.sameAudioAs)s+=`Intentional repeated audio: ${c.sameAudioAs}; evaluates a different tail emphasis, not new material.\n`;
     for(const b of c.backends){s+=`\n### ${b.id}\n`;for(const p of b.phases)s+=`- Phase ${p.startSample/48000}–${p.endSample/48000}s: convergence/recovery ${p.convergence?`${p.convergence.secondsFromPhaseStart}s (completion ${p.convergence.completionSample/48000}s)`:'null — not established / not applicable'}, with all startup windows retained.\n`;
       if(b.negativeControl)s+=`- Wrong-reference observed false positive: ${b.negativeControlObservedFalsePositive} (not forced to fail).\n`;
+      if(b.apmTelemetrySummary){const a=b.apmTelemetrySummary;s+='- APM diagnostic points: '+a.snapshotCount+', fresh/stale/read-error '+a.statusCounts['fresh-counter-matched']+'/'+a.statusCounts['stale-or-counter-mismatch']+'/'+a.statusCounts['read-error']+'. Missing ERLE/residual/delay: '+a.missingSignals.erleDb+'/'+a.missingSignals.residualEchoLikelihood+'/'+a.missingSignals.reportedDelayMs+'. Frame-counter freshness does NOT prove signal payload age. These are NOT window averages, echo quality gates, or physical clock/latency evidence.\n';}
       s+='- Source raw error includes residual/unexplained energy, not pure distortion. No-source/no-echo windows retain N/A; invalid windows are indeterminate.\n';
       s+='\n| Segment | Windows / valid | Active source / echo | Coherent coverage | Conservative echo dB minimum | Unexplained mean-square | Post RMS range |\n|---|---|---|---|---|---|---|\n';
       for(const a of b.segments)s+=`| ${a.name} | ${a.windowCount} / ${a.validWindows} | ${a.sourceActiveWindows} / ${a.echoActiveWindows} | ${fmt(a.sourceCoverage)} | ${fmt(a.minimumEchoAttenuationDb)} | ${fmt(a.meanSquareEnergies.postUnexplainedEnergy)} | ${a.postRmsRange?.map(fmt).join(' … ')??'N/A'} |\n`;
@@ -324,21 +389,22 @@ export function report({manifestPath,resultsPath,resultsSha256,expectedIdentityP
     if(c.negativeControl)descriptor(inputRoot,c.auditFiles.correctRender);
     const before=descriptor(inputRoot,c.wavFiles.input);equal(floatWavPayload(before),descriptor(inputRoot,c.files.input),'before WAV equals frozen input PCM');
     const backends=[];let productionWav=null;
-    for(const backend of results.cases[index].backends){const audio=validateOutputArtifacts(resultRoot,backend.outputFiles,c.sampleCount),summary=summarizeBackend(c,backend);summary.outputFiles=backend.outputFiles;summary.frameCounters=backend.frameCounters;summary.independentEnglish=backend.independentEnglish;summary.nativeDiagnosticPassed=backend.diagnosticPassed;backends.push(summary);if(backend.id==='production')productionWav=audio.wavMono;}
+    for(const backend of results.cases[index].backends){const audio=validateOutputArtifacts(resultRoot,backend.outputFiles,c.sampleCount),summary=summarizeBackend(c,backend);summary.outputFiles=backend.outputFiles;summary.frameCounters=backend.frameCounters;summary.independentEnglish=backend.independentEnglish;summary.nativeDiagnosticPassed=backend.diagnosticPassed;if(manifest.diagnosticApmStats===true){summary.apmTelemetry=backend.apmTelemetry;summary.apmTelemetrySummary=validateApmTelemetry(backend.apmTelemetry,{enabled:true,backendId:backend.id,sampleCount:c.sampleCount});}backends.push(summary);if(backend.id==='production')productionWav=audio.wavMono;}
     prepared.push({input:c,summary:{id:c.id,sameAudioAs:c.sameAudioAs??null,negativeControl:c.negativeControl,backends},before,productionWav});
   }
   for(const control of results.negativeControls??[]){check(control.role==='negative-control-not-algorithm-output'&&['bypass','silence','gain-0.1'].includes(control.id)&&control.caseId==='double-talk','official negative control role/case');const c=manifest.cases.find(c=>c.id===control.caseId);validateOutputArtifacts(resultRoot,control.outputFiles,c.sampleCount);const summary=summarizeBackend(c,control);controls.push({caseId:control.caseId,...summary,role:control.role,outputFiles:control.outputFiles,notAlgorithmOutput:true,observedFalsePositive:summary.applicableWindowOutcome==='observed-meets-all-applicable-window-gates'});}
   const out=freshDirectory(outputDir),audioDir=path.join(out,'audio'),svgDir=path.join(out,'curves');fs.mkdirSync(audioDir);fs.mkdirSync(svgDir);const listening=[];
   for(const p of prepared){const before=path.join(audioDir,p.input.id+'-before.wav'),after=path.join(audioDir,p.input.id+'-production-after.wav');writeOnce(before,p.before);writeOnce(after,p.productionWav);
     p.summary.listenFiles={before:{path:before,sha256:sha256(p.before)},after:{path:after,sha256:sha256(p.productionWav)},normalization:false,autoplay:false};
-    for(const b of p.summary.backends)writeOnce(path.join(svgDir,p.input.id+'-'+b.id+'.svg'),curvesSvg(b,p.input));
+    for(const b of p.summary.backends){writeOnce(path.join(svgDir,p.input.id+'-'+b.id+'.svg'),curvesSvg(b,p.input));if(b.apmTelemetry){const prefix=path.join(svgDir,p.input.id+'-'+b.id+'-apm');writeOnce(prefix+'.csv',apmTelemetryCsv(b.apmTelemetry));writeOnce(prefix+'.svg',apmTelemetrySvg(b.apmTelemetry,p.input));writeOnce(prefix+'.json',json(b.apmTelemetry));}}
     listening.push({id:p.input.id,before:'audio/'+path.basename(before),after:'audio/'+path.basename(after),curve:'curves/'+p.input.id+'-production.svg'});
   }
   const output={schemaVersion:1,artifactKind:'production-aec-offline-benchmark-report',benchmarkId:manifest.benchmarkId,runId:expected.runId,build:expected.build,
     hashes:{inputManifestSha256:sha256(manifestBytes),definitionSha256:manifest.definitionSha256,nativeResultsSha256:resultsSha256,expectedIdentitySha256,reportToolSha256:sha256(readFile(fileURLToPath(import.meta.url)))},
     thresholds:THRESHOLDS,convergence:definition.convergence,windowEnergyConvention:'centered sum; display mean-square=sum/number-of-samples',cases:prepared.map(p=>p.summary),negativeControls:controls,
+    diagnosticApmStatsEnabled:manifest.diagnosticApmStats===true,
     qualityAcceptance:false,overallPassed:false,releaseEligible:false,
-    limitations:['Native shared-core metrics/window diagnostics presented; no new regression, lag fit or clock alignment.','Source/library build digests are caller binding, not embedded native attestation; current_exe validated by worker receipt.','Source-only insufficient echo windows is not an English failure.','Unknown/invalid/no-source never becomes coverage=1 or latency=0.','Only verified actual unnormalized production output is used for listening.']};
+    limitations:['Native shared-core metrics/window diagnostics presented; no new regression, lag fit or clock alignment.','Source/library build digests are caller binding, not embedded native attestation; current_exe validated by worker receipt.','Source-only insufficient echo windows is not an English failure.','Unknown/invalid/no-source never becomes coverage=1 or latency=0.','Only verified actual unnormalized production output is used for listening.','APM stats are post-frame point diagnostics; missing signals and stale/error observations stay unknown, not quality or physical-clock evidence.']};
   writeOnce(path.join(out,'report.json'),json(output));writeOnce(path.join(out,'report.md'),markdownReport(output));writeOnce(path.join(out,'listen.html'),listeningHtml(listening));return {path:path.join(out,'report.json'),report:output};
 }
 

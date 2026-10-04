@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {validateDefinition,DEFINITION_PATH,THRESHOLDS,pcm16,readPcm16Wav,linear24to48,monoFrameToStereo,softclip,floatBytes,readFloats,floatWav,
-  synthesizeCase,makeSegments,verifyFixtureBytes,sha256,summarizeWindow,convergence,summarizeBackend,curvesSvg,markdownReport,cli,validateResults,validateOutputArtifacts,floatWavPayload,listeningHtml,ARTIFACT_ROOT} from './aec-production-offline-benchmark.mjs';
+  synthesizeCase,makeSegments,verifyFixtureBytes,sha256,summarizeWindow,convergence,summarizeBackend,curvesSvg,markdownReport,cli,validateResults,validateOutputArtifacts,floatWavPayload,listeningHtml,validateApmTelemetry,apmTelemetryCsv,apmTelemetrySvg,APM_TELEMETRY_DOMAIN,APM_TELEMETRY_MEANING,ARTIFACT_ROOT} from './aec-production-offline-benchmark.mjs';
 const def=()=>JSON.parse(fs.readFileSync(DEFINITION_PATH,'utf8').replace(/^\uFEFF/,''));
 const clone=x=>structuredClone(x);
 function wav(a){const b=Buffer.alloc(44+a.length*2);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(24000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(a.length*2,40);a.forEach((n,i)=>b.writeInt16LE(n,44+i*2));return b;}
@@ -159,4 +159,60 @@ test('real native hound extensible IEEE-float header roundtrips; PCM subtype and
       const bad=Buffer.from(actual.wav);mutate(bad);assert.throws(()=>floatWavPayload(bad,channels));
     }
   }
+});
+
+function telemetryFixture(id='production',sampleCount=10080){
+  return {version:1,cadenceSamples:4800,sampleRangeAuthority:APM_TELEMETRY_DOMAIN,observationMeaning:APM_TELEMETRY_MEANING,
+    statsSource:id==='production'?'production-cached-native-stats':'linked-direct-public-stats',
+    signalSampleAuthority:'public-statistics-payload-has-no-origin-sample-ordinal',freshnessMeaning:'getter-counters-match-processed-frames-not-signal-payload-age',
+    snapshots:Array.from({length:Math.ceil(sampleCount/4800)},(_,i)=>{const end=Math.min((i+1)*4800,sampleCount),frames=end/480;return {startSample:i*4800,endSample:end,expectedRenderFrames:frames,expectedCaptureFrames:frames,
+      observedRenderFrames:frames,observedCaptureFrames:frames,nativeResetCount:0,erleDb:22,residualEchoLikelihood:.1,reportedDelayMs:80,
+      productionStatsReadFailureCount:id==='production'?0:null,collectionReadFailureCount:0,status:'fresh-counter-matched',error:null};})};
+}
+test('APM legacy evidence stays legacy; default disabled, enabled requires all real backends',()=>{
+  const f=identityFixture();assert.equal(validateResults(f.manifest,f.results,f.expected),true);
+  f.manifest.diagnosticApmStats=true;assert.throws(()=>validateResults(f.manifest,f.results,f.expected),/requested APM/);
+  f.results.diagnosticApmStatsEnabled=true;assert.throws(()=>validateResults(f.manifest,f.results,f.expected),/version/);
+  for(const b of f.results.cases[0].backends)b.apmTelemetry=telemetryFixture(b.id,f.manifest.cases[0].sampleCount);
+  assert.equal(validateResults(f.manifest,f.results,f.expected),true);
+  f.manifest.diagnosticApmStats=false;assert.throws(()=>validateResults(f.manifest,f.results,f.expected),/unsolicited/);
+  f.results.diagnosticApmStatsEnabled=false;assert.throws(()=>validateResults(f.manifest,f.results,f.expected),/must be absent/);
+});
+test('APM exact 100ms point ranges include every complete 10ms short-tail frame',()=>{
+  const t=telemetryFixture();const options={enabled:true,backendId:'production',sampleCount:10080};
+  const summary=validateApmTelemetry(t,options);assert.equal(summary.snapshotCount,3);assert.equal(t.snapshots.at(-1).endSample,10080);assert.equal(t.snapshots.at(-1).expectedCaptureFrames,21);
+  assert.equal(summary.notQualityOrClockAcceptance,true);assert.equal(summary.diagnosticOnly,true);
+  assert.equal(validateApmTelemetry(undefined,{...options,enabled:false}),null);
+  const d=telemetryFixture('linked-direct');assert.equal(validateApmTelemetry(d,{...options,backendId:'linked-direct'}).productionStatsReadFailureCount,null);
+});
+test('APM null public signals are unknown not 0; stale/read-error cannot carry stale values',()=>{
+  const t=telemetryFixture();for(const s of t.snapshots){s.erleDb=null;s.residualEchoLikelihood=null;s.reportedDelayMs=null;}
+  t.snapshots[1].status='stale-or-counter-mismatch';t.snapshots[1].observedCaptureFrames=0;
+  t.snapshots[2].status='read-error';t.snapshots[2].error='query failed';t.snapshots[2].collectionReadFailureCount=1;
+  const summary=validateApmTelemetry(t,{enabled:true,backendId:'production',sampleCount:10080});
+  assert.deepEqual(summary.missingSignals,{erleDb:3,residualEchoLikelihood:3,reportedDelayMs:3});assert.equal(summary.statusCounts['read-error'],1);
+  const csv=apmTelemetryCsv(t);assert.match(csv,/capture-input-sample-ordinal/);assert.match(csv,/,read-error,query failed/);assert.doesNotMatch(csv,/NaN|undefined/);
+  const svg=apmTelemetrySvg(t,{id:'test',sampleCount:10080,phases:[{startSample:0}]});assert.doesNotMatch(svg,/<circle/);assert.match(svg,/NOT output latency/);
+});
+test('APM tamper counter/domain/source/cadence/order/gaps/error and nonfinite signals fail closed',()=>{
+  const edits=[t=>delete t.signalSampleAuthority,t=>t.freshnessMeaning='current-signals',t=>t.version=2,t=>t.cadenceSamples=480,t=>t.sampleRangeAuthority='output-clock',t=>t.observationMeaning='window-average',t=>t.statsSource='linked-direct-public-stats',
+    t=>t.snapshots.pop(),t=>t.snapshots.push(clone(t.snapshots[0])),t=>t.snapshots.reverse(),t=>t.snapshots[1].startSample++,t=>t.snapshots[2].endSample=9600,
+    t=>t.snapshots[0].expectedCaptureFrames++,t=>t.snapshots[0].observedRenderFrames++,t=>delete t.snapshots[0].erleDb,t=>t.snapshots[0].erleDb=NaN,
+    t=>t.snapshots[0].reportedDelayMs=-1,t=>t.snapshots[0].residualEchoLikelihood=2,t=>t.snapshots[0].productionStatsReadFailureCount=null,
+    t=>t.snapshots[0].status='stale-or-counter-mismatch',t=>{t.snapshots[0].status='read-error';t.snapshots[0].error='oops';},
+    t=>{t.snapshots[1].collectionReadFailureCount=1;t.snapshots[2].collectionReadFailureCount=0;},
+    t=>{t.snapshots[1].status='stale-or-counter-mismatch';t.snapshots[1].observedRenderFrames=1;},
+    t=>{t.snapshots[1].productionStatsReadFailureCount=1;t.snapshots[2].productionStatsReadFailureCount=0;}];
+  for(const edit of edits){const t=telemetryFixture();edit(t);assert.throws(()=>validateApmTelemetry(t,{enabled:true,backendId:'production',sampleCount:10080}));}
+});
+test('APM controls cannot masquerade as real algorithm stats; no unknown backend accepted',()=>{
+  const f=identityFixture();f.results.negativeControls[0].apmTelemetry=telemetryFixture();assert.throws(()=>validateResults(f.manifest,f.results,f.expected),/negative controls/);
+  delete f.results.negativeControls[0].apmTelemetry;const extra=clone(f.results.cases[0].backends[0]);extra.id='other';f.results.cases[0].backends.push(extra);
+  assert.throws(()=>validateResults(f.manifest,f.results,f.expected),/exact production/);
+});
+test('APM presentation draws real finite points only, never changes quality metrics',()=>{
+  const t=telemetryFixture(),svg=apmTelemetrySvg(t,{id:'test',sampleCount:10080,phases:[{startSample:0},{startSample:4800}]});
+  assert.equal((svg.match(/<circle/g)??[]).length,9);assert.match(svg,/not external echo contribution/);assert.doesNotMatch(svg,/acceptance threshold.*stroke/);
+  const before=nativeFixture(),after=clone(before);after.b.apmTelemetry=t;assert.deepEqual(summarizeBackend(before.c,before.b),summarizeBackend(after.c,after.b));
+  t.snapshots[2].error='a,"b"\nline';assert.match(apmTelemetryCsv(t),/"a,""b""\nline"/);
 });

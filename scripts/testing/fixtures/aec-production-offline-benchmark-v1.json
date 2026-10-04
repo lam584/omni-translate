@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "artifactKind": "production-aec-offline-benchmark-definition",
+  "scope": "real-linked-aec3-and-production-wrapper-offline-not-c03-acceptance",
+  "seed": 715779,
+  "seedHex": "0x000aec03",
+  "sampleRateHz": 48000,
+  "channelCount": 1,
+  "frameSamples": 480,
+  "workerStereoSamplesPerFrame": 960,
+  "sourceRateHz": 24000,
+  "sourceEndSample": 6039136,
+  "renderEndSample": 6624000,
+  "totalSamples": 6768000,
+  "sourceGain": 1,
+  "renderGain": 1,
+  "noiseGain": 0,
+  "delayHintMs": 0,
+  "resampling": "linear-24k-to-48k-float32: even=a; odd=fround(a+fround(fround(b-a)*0.5)); final b=a; no trim",
+  "echoFir": [{"offsetFrames":0,"gain":0.60},{"offsetFrames":336,"gain":0.18},{"offsetFrames":816,"gain":-0.08}],
+  "echoAccumulation": "physicalRender[k]=softclip(rawRender[k]) only in nonlinear emission phases; tap-order fround(acc+fround(physicalRender[n-currentCaptureDelay-tapOffset]*gain)); algorithm render remains raw",
+  "nonlinear": "driven=fround(x*2.4); soft=fround(fround(driven/fround(1+abs(driven)))*1.35); fround(clamp(soft,-0.92,0.92))",
+  "mixing": "fround(source+actualEcho); fail if finite mathematical sum or stored PCM peak exceeds 1; no normalize",
+  "wrongReferenceShiftSamples": 816000,
+  "wrongReferenceDirection": "algorithmRender[n]=correctRender[(n+shift)%renderEndSample] before renderEndSample; zero after",
+  "thresholds": {"echoAttenuationDb":20,"sourceGainToleranceDb":3,"sourceCoverage":0.95,"windowMs":100,"minimumEchoWindows":3,"minimumReferenceRms":0.0001,"maximumReferenceCorrelation":0.98,"maximumUnexplainedEnergyRatio":0.20},
+  "convergence": {"consecutiveWindows":10,"windowSamples":4800,"changeWindowSamples":240000,"startupSamples":96000,"requireActiveSourceWhenEnabled":true,"noWarmupExclusion":true},
+  "windowEnergyConvention": "sum",
+  "provenance": {
+    "fixtureFile":"fixture.json",
+    "fixtureSha256":"9c0e3cb67e486528829331c9bf2c1e8ff47ba04e4484c4b96ea0f16a14f321e9",
+    "sourceFile":"source.wav",
+    "sourceSha256":"cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f",
+    "renderFile":"translation-stream.s16le",
+    "renderSha256":"de378897fed282d8ef58ab91ddc9d1359431c208f8f50751eff27e8d57e79943",
+    "synthesisPlanSha256":"e5ad95d6e52533cd19595b3614f967e05191be07af79d4c9471ef7b713356b9c",
+    "synthesisUsageSha256":"4399c37d9662081c347caba845b6165e47359a598f8ff29a059d367f8b38d25a",
+    "synthesisRequests":6,
+    "synthesisDirectory":"E:/oaec-c03-temp/evidence-custody-20261003/native-render-capacity/speech-api-generated-20261003-v1",
+    "synthesisPlanFileSha256":"4e3664e2585ac6dcca98410e74b5b56a2188ce01853b595f68288b5ba6338974",
+    "authority":"hash-pinned existing fixture receipt and assembled PCM; not independent vendor attestation"
+  },
+  "cases": [
+    {"id":"echo-only","sourceEnabled":false,"renderEnabled":true,"phases":[{"startSample":0,"delaySamples":0,"nonlinear":false}]},
+    {"id":"source-only","sourceEnabled":true,"renderEnabled":false,"phases":[{"startSample":0,"delaySamples":0,"nonlinear":false}]},
+    {"id":"double-talk","sourceEnabled":true,"renderEnabled":true,"phases":[{"startSample":0,"delaySamples":0,"nonlinear":false}]},
+    {"id":"dynamic-80","sourceEnabled":true,"renderEnabled":true,"phases":[{"startSample":0,"delaySamples":0,"nonlinear":false},{"startSample":2208000,"delaySamples":3840,"nonlinear":false}]},
+    {"id":"nonlinear-160","sourceEnabled":true,"renderEnabled":true,"phases":[{"startSample":0,"delaySamples":7680,"nonlinear":true}]},
+    {"id":"tail-window","sourceEnabled":true,"renderEnabled":true,"sameAudioAs":"double-talk","evaluationFocus":"ended-English/continuing-Chinese/ringout/quiet","phases":[{"startSample":0,"delaySamples":0,"nonlinear":false}]},
+    {"id":"c03-three-stage","sourceEnabled":true,"renderEnabled":true,"phases":[{"startSample":0,"delaySamples":0,"nonlinear":false},{"startSample":2208000,"delaySamples":3840,"nonlinear":false},{"startSample":4416000,"delaySamples":7680,"nonlinear":true}]},
+    {"id":"wrong-reference","sourceEnabled":true,"renderEnabled":true,"negativeControl":true,"sameCaptureAs":"double-talk","phases":[{"startSample":0,"delaySamples":0,"nonlinear":false}]}
+  ]
+}
+
+
+

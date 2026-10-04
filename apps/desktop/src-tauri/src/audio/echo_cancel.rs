@@ -3,6 +3,8 @@ use std::time::Instant;
 use std::time::Duration;
 
 mod production;
+#[cfg(test)]
+mod offline_benchmark;
 pub(crate) use production::{create_production_echo_canceller, ProductionEchoCanceller};
 
 pub(crate) const TARGET_SAMPLE_RATE_HZ: u32 = 48_000;

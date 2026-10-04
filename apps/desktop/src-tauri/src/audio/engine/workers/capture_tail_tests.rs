@@ -310,8 +310,9 @@ fn duplicate_or_backward_observation_time_cancels_and_retains_high_water_clock()
     for offset in [Duration::ZERO, Duration::from_millis(1)] {
         let mut queue = mixed_tail();
         let (mut policy, context, now, permit) = armed(&queue);
-        assert_eq!(policy.observe(now - offset, context, &queue, TailObservation::Empty { query_id: 102 }),
-            Err(TailPolicyError::NonmonotonicTime));
+        let expected = if offset.is_zero() { Ok(TailObservationProgress::ClockUnchanged) }
+            else { Err(TailPolicyError::NonmonotonicTime) };
+        assert_eq!(policy.observe(now - offset, context, &queue, TailObservation::Empty { query_id: 102 }), expected);
         assert_eq!(policy.last_observation_at, Some(now));
         assert_eq!(policy.take_tail(now, context, &mut queue, &permit).unwrap_err(), TailPolicyError::PermitInvalidated);
         poll(&mut policy, now + Duration::from_millis(20), context, &queue);
@@ -509,4 +510,98 @@ fn real_packet_event_even_without_length_change_revokes_old_permit() {
     assert_eq!(bytes(&queue), expected);
     assert_eq!(policy.last_nonempty_at, Some(packet_time));
     assert!(policy.empty_since.is_none());
+}
+
+#[test]
+fn distinct_native_queries_at_a_stalled_clock_never_credit_quiet_or_dequeue() {
+    let queue = mixed_tail();
+    let expected = bytes(&queue);
+    let (mut policy, context, at) = seeded(&queue);
+    for query_id in 1..=2000 {
+        assert_eq!(policy.observe(at, context, &queue, TailObservation::Empty { query_id }),
+            Ok(TailObservationProgress::ClockUnchanged));
+        assert!(policy.empty_since.is_none());
+        assert_eq!(policy.empty_polls, 0);
+        assert!(policy.last_empty_query_at.is_none());
+    }
+    assert_eq!(policy.last_native_query_id, Some(2000));
+    assert_eq!(policy.try_issue(at + Duration::from_secs(40), context, &queue).unwrap_err(),
+        TailPolicyError::NoContinuousEmptyQueries);
+    assert_eq!(bytes(&queue), expected);
+}
+
+#[test]
+fn tied_clock_revokes_old_permit_and_requires_a_fresh_full_two_second_chain() {
+    let mut queue = mixed_tail();
+    let expected = bytes(&queue);
+    let (mut policy, context, now, permit) = armed(&queue);
+    assert_eq!(policy.observe(now, context, &queue, TailObservation::Empty { query_id: 102 }),
+        Ok(TailObservationProgress::ClockUnchanged));
+    assert_eq!(policy.take_tail(now, context, &mut queue, &permit).unwrap_err(), TailPolicyError::PermitInvalidated);
+    let nearly = chain(&mut policy, context, &queue, now + Duration::from_millis(20), 1980);
+    assert_eq!(policy.try_issue(nearly, context, &queue).unwrap_err(), TailPolicyError::QuietWindowIncomplete);
+    poll(&mut policy, now + Duration::from_millis(2020), context, &queue);
+    let fresh = policy.try_issue(now + Duration::from_millis(2020), context, &queue).unwrap();
+    assert_eq!(fresh.evidence().empty_since, now + Duration::from_millis(20));
+    assert_eq!(fresh.evidence().last_empty_query_at.duration_since(fresh.evidence().empty_since), TAIL_QUIET_CONFIRMATION);
+    let tail = policy.take_tail(now + Duration::from_millis(2020), context, &mut queue, &fresh).unwrap();
+    assert_eq!(tail.pcm, expected);
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn tied_pending_unavailable_and_failed_observations_revoke_every_old_quiet_permit() {
+    for observation in [TailObservation::Pending { query_id: 102 }, TailObservation::Unavailable, TailObservation::Error] {
+        let mut queue = mixed_tail();
+        let expected = bytes(&queue);
+        let (mut policy, context, now, permit) = armed(&queue);
+        assert_eq!(policy.observe(now, context, &queue, observation), Ok(TailObservationProgress::ClockUnchanged));
+        assert!(policy.empty_since.is_none());
+        assert_eq!(policy.empty_polls, 0);
+        assert_eq!(policy.take_tail(now, context, &mut queue, &permit).unwrap_err(), TailPolicyError::PermitInvalidated);
+        assert_eq!(bytes(&queue), expected);
+    }
+}
+
+#[test]
+fn tied_time_cannot_mask_duplicate_or_backward_native_query_identity() {
+    for id in [101, 100] {
+        let queue = mixed_tail();
+        let (mut policy, context, now, _) = armed(&queue);
+        assert_eq!(policy.observe(now, context, &queue, TailObservation::Empty { query_id: id }),
+            Err(TailPolicyError::NonmonotonicQuery));
+        assert_eq!(policy.last_native_query_id, Some(101));
+        assert_eq!(policy.last_observation_at, Some(now));
+        assert!(policy.empty_since.is_none());
+    }
+}
+
+#[test]
+fn fresh_packet_at_tied_time_keeps_original_acquisition_stamp_without_quiet_credit() {
+    let mut queue = mixed_tail();
+    let (mut policy, old_context, now, _) = armed(&queue);
+    queue.extend(pcm(48, 0.375, -0.125));
+    let context = TailQueueContext { generation: old_context.generation + 1, ..old_context };
+    assert_eq!(policy.observe(now, context, &queue, TailObservation::RealPacket),
+        Ok(TailObservationProgress::ClockUnchanged));
+    assert_eq!(policy.last_nonempty_at, Some(now));
+    assert!(policy.empty_since.is_none());
+    let expected = bytes(&queue);
+    let end = chain(&mut policy, context, &queue, now + Duration::from_millis(20), 2000);
+    let permit = policy.try_issue(end, context, &queue).unwrap();
+    assert_eq!(permit.evidence().last_nonempty_at, now);
+    assert_eq!(permit.evidence().empty_since, now + Duration::from_millis(20));
+    assert_eq!(policy.take_tail(end, context, &mut queue, &permit).unwrap().pcm, expected);
+}
+
+#[test]
+fn genuinely_backward_packet_time_remains_a_hard_fault_without_pcm_mutation() {
+    let queue = mixed_tail();
+    let expected = bytes(&queue);
+    let (mut policy, context, now, _) = armed(&queue);
+    assert_eq!(policy.observe(now - Duration::from_nanos(1), context, &queue, TailObservation::RealPacket),
+        Err(TailPolicyError::NonmonotonicTime));
+    assert_eq!(policy.last_observation_at, Some(now));
+    assert!(policy.empty_since.is_none());
+    assert_eq!(bytes(&queue), expected);
 }

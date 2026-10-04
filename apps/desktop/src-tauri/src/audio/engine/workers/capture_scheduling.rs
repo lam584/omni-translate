@@ -11,6 +11,21 @@ pub(super) fn combine_capture_cleanup<T>(primary: Result<T, String>, cleanup: Re
     }
 }
 
+/// Attempt native Stop exactly once, then restore on the same owner before
+/// returning its final typed receipt. Stop truth is not scheduling success.
+pub(super) fn finish_native_capture_stop(
+    stop: impl FnOnce() -> Result<(), String>,
+    scheduling: &mut dyn SchedulingLease,
+    native_stop_succeeded: &std::cell::Cell<bool>,
+    final_scheduling: &std::cell::RefCell<Option<crate::audio::mmcss_audio::MmcssAudioReceipt>>,
+) -> Result<(), String> {
+    let result = stop();
+    native_stop_succeeded.set(result.is_ok());
+    let restored = scheduling.finish(CleanupPath::Explicit);
+    *final_scheduling.borrow_mut() = Some(scheduling.receipt());
+    combine_capture_cleanup(result, restored)
+}
+
 pub(super) fn run_with_audio_scheduling<T>(
     register: impl FnOnce() -> Result<Box<dyn SchedulingLease>, RegistrationFailure>,
     work: impl FnOnce(&mut dyn SchedulingLease) -> Result<T, String>,

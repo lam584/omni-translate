@@ -1,6 +1,6 @@
 use super::*;
 use super::capture_tail::{CaptureTailPolicy, RealCaptureTail, TailObservation, TailPolicyError,
-    TailQueueContext, TailPermitEvidence};
+    TailQueueContext, TailPermitEvidence, TailObservationProgress};
 use crate::audio::aec_diagnostic_tap::AecCaptureTailEvidence;
 
 /// Single capture-thread owner. Generations advance for real append/dequeue,
@@ -9,12 +9,16 @@ pub(super) struct CaptureTailOwner {
     policy: CaptureTailPolicy,
     generation: u64,
     query_sequence: u64,
+    observation_count: u64,
+    clock_unchanged_packet_count: u64,
+    clock_unchanged_query_count: u64,
 }
 
 impl CaptureTailOwner {
     pub(super) fn new(normal_frames: usize) -> Result<Self, String> {
         Ok(Self { policy: CaptureTailPolicy::new(normal_frames).map_err(|e| format!("{e:?}"))?,
-            generation: 0, query_sequence: 0 })
+            generation: 0, query_sequence: 0, observation_count: 0,
+            clock_unchanged_packet_count: 0, clock_unchanged_query_count: 0 })
     }
     pub(super) fn mutated(&mut self) -> Result<(), String> {
         self.generation = self.generation.checked_add(1).ok_or("capture queue generation exhausted")?;
@@ -28,8 +32,8 @@ impl CaptureTailOwner {
     }
     pub(super) fn observe_packet(&mut self, at: Instant, native: &NativeCaptureStartAck,
         queue: &VecDeque<u8>) -> Result<(), String> {
-        self.policy.observe(at, self.context(native), queue, TailObservation::RealPacket)
-            .map_err(|e| format!("capture tail packet witness rejected: {e:?}"))
+        let progress = self.policy.observe(at, self.context(native), queue, TailObservation::RealPacket);
+        self.finish_observation(progress, true)
     }
     pub(super) fn observe_query(&mut self, at: Instant, native: &NativeCaptureStartAck,
         queue: &VecDeque<u8>, packet_size: Option<u32>) -> Result<(), String> {
@@ -39,11 +43,39 @@ impl CaptureTailOwner {
             Some(_) => TailObservation::Pending { query_id: self.query_sequence },
             None => TailObservation::Unavailable,
         };
-        self.policy.observe(at, self.context(native), queue, observation)
-            .map_err(|e| format!("capture tail query witness rejected: {e:?}"))
+        let progress = self.policy.observe(at, self.context(native), queue, observation);
+        self.finish_observation(progress, false)
     }
     pub(super) fn query_failed(&mut self, native: &NativeCaptureStartAck, queue: &VecDeque<u8>) {
-        let _ = self.policy.observe(Instant::now(), self.context(native), queue, TailObservation::Error);
+        let progress = self.policy.observe(Instant::now(), self.context(native), queue, TailObservation::Error);
+        let _ = self.finish_observation(progress, false);
+    }
+    fn finish_observation(&mut self, progress: Result<TailObservationProgress, TailPolicyError>,
+        packet: bool) -> Result<(), String> {
+        self.observation_count = self.observation_count.checked_add(1)
+            .ok_or("capture tail observation count exhausted")?;
+        match progress {
+            Ok(TailObservationProgress::Progressed) => Ok(()),
+            Ok(TailObservationProgress::ClockUnchanged) => {
+                // Continue real capture/AEC/dispatch, but the policy has already
+                // revoked every quiet window/permit. No sleep, retry or new clock.
+                let count = if packet { &mut self.clock_unchanged_packet_count }
+                    else { &mut self.clock_unchanged_query_count };
+                *count = count.checked_add(1).ok_or("capture tail unchanged-clock count exhausted")?;
+                Ok(())
+            }
+            Err(error) => {
+                let kind = if packet { "packet" } else { "query" };
+                Err(format!("capture tail {kind} witness rejected: {error:?}"))
+            }
+        }
+    }
+    pub(super) fn clock_receipt(&self, capture_owner_id: u64) -> TailObservationClockReceipt {
+        TailObservationClockReceipt { schema_version: 1, clock_domain: "std-instant-native-observation",
+            capture_owner_id, observation_count: self.observation_count,
+            clock_unchanged_packet_count: self.clock_unchanged_packet_count,
+            clock_unchanged_query_count: self.clock_unchanged_query_count,
+            nonadvancing_time_never_credits_quiet: true, diagnostic_only: true, quality_acceptance: false }
     }
     pub(super) fn take_ready(&mut self, at: Instant, native: &NativeCaptureStartAck,
         queue: &mut VecDeque<u8>) -> Result<Option<RealCaptureTail>, String> {
@@ -61,6 +93,20 @@ impl CaptureTailOwner {
         self.mutated()?;
         Ok(Some(tail))
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TailObservationClockReceipt {
+    schema_version: u32,
+    clock_domain: &'static str,
+    capture_owner_id: u64,
+    observation_count: u64,
+    clock_unchanged_packet_count: u64,
+    clock_unchanged_query_count: u64,
+    nonadvancing_time_never_credits_quiet: bool,
+    diagnostic_only: bool,
+    quality_acceptance: bool,
 }
 
 pub(super) fn tail_receipt(e: &TailPermitEvidence) -> AecCaptureTailEvidence {

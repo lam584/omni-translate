@@ -428,3 +428,45 @@ fn real_native_owner_preserves_processing_stop_and_restore_failures() {
     mock.assert_calls(&[Call::Work, Call::Start, Call::Process, Call::Stop,
         Call::Thread(OWNER), Call::Revert(TOKEN), Call::LastError, Call::Seal], &[]);
 }
+
+#[test]
+fn actual_stop_helper_preserves_failed_stop_and_failed_restore_with_truthful_final_receipt() {
+    let mock = Mock::default();
+    mock.0.borrow_mut().restore_ok = false;
+    let stop_succeeded = std::cell::Cell::new(true);
+    let final_receipt = RefCell::new(None);
+    let result = run_with_audio_scheduling(|| mock.register(), |lease| {
+        mock.record(Call::Work);
+        super::finish_native_capture_stop(|| {
+            mock.record(Call::Stop);
+            Err("native Stop sentinel".into())
+        }, lease, &stop_succeeded, &final_receipt)
+    });
+    error_contains(result, &["native Stop sentinel", "Win32 5"]);
+    assert!(!stop_succeeded.get());
+    let receipt = final_receipt.borrow();
+    let receipt = receipt.as_ref().unwrap();
+    assert_eq!(receipt.state, SchedulingState::RestoreFailed);
+    assert_eq!(receipt.owner_thread_id, OWNER);
+    assert_eq!(receipt.cleanup_path, Some(CleanupPath::Explicit));
+    mock.assert_calls(&[Call::Work, Call::Stop], &restore_failed());
+}
+
+#[test]
+fn actual_stop_helper_keeps_successful_native_stop_truth_when_restore_fails() {
+    let mock = Mock::default();
+    mock.0.borrow_mut().restore_ok = false;
+    let stop_succeeded = std::cell::Cell::new(false);
+    let final_receipt = RefCell::new(None);
+    let result = run_with_audio_scheduling(|| mock.register(), |lease| {
+        mock.record(Call::Work);
+        super::finish_native_capture_stop(|| {
+            mock.record(Call::Stop);
+            Ok(())
+        }, lease, &stop_succeeded, &final_receipt)
+    });
+    error_contains(result, &["Win32 5"]);
+    assert!(stop_succeeded.get());
+    assert_eq!(final_receipt.borrow().as_ref().unwrap().state, SchedulingState::RestoreFailed);
+    mock.assert_calls(&[Call::Work, Call::Stop], &restore_failed());
+}

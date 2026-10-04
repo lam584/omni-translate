@@ -312,3 +312,26 @@ custody compatibility only. Restored receipts require same-owner explicit cleanu
 truthful failed cleanup requires diagnosticIncomplete=true and retains its typed
 native error, owner mismatch or unwind cause. Neither receipt creates acoustic,
 source-clock, quiet-drain or Provider acceptance authority.
+
+
+## Capture tail observation clock availability
+
+Native event identity and elapsed-time evidence are different contracts. Real
+packet/query acquisitions may return the same Instant reading; they are typed
+ClockUnchanged, not proof of a replay. Duplicate/backwards native query IDs and
+truly backward observation times remain faults. Every tied reading revokes any
+pending tail permit and clears the Empty window/polls; it cannot contribute quiet
+time or authorize a dequeue. Only actual forward Empty queries can rebuild the
+unchanged continuous 2-second window with the existing 100ms freshness bound.
+
+A real packet retains its original acquisition Instant, including when tied.
+No timestamp is fitted, re-anchored, re-stamped, slept or retried. Native capture,
+AEC and normal dispatch keep processing the original PCM while the quiet witness
+is unavailable; this alone never closes input or marks a response/session done.
+The independent source-clock and acoustic/real-time gates still apply unchanged.
+
+The sealed pump file may include tailObservationClock (schema1, diagnostic only),
+bound to the actual capture owner. It records total observations and separate
+nonadvancing packet/query counts, explicitly granting no quiet-time or quality
+authority. Legacy absent fields retain diagnostic custody compatibility only.
+Malformed/foreign/authority-claiming receipts are rejected even after resealing.

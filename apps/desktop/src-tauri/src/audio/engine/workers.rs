@@ -399,19 +399,13 @@ fn run_scheduled_capture_loop(
       Ok(())
     })();
 
+    let final_tail_clock = tail_owner.clock_receipt(producer_guard.diagnostic_owner_identity().0);
     let native_stop_succeeded = std::cell::Cell::new(false);
     let final_scheduling = std::cell::RefCell::new(None);
     producer_guard.finish_capture(capture_result,
-        || {
-            let result = audio_client.stop_stream().map_err_str();
-            native_stop_succeeded.set(result.is_ok());
-            // Restore the actual capture owner's AVRT token after the native
-            // Stop attempt, before JSON/disk work. Native Stop truth is separate
-            // from restoration success; both failures block completion.
-            let restored = scheduling.finish(crate::audio::mmcss_audio::CleanupPath::Explicit);
-            *final_scheduling.borrow_mut() = Some(scheduling.receipt());
-            capture_scheduling::combine_capture_cleanup(result, restored)
-        },
+        || capture_scheduling::finish_native_capture_stop(
+            || audio_client.stop_stream().map_err_str(), scheduling,
+            &native_stop_succeeded, &final_scheduling),
         || {
             // Serialization/persistence is deferred until native Stop returned
             // and scheduling cleanup was attempted, with no fabricated success.
@@ -419,6 +413,7 @@ fn run_scheduled_capture_loop(
                 receipt["nativeStopSucceeded"] = serde_json::json!(native_stop_succeeded.get());
                 let scheduling_receipt = final_scheduling.borrow();
                 receipt["mmcssAudio"] = serde_json::json!(scheduling_receipt.as_ref());
+                receipt["tailObservationClock"] = serde_json::json!(final_tail_clock);
                 if !native_stop_succeeded.get() || scheduling_receipt.as_ref().is_none_or(|r|
                     r.state != crate::audio::mmcss_audio::SchedulingState::Restored) {
                     receipt["diagnosticIncomplete"] = serde_json::json!(true);

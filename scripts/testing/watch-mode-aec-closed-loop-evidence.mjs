@@ -462,6 +462,45 @@ function validateCapturePumpAuthority(value) {
 }
 // Optional on legacy diagnostic files; when present this is a typed final
 // capture-owner receipt, not a scheduling/clock/acoustic acceptance shortcut.
+const TAIL_CLOCK_EXPECTED_KEYS = new Set([
+  'schemaVersion',
+  'clockDomain',
+  'captureOwnerId',
+  'observationCount',
+  'clockUnchangedPacketCount',
+  'clockUnchangedQueryCount',
+  'nonadvancingTimeNeverCreditsQuiet',
+  'diagnosticOnly',
+  'qualityAcceptance',
+]);
+function validateCapturePumpTailObservationClock(value) {
+  if (!Object.hasOwn(value, 'tailObservationClock')) return;
+  const c = value.tailObservationClock;
+  requireEvidence(c !== null && typeof c === 'object' && !Array.isArray(c),
+    'capture pump tail observation clock object missing');
+  const actualKeys = Object.keys(c);
+  requireEvidence(actualKeys.length === TAIL_CLOCK_EXPECTED_KEYS.size
+    && actualKeys.every((k) => TAIL_CLOCK_EXPECTED_KEYS.has(k)),
+    'capture pump tail observation clock unexpected or missing keys');
+  requireEvidence(c.schemaVersion === 1,
+    'capture pump tail observation clock schemaVersion mismatch');
+  requireEvidence(c.clockDomain === 'std-instant-native-observation',
+    'capture pump tail observation clock clockDomain mismatch');
+  requireEvidence(integer(c.captureOwnerId) && c.captureOwnerId > 0
+    && c.captureOwnerId === value.captureOwnerId,
+    'capture pump tail observation clock captureOwnerId mismatch or nonpositive');
+  requireEvidence(integer(c.observationCount)
+    && integer(c.clockUnchangedPacketCount)
+    && integer(c.clockUnchangedQueryCount),
+    'capture pump tail observation clock counts must be safe nonnegative integers');
+  const unchangedSum = c.clockUnchangedPacketCount + c.clockUnchangedQueryCount;
+  requireEvidence(Number.isSafeInteger(unchangedSum) && unchangedSum <= c.observationCount,
+    'capture pump tail observation clock unchanged counts exceed observationCount or overflow');
+  requireEvidence(c.nonadvancingTimeNeverCreditsQuiet === true,
+    'capture pump tail observation clock nonadvancingTimeNeverCreditsQuiet mismatch');
+  requireEvidence(c.diagnosticOnly === true && c.qualityAcceptance === false,
+    'capture pump tail observation clock authority booleans invalid');
+}
 function validateCapturePumpScheduling(value) {
   if (!Object.hasOwn(value, 'mmcssAudio')) return;
   const r = value.mmcssAudio;
@@ -551,6 +590,7 @@ export function verifyCapturePumpTimingSeals(root, events) {
       && value.nativeStopSucceeded === e.captureStoppedBeforePersistence,
     'capture pump diagnostic file native stop mismatch');
     validateCapturePumpScheduling(value);
+    validateCapturePumpTailObservationClock(value);
   }
   return { descriptorCount: descriptors.length, fileSealsVerified: true, diagnosticOnly: true,
     qualityAcceptance: false, formalCaptureClockAcceptance: false, releaseEligible: false };

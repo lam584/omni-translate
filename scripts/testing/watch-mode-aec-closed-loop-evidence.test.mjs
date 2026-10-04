@@ -1559,3 +1559,50 @@ test('capture MMCSS forged or unfinished final receipts are rejected after resea
   ];
   for(const [name,mutate] of cases) await t.test(name,t=>{const f=fixture(t);installCapturePump(f,(v,e)=>{v.mmcssAudio=captureMmcssReceipt(v.threadId);mutate(v,e);});fails(f,/capture pump/);});
 });
+
+function captureTailObservationClockReceipt(ownerId) {
+  return { schemaVersion: 1, clockDomain: 'std-instant-native-observation',
+    captureOwnerId: ownerId, observationCount: 10, clockUnchangedPacketCount: 2,
+    clockUnchangedQueryCount: 3, nonadvancingTimeNeverCreditsQuiet: true,
+    diagnosticOnly: true, qualityAcceptance: false };
+}
+
+test('capture tail observation clock receipt validates when present without granting quality', t => {
+  const f = fixture(t);
+  installCapturePump(f, (v) => {
+    v.tailObservationClock = captureTailObservationClockReceipt(v.captureOwnerId);
+  });
+  const result = buildAecClosedLoopEvidence(f.root, f.options);
+  assert.equal(result.passed, true, result.violations.join(';'));
+  assert.equal(result.releaseEligible, false);
+  const manifest = createAecClosedLoopManifest(f.root, { cell: f.identity, freezePublicKey: f.publicKey });
+  assert.equal(manifest.passed, true, manifest.violations.join(';'));
+});
+
+test('capture tail observation clock resealed negative tests reject corrupted shapes and authority claims', async t => {
+  const cases = [
+    ['null', (v) => { v.tailObservationClock = null; }],
+    ['foreign owner', (v) => { v.tailObservationClock.captureOwnerId += 1; }],
+    ['wrong domain', (v) => { v.tailObservationClock.clockDomain = 'qpc-domain'; }],
+    ['wrong schema', (v) => { v.tailObservationClock.schemaVersion = 2; }],
+    ['negative count', (v) => { v.tailObservationClock.observationCount = -1; }],
+    ['fraction count', (v) => { v.tailObservationClock.observationCount = 1.5; }],
+    ['string count', (v) => { v.tailObservationClock.observationCount = "10"; }],
+    ['unsafe count', (v) => { v.tailObservationClock.observationCount = Number.MAX_SAFE_INTEGER + 1; }],
+    ['count totals exceed observations', (v) => { v.tailObservationClock.clockUnchangedPacketCount = 8; v.tailObservationClock.clockUnchangedQueryCount = 3; }],
+    ['fake quiet credit flag false', (v) => { v.tailObservationClock.nonadvancingTimeNeverCreditsQuiet = false; }],
+    ['authority true', (v) => { v.tailObservationClock.diagnosticOnly = false; }],
+    ['authority qualityAcceptance true', (v) => { v.tailObservationClock.qualityAcceptance = true; }],
+    ['unknown extra field', (v) => { v.tailObservationClock.extraField = true; }],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, (t) => {
+      const f = fixture(t);
+      installCapturePump(f, (v) => {
+        v.tailObservationClock = captureTailObservationClockReceipt(v.captureOwnerId);
+        mutate(v);
+      });
+      fails(f, /capture pump tail observation clock/);
+    });
+  }
+});

@@ -46,6 +46,12 @@ pub(crate) enum TailObservation {
     Error,
 }
 
+/// Native observations can share an actual clock reading. Identity still must
+/// advance; a tied reading invalidates quiet evidence and grants no elapsed time.
+/// This is witness availability, never source/physical clock acceptance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TailObservationProgress { Progressed, ClockUnchanged }
+
 /// Content evidence over EVERY sample in the entire queued tail. No energy
 /// threshold/latestPacket/silent flag is used. Signed zero counts as real zero;
 /// nonzero includes nonfinite samples, while peak covers finite samples only.
@@ -160,10 +166,12 @@ impl CaptureTailPolicy {
     /// Call once per REAL observation, with its actual monotonic acquisition
     /// time. Never replay a snapshot using a later consumer clock. A duplicate
     /// timestamp, backwards clock, failure or gap cancels the current chain.
+    /// Tied native observations are unavailable quiet evidence, not replay proof;
+    /// duplicate/backwards query IDs remain faults even when their clocks tie.
     pub(crate) fn observe(
         &mut self, at: Instant, context: TailQueueContext, queue: &VecDeque<u8>,
         observation: TailObservation,
-    ) -> Result<(), TailPolicyError> {
+    ) -> Result<TailObservationProgress, TailPolicyError> {
         self.pending = None; // Even a newer Empty invalidates an older permit.
         let binding = QueueBinding { context, byte_len: queue.len() };
         if self.binding.is_none_or(|previous| previous.context.owner_id != context.owner_id) {
@@ -175,11 +183,12 @@ impl CaptureTailPolicy {
             self.last_nonempty_at = None;
             self.binding = Some(binding);
         }
-        if self.last_observation_at.is_some_and(|previous| at <= previous) {
+        if self.last_observation_at.is_some_and(|previous| at < previous) {
             self.cancel_wait();
-            // Retain the high-water clock; a replay cannot move it backwards.
+            // Retain the high-water clock; a backwards reading is still a fault.
             return Err(TailPolicyError::NonmonotonicTime);
         }
+        let clock_unchanged = self.last_observation_at == Some(at);
         self.last_observation_at = Some(at);
         // IDs come from actual native queries, not consumer polls. Keep the
         // owner-local high-water ID across failures/gaps/continuity resets.
@@ -196,6 +205,21 @@ impl CaptureTailPolicy {
                 }
             }
             self.last_native_query_id = Some(query_id);
+        }
+        if clock_unchanged {
+            // No Empty window/poll/span survives or accrues at a tied time.
+            // The just-validated query ID is nevertheless a real native event.
+            self.cancel_wait();
+            match observation {
+                // Retain only the real packet's ORIGINAL acquisition time. This
+                // does not re-stamp PCM or manufacture a later packet witness.
+                TailObservation::RealPacket => self.last_nonempty_at = Some(at),
+                TailObservation::Pending { .. } if self.last_nonempty_at.is_some() => {
+                    self.last_nonempty_at = Some(at);
+                }
+                _ => {}
+            }
+            return Ok(TailObservationProgress::ClockUnchanged);
         }
         match observation {
             TailObservation::RealPacket => {
@@ -223,7 +247,7 @@ impl CaptureTailPolicy {
                 }
             }
         }
-        Ok(())
+        Ok(TailObservationProgress::Progressed)
     }
 
     /// Obtain evidence from actual queue bytes, independently of any permit.

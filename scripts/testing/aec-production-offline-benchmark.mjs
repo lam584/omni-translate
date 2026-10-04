@@ -278,9 +278,22 @@ export function cli(argv){const a=argumentsFor(argv);const allowed=['--prepare',
 export function floatWavPayload(b,channels=1){
   check(b.length>=44&&b.toString('ascii',0,4)==='RIFF'&&b.toString('ascii',8,12)==='WAVE'&&b.readUInt32LE(4)+8===b.length,'float WAV RIFF');let data=null,valid=false;
   for(let o=12;o<b.length;){check(o+8<=b.length,'WAV truncated');const n=b.readUInt32LE(o+4),start=o+8;check(start+n<=b.length,'WAV chunk bounds');const id=b.toString('ascii',o,o+4);
-    if(id==='fmt '){check(!valid&&n>=16,'WAV fmt');valid=b.readUInt16LE(start)===3&&b.readUInt16LE(start+2)===channels&&b.readUInt32LE(start+4)===48000&&b.readUInt16LE(start+14)===32;check(valid,'float32/rate/channel WAV');}
+    if(id==='fmt '){
+      check(!valid&&n>=16,'WAV fmt');const tag=b.readUInt16LE(start);
+      // hound's actual 32-bit writer emits EXTENSIBLE, not the generator's tag 3.
+      // Accept only the exact IEEE-float subtype/width and native mono/stereo layout.
+      const ordinary=tag===3;
+      const extensible=tag===0xfffe&&n===40&&b.readUInt16LE(start+16)===22&&
+        b.readUInt16LE(start+18)===32&&b.readUInt32LE(start+20)===(channels===1?1:3)&&
+        b.subarray(start+24,start+40).equals(Buffer.from('0300000000001000800000aa00389b71','hex'));
+      valid=(ordinary||extensible)&&(channels===1||channels===2)&&
+        b.readUInt16LE(start+2)===channels&&b.readUInt32LE(start+4)===48000&&
+        b.readUInt32LE(start+8)===48000*channels*4&&b.readUInt16LE(start+12)===channels*4&&
+        b.readUInt16LE(start+14)===32;
+      check(valid,'float32/rate/channel WAV');
+    }
     if(id==='data'){check(!data,'duplicate WAV data');data=b.subarray(start,start+n);}o=start+n+(n%2);
-  }check(valid&&data,'WAV data/format');return data;
+  }check(valid&&data&&data.length%(channels*4)===0,'WAV data/format');return data;
 }
 export function validateOutputArtifacts(root,files,count){
   const bytes={};for(const [key,channels,encoding] of [['rawMono',1,'f32le'],['rawStereo',2,'f32le'],['wavMono',1,'wav-float32'],['wavStereo',2,'wav-float32']]){

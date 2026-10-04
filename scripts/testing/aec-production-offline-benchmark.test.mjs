@@ -140,3 +140,23 @@ test('actual Node CLI dispatches prepare/report, fails closed and import is side
     'await import('+JSON.stringify(new URL('./aec-production-offline-benchmark.mjs',import.meta.url).href)+')'],{encoding:'utf8',timeout:10000});
   assert.equal(imported.status,0);assert.equal(imported.stdout,'');assert.equal(imported.stderr,'');
 });
+
+// Header captured from the actual hound 3.5.1 native mono output (payload shortened only for parser test).
+test('real native hound extensible IEEE-float header roundtrips; PCM subtype and damaged widths/layout reject',()=>{
+  function nativeWav(channels){
+    const payload=floatBytes(new Float32Array(channels===1?[-.25,.75]:[-.25,-.25,.75,.75]));
+    const h=Buffer.from('524946463c169d0157415645666d742028000000feff010080bb000000ee02000400200016002000010000000300000000001000800000aa00389b716461746100169d01','hex');
+    h.writeUInt32LE(h.length+payload.length-8,4);h.writeUInt16LE(channels,22);
+    h.writeUInt32LE(48000*channels*4,28);h.writeUInt16LE(channels*4,32);
+    h.writeUInt32LE(channels===1?1:3,40);h.writeUInt32LE(payload.length,64);
+    return {wav:Buffer.concat([h,payload]),payload};
+  }
+  for(const channels of [1,2]){
+    const actual=nativeWav(channels);assert.deepEqual(floatWavPayload(actual.wav,channels),actual.payload);
+    for(const mutate of [b=>b.writeUInt32LE(1,44),b=>b.writeUInt16LE(20,36),b=>b.writeUInt16LE(24,38),
+      b=>b.writeUInt32LE(0,40),b=>b.writeUInt16LE(2,32),b=>b.writeUInt32LE(1,28),
+      b=>b.writeUInt16LE(channels===1?2:1,22),b=>b.writeUInt32LE(24000,24),b=>b.writeUInt32LE(38,16)]){
+      const bad=Buffer.from(actual.wav);mutate(bad);assert.throws(()=>floatWavPayload(bad,channels));
+    }
+  }
+});

@@ -71,7 +71,7 @@ node scripts/testing/aec-production-offline-benchmark.mjs --report `
   --expected-identity-sha256 <frozen-receipt-sha256>
 ```
 
-Default report output is fresh `v1/report`; `--out` can select another new directory below v1. It rejects mismatched manifests/build/run/audio/gains/case timelines/thresholds/frame counters, verifies all input/output hashes and canonical containment, and checks WAV payloads equal unnormalized raw output. No table is created without native results. Missing native results are not a synthetic benchmark success.
+Default report output is fresh `v1/report`; `--out` can select another new directory below v1. It rejects mismatched manifests/build/run/audio/gains/case timelines/thresholds/frame counters, verifies all input/output hashes and canonical containment, and checks WAV payloads equal unnormalized raw output. The presenter accepts both the generator's IEEE-float tag 3 and the actual hound 3.5.1 writer's extensible float32 GUID, validating width, rate, native channel mask, byte rate and block alignment. It rejects extensible PCM/unknown subtypes; this parsing correction never rewrites native audio. No table is created without native results. Missing native results are not a synthetic benchmark success.
 
 Outputs: `report.json`, `report.md`, per-backend SVG curves, `listen.html`, and verified before/actual-production-after WAV copies. Player has no autoplay, volume=1, shared absolute capture-time seeking and explicit A/B controls; browser/device volume is outside the benchmark. Native WAV bytes are copied, not normalized. SVG display range clipping affects drawing only; invalid/N/A/exact-zero attenuation gaps remain gaps rather than invented 999dB values.
 

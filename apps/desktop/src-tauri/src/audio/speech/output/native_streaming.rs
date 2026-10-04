@@ -438,7 +438,10 @@ impl NativeDesktopStream {
             deliberate_stage_transition = true;
         }
         let available = buffer_frames.saturating_sub(padding) as usize;
-        if !self.queue.ended && !deliberate_stage_transition
+        // End closes admission, not playback: queued PCM/prefix still needs
+        // continuous device output. Only the final empty drain is exempt.
+        if (!self.queue.ended || self.queue.buffered_frames() > 0
+            || (!self.scenario.is_empty() && self.stage.prefix_remaining > 0)) && !deliberate_stage_transition
             && self.underrun.observe(self.started, self.submitted_frames as usize, padding) {
             self.observe_pump(padding_qpc, buffer_frames, Some(padding), 0, pump_diagnostic::Decision::Underrun);
             events(DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
@@ -711,6 +714,100 @@ mod tests {
             started: false, terminal: false, terminal_error: None, submitted_frames: 0, scenario: Vec::new(), scenario_phase_frames: SCENARIO_PHASE_FRAMES,
             stage: ScenarioStage::default(), deferred: DeferredRenderFrames::default(), underrun: RenderUnderrunTracker::default(), pump_diagnostic: None,
         }, device)
+    }
+    #[test]
+    fn ended_input_with_queued_pcm_still_reports_render_underrun() {
+        for end_before_start in [false, true] {
+            let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+            stream.push_pcm(&vec![100;19_200],24_000).unwrap();
+            if end_before_start { stream.end(&mut |_|Ok(())).unwrap(); }
+            stream.poll(&mut |_|Ok(())).unwrap();
+            if !end_before_start { stream.end(&mut |_|Ok(())).unwrap(); }
+            assert!(stream.queue.ended && stream.queue.buffered_frames()>BLOCK_FRAMES);
+            assert!(stream.started); assert_eq!(device.borrow().padding,960);
+            let submitted=stream.submitted_frames; let writes=device.borrow().writes.len();
+            device.borrow_mut().padding=0;
+            let result=stream.poll_step(&mut |event| match event {
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("post-End underrun".into()),
+                _=>Ok(()),
+            });
+            assert_eq!(result.err(),Some("post-End underrun".into()),"end_before_start={end_before_start}");
+            assert_eq!(stream.submitted_frames,submitted);
+            assert_eq!(device.borrow().writes.len(),writes);
+        }
+    }
+    #[test]
+    fn ended_input_final_empty_drain_is_not_render_underrun() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.push_pcm(&vec![100;480],24_000).unwrap(); stream.end(&mut |_|Ok(())).unwrap();
+        let mut underruns=0;
+        let mut callback=|event:DesktopStreamingEvent<'_>| {
+            if let DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=event { underruns+=1; }
+            Ok(())
+        };
+        assert!(stream.poll(&mut callback).unwrap().is_none());
+        assert_eq!(stream.queue.buffered_frames(),0); assert_eq!(device.borrow().padding,960);
+        device.borrow_mut().padding=480;
+        assert!(stream.poll(&mut callback).unwrap().is_none());
+        device.borrow_mut().padding=0;
+        let receipt=stream.poll(&mut callback).unwrap().unwrap();
+        assert_eq!(receipt.rendered_frames,960); assert_eq!(device.borrow().starts,1);
+        drop(callback); assert_eq!(underruns,0); assert!(!stream.underrun.reported_in_session);
+    }
+    #[test]
+    fn ended_input_intentional_stage_transitions_are_not_render_underruns() {
+        for previous_stage in 0..2 {
+            let (mut stream,device,_owner)=stream_at_active_stage_boundary(previous_stage);
+            stream.end(&mut |_|Ok(())).unwrap();
+            stream.poll(&mut |event| match event {
+                DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("intentional transition misclassified".into()),
+                _=>Ok(()),
+            }).unwrap();
+            assert_eq!(stream.stage.index,previous_stage+1); assert_eq!(device.borrow().padding,960);
+            assert!(!stream.underrun.reported_in_session);
+        }
+    }
+    #[test]
+    fn ended_input_pending_prefix_is_not_final_empty_drain() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.scenario=aec_live_scenario::ordered_speech_simulation_assignments();
+        stream.scenario_phase_frames=480;
+        stream.start_stage(&mut |_|Ok(())).unwrap();
+        stream.push_pcm(&vec![100;240],24_000).unwrap(); stream.end(&mut |_|Ok(())).unwrap();
+        stream.poll(&mut |_|Ok(())).unwrap();
+        assert!(stream.started); assert_eq!(stream.queue.buffered_frames(),0);
+        device.borrow_mut().padding=0;
+        // This first zero is deliberate; the following zero interrupts a
+        // still-pending prefix even though no reference PCM remains.
+        stream.poll_step(&mut |_|Ok(())).unwrap();
+        assert_eq!(stream.stage.index,1); assert!(stream.stage.prefix_remaining>0);
+        assert!(!stream.underrun.reported_in_session);
+        device.borrow_mut().padding=0;
+        let result=stream.poll_step(&mut |event| match event {
+            DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=>Err("pending prefix underrun".into()),
+            _=>Ok(()),
+        });
+        assert_eq!(result.err(),Some("pending prefix underrun".into()));
+    }
+    #[test]
+    fn ended_input_render_underrun_remains_once_per_session() {
+        let owner=DesktopPlaybackOwnership::default(); let (mut stream,device)=fake_stream(&owner);
+        stream.push_pcm(&vec![100;19_200],24_000).unwrap(); stream.end(&mut |_|Ok(())).unwrap();
+        stream.poll(&mut |_|Ok(())).unwrap();
+        let mut underruns=0;
+        for _ in 0..2 {
+            device.borrow_mut().padding=0;
+            stream.poll_step(&mut |event| {
+                if let DesktopStreamingEvent::Render(SpeakerRenderEvent::Discontinuity {
+                    reason:crate::audio::state::EchoRenderBoundary::DeviceFault("wasapi-render-underrun"),..})=event { underruns+=1; }
+                Ok(())
+            }).unwrap();
+        }
+        assert_eq!(underruns,1); assert!(stream.underrun.reported_in_session);
     }
     #[test]
     fn event_wait_rounds_up_and_rejects_infinite_or_overflow() {

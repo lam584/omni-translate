@@ -4,7 +4,7 @@
 #[path = "host_time_observation_pure.rs"]
 mod pure;
 use pure::*;
-use std::{fs::File, io::Read, os::windows::fs::{MetadataExt, OpenOptionsExt}, path::Path};
+use std::{fs::File, io::{Read, Write}, os::windows::fs::{MetadataExt, OpenOptionsExt}, path::Path};
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::{Foundation::{FreeLibrary, HMODULE}, System::{
     LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32}, Performance::QueryPerformanceCounter}};
@@ -12,7 +12,9 @@ type Backdoor = unsafe extern "C" fn(*mut Registers);
 struct Module(HMODULE);
 impl Drop for Module {
     fn drop(&mut self) {
-        if unsafe { FreeLibrary(self.0) } == 0 { eprintln!("host-time-diagnostic: FreeLibrary failed: {}", std::io::Error::last_os_error()); }
+        if unsafe { FreeLibrary(self.0) } == 0 {
+            let _ = writeln!(std::io::stderr().lock(), "host-time-diagnostic: FreeLibrary failed: {}", std::io::Error::last_os_error());
+        }
     }
 }
 // Module drops BEFORE the deny-write/delete file handle. No exported pointer escapes.

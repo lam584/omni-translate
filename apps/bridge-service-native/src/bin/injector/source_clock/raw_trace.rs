@@ -4,6 +4,7 @@ use super::{error_text, MediaRender, SourcePlaybackClock};
 mod host_time_observation;
 use host_time_observation::HostTimeObserver;
 use std::io::Write;
+use std::rc::Rc;
 use windows::core::Interface;
 use windows::Win32::Media::Audio::IAudioClock2;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,53 @@ fn capture_start(
         "rawStartHresult":status,"nativeApiError":result.as_ref().err(),
         "bracketMonotonic":before.as_ref().ok().zip(after.as_ref().ok()).map(|(a,b)| a <= b)});
     (value, result)
+}
+
+// Diagnostic capture cannot skip or repeat the original RAII Stop, even when a clock is unavailable.
+fn capture_stop(
+    qpc: impl FnMut() -> Result<u64, String>,
+    mut host: impl FnMut() -> Option<serde_json::Value>,
+    mut identity: impl FnMut() -> serde_json::Value,
+    stop: impl FnOnce() -> (i32, Result<(), String>),
+) -> (serde_json::Value, Result<(), String>) {
+    let host_before = host();
+    let identity_before = identity();
+    let (mut value, result) = capture_start(qpc, stop);
+    let identity_after = identity();
+    let host_after = host();
+    value["artifactKind"] = "aec-source-playback-clock-stop-diagnostic".into();
+    let status = value.as_object_mut().unwrap().remove("rawStartHresult").unwrap();
+    value["rawStopHresult"] = status;
+    value["acceptanceAuthority"] = false.into();
+    value["diagnosticIdentityBefore"] = identity_before;
+    value["diagnosticIdentityAfter"] = identity_after;
+    value["diagnosticHostTimeBefore"] = host_before.into();
+    value["diagnosticHostTimeAfter"] = host_after.into();
+    (value, result)
+}
+
+fn native_lifecycle_qpc(frequency: u64) -> Result<u64, String> {
+    let (qpc, _) = capture_time_boundary(frequency, || {
+        let mut ticks = 0_i64;
+        (unsafe { QueryPerformanceCounter(&mut ticks) }, ticks)
+    }, || {
+        let mut ticks = 0_u64;
+        (unsafe { QueryUnbiasedInterruptTime(&mut ticks) }, ticks)
+    });
+    qpc
+}
+
+fn emit_optional_diagnostic(mut writer: impl Write, error: &str) {
+    // Logging in Drop must not turn an optional persistence error into a second panic.
+    let _ = writeln!(writer, "optional-source-Stop-diagnostic-error: {error}");
+}
+
+fn write_stop_observation(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+        .map_err(|error| format!("create Stop diagnostic: {error}"))?;
+    serde_json::to_writer(&mut file, value).map_err(|error| format!("write Stop diagnostic: {error}"))?;
+    file.write_all(b"\n").map_err(|error| format!("Stop diagnostic newline: {error}"))?;
+    file.sync_all().map_err(|error| format!("sync Stop diagnostic: {error}"))
 }
 
 fn read_device_position(clock: &IAudioClock2) -> (i32, Result<(u64, u64), String>) {
@@ -134,7 +182,8 @@ pub(super) struct RawClockTrace {
     device_clock: Option<Result<IAudioClock2, (i32, String)>>,
     device_clock_observation: Option<serde_json::Value>,
     independent_time_observation: Option<serde_json::Value>,
-    host_time: Option<HostTimeObserver>,
+    host_time: Option<Rc<HostTimeObserver>>,
+    observation_identity: Option<serde_json::Value>,
     host_time_observation: Option<serde_json::Value>,
     format_endpoint: Option<DiagnosticEndpoint>,
     final_observation: Option<serde_json::Value>,
@@ -167,21 +216,47 @@ impl RawClockTrace {
             endpoint: endpoint.into(), rate, qpc_frequency, last_clock: None, last_padding: None, last_submitted: 0,
             start_observation: None, device_clock: None, device_clock_observation: None,
             // Pin/hash/load once BEFORE MediaRender::start_render, never in the audio pump.
-            independent_time_observation: None, host_time: Some(HostTimeObserver::from_env()), host_time_observation: None,
+            independent_time_observation: None, host_time: Some(Rc::new(HostTimeObserver::from_env())), host_time_observation: None, observation_identity: None,
             format_endpoint: None, final_observation: None,
             format_before_start: None, start_time_observation: None, independent_path,
             independent_writer, independent_error, independent_rows: 0 })
     }
     pub(super) fn start_render(&mut self, render: &MediaRender) -> Result<std::time::Instant, String> {
         self.format_endpoint = render.diagnostic_endpoint();
+        let start_identity = render.diagnostic_identity();
+        let owner_thread = start_identity["ownerThreadId"].as_u64().map(|value| value as u32);
+        let endpoint = self.endpoint.clone();
+        let stop_path = self.path.with_file_name("aec-source-playback-clock-stop-diagnostic.json");
+        let frequency = self.qpc_frequency;
+        let host = Rc::clone(self.host_time.as_ref().expect("host observer initialized before Start"));
+        // Retain the same pinned DLL through the original Drop::Stop, even if this trace drops first.
+        *render.stop_diagnostic.borrow_mut() = Some(Box::new(move |client| {
+            let (mut stop_value, _) = capture_stop(|| native_lifecycle_qpc(frequency),
+                || host.observe(frequency),
+                || super::render::source_client_identity(client, owner_thread),
+                || {
+                    let status = unsafe { (Interface::vtable(client).Stop)(Interface::as_raw(client)) };
+                    (status.0, status.ok().map_err(error_text))
+                });
+            stop_value["endpointId"] = endpoint.into();
+            stop_value["independentQpcFrequency"] = frequency.into();
+            let observed = persist_optional_snapshot(stop_value, |value| write_stop_observation(&stop_path, value));
+            if let Some(error) = observed["persistenceError"].as_str() {
+                emit_optional_diagnostic(std::io::stderr().lock(), error);
+            }
+        }));
         let format_before = self.observe_endpoint_format("before-Start");
         let mut boundaries = Vec::with_capacity(2);
+        let host_before = self.host_time.as_ref().unwrap().observe(self.qpc_frequency);
         let (mut value, result) = capture_start(|| {
             let (qpc, diagnostic) = self.independent_boundary(); boundaries.push(diagnostic); qpc
         }, || render.start_with_status());
         // Anchor only the existing safety budget BEFORE diagnostic file I/O.
         // This Instant never supplies a source playback origin.
         let started_at = std::time::Instant::now();
+        let host_after = self.host_time.as_ref().unwrap().observe(self.qpc_frequency);
+        value["diagnosticIdentity"] = start_identity;
+        value["diagnosticHostTime"] = self.host_time.as_ref().unwrap().bracket(host_before, host_after, "host-wall-time-around-native-Start");
         value["processId"] = std::process::id().into();
         value["endpointId"] = self.endpoint.clone().into();
         value["independentQpcFrequency"] = self.qpc_frequency.into();
@@ -205,6 +280,8 @@ impl RawClockTrace {
         if let Some(fields) = legacy.as_object_mut() {
             fields.remove("diagnosticIndependentTime");
             fields.remove("diagnosticEndpointFormat");
+            fields.remove("diagnosticIdentity");
+            fields.remove("diagnosticHostTime");
         }
         self.start_observation = Some(legacy);
         let path = self.path.with_file_name("aec-source-playback-clock-start-diagnostic.json");
@@ -252,6 +329,7 @@ impl RawClockTrace {
     pub(super) fn observe(&mut self, render: &MediaRender, submitted: usize, strict: &mut SourcePlaybackClock) -> Result<(), String> {
         // Wall-time sidecar stays outside existing native GetPosition/QPC brackets.
         // Missing opt-in never loads the DLL. Ownership lasts through the last read.
+        self.observation_identity = Some(render.diagnostic_identity());
         let host_before = self.host_time.as_ref().expect("host-time observer initialized before Start").observe(self.qpc_frequency);
         // Always sample the same native client, even after strict validation latches failure.
         let padding = render.current_padding_frames();
@@ -341,13 +419,14 @@ impl RawClockTrace {
     fn record_independent_time(&mut self, primary: Option<serde_json::Value>,
         device: Option<serde_json::Value>, legacy: &serde_json::Value) {
         let host_time = self.host_time_observation.take();
+        let identity = self.observation_identity.take();
         if self.independent_error.is_some() { return; }
         let value = serde_json::json!({"schemaVersion":1,
             "artifactKind":"aec-source-independent-time-observation",
             "scope":"diagnostic-only-not-c03","acceptanceAuthority":false,
             "origin":"same-legacy-raw-clock-sequence-independent-brackets",
             "sequence":self.sequence,"endpointId":self.endpoint,"processId":std::process::id(),
-            "clock1":primary,"clock2":device,"diagnosticHostTime":host_time,"clock1Position":legacy["clockPosition"],
+            "diagnosticIdentity":identity,"clock1":primary,"clock2":device,"diagnosticHostTime":host_time,"clock1Position":legacy["clockPosition"],
             "clock1Qpc100ns":legacy["qpc100ns"],"clock1Hresult":legacy["rawClockHresult"],
             "clock2Position":legacy["diagnosticDeviceClock"]["clockPosition"],
             "clock2Qpc100ns":legacy["diagnosticDeviceClock"]["qpc100ns"],
@@ -851,3 +930,7 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+#[path = "lifecycle_observation_tests.rs"]
+mod lifecycle_observation_tests;

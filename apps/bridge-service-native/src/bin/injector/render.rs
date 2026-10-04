@@ -211,16 +211,32 @@ impl DiagnosticEndpoint {
     }
 }
 
+// Installed only by the optional source observer. It must perform the original Stop exactly once.
+pub(super) type StopDiagnostic = Box<dyn FnOnce(&IAudioClient)>;
+
+pub(super) fn source_client_identity(client: &IAudioClient, owner_thread: Option<u32>) -> serde_json::Value {
+    let thread = unsafe { GetCurrentThreadId() };
+    serde_json::json!({"schemaVersion":1,"scope":"diagnostic-only-not-c03",
+        "acceptanceAuthority":false,"processId":std::process::id(),"threadId":thread,
+        "ownerThreadId":owner_thread,"sameThread":owner_thread.map(|owner| owner == thread),
+        "renderClientToken":format!("{}:IAudioClient:{:x}",std::process::id(),Interface::as_raw(client) as usize)})
+}
+
 pub(super) struct MediaRender {
     // Fields drop in declaration order after Drop::drop stops the stream.
     pub(super) audio_clock: Option<NativeAudioClock>,
     render_client: Option<IAudioRenderClient>,
     audio_client: IAudioClient,
     diagnostic_endpoint: Option<DiagnosticEndpoint>,
+    pub(super) stop_diagnostic: std::cell::RefCell<Option<StopDiagnostic>>,
     pub(super) buffer_frames: usize,
 }
 
 impl MediaRender {
+    pub(super) fn diagnostic_identity(&self) -> serde_json::Value {
+        source_client_identity(&self.audio_client,self.diagnostic_endpoint.as_ref().map(|endpoint| endpoint.owner_thread))
+    }
+
     pub(super) fn open_timer_driven_unstarted(
         device: &Device,
         format: &WaveFormat,
@@ -268,6 +284,7 @@ impl MediaRender {
             diagnostic_endpoint: clock_requested.then(|| DiagnosticEndpoint { device: native_device,
                 endpoint_id: diagnostic_endpoint_id,
                 owner_thread: unsafe { GetCurrentThreadId() } }),
+            stop_diagnostic: std::cell::RefCell::new(None),
             buffer_frames,
         };
         render.render_client = Some(unsafe { render.audio_client.GetService::<IAudioRenderClient>() }
@@ -334,7 +351,11 @@ impl MediaRender {
 
 impl Drop for MediaRender {
     fn drop(&mut self) {
-        let _ = unsafe { self.audio_client.Stop() };
+        if let Some(observe_stop) = self.stop_diagnostic.get_mut().take() {
+            observe_stop(&self.audio_client);
+        } else {
+            let _ = unsafe { self.audio_client.Stop() };
+        }
     }
 }
 

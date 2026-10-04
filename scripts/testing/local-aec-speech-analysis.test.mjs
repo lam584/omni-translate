@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeLocalAecSpeech, inspectLocalCaptureQueueEvidence, LOCAL_AEC_SPEECH_SCOPE } from './local-aec-speech-analysis.mjs';
+import { nativePumpDecisionFixture } from './fixtures/local-aec-pump-decision-receipt.mjs';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -143,7 +144,8 @@ function fixture(t, variant = 'good') {
     executionId, status: 'not-trusted-for-quality', releaseEligible: false, providerCalls: 0, recognitionSenderAttached: false,
     failure: null, cleanupError: null, tapError: null, sourceInjectorCleanupError: null,
     render: { requestedDeviceId: ENDPOINT, effectiveDeviceId: ENDPOINT, deviceId: ENDPOINT, sampleRateHz: RATE,
-      channelCount: 2, rendererInstanceId: 'native-renderer', ownerGeneration: 2, renderedFrames: referenceFrame },
+      channelCount: 2, renderSessionId: 1, rendererInstanceId: 'native-renderer', ownerGeneration: 2, renderedFrames: referenceFrame },
+    nativePumpDecisions: nativePumpDecisionFixture({renderSessionId:1, ownerGeneration:2, endpointId:ENDPOINT, rendererInstanceId:'native-renderer'}),
     capture: { requestedDeviceId: ENDPOINT, effectiveDeviceId: ENDPOINT, lastError: null, lastErrorCode: null,
       countsFinal: true, sampleRateHz: RATE, channelCount: 2, framesCaptured: physicalTotal + RATE * 2 },
     sourceMediaStarted: { executionId, physicalDeviceId: ENDPOINT, processId: 171, spawnedByNative: true, startedAtMs: 100 },
@@ -674,4 +676,15 @@ test('capture pump consumer local inspection rejects forgery missing files dupli
     assert.throws(()=>inspectLocalCaptureQueueEvidence(f.root,f.receipt),/capture pump|ENOENT/);
     rejected(f.analyze(),/capture pump|ENOENT/);
   });
+});
+
+test('acoustic acceptance cannot adopt legacy recent-only pump counters',t=>{
+ const f=fixture(t);delete f.receipt.nativePumpDecisions.fullRunDecisionCounts;
+ rejected(f.analyze(),/full-run render pump/u);
+});
+test('acoustic acceptance rejects an early recorded underrun even after recent eviction',t=>{
+ const f=fixture(t);f.receipt.nativePumpDecisions=nativePumpDecisionFixture(
+  {renderSessionId:1,ownerGeneration:2,endpointId:ENDPOINT,rendererInstanceId:'native-renderer'},
+  [{decision:'underrun',paddingFrames:0,stageIndex:1},...Array.from({length:700},()=>({decision:'device-full',stageIndex:2}))]);
+ rejected(f.analyze(),/recorded full-run render underrun/u);
 });

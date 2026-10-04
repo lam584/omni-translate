@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import {createLocalSpeechRequest,inspectSpeechOperation,parseLocalSpeechArgs,finalizeSpeechOutcome,createLocalSpeechTapOutcome,verifyLocalSpeechTapEvidence,LOCAL_SPEECH_BUDGETS,localSpeechJobDeadline,collectLocalSpeechRunEvidence} from './run-local-aec-speech-simulation.mjs';
+import {nativePumpDecisionFixture} from './fixtures/local-aec-pump-decision-receipt.mjs';
 import {assembleLocalSpeechFixture} from './local-aec-speech-fixture.mjs';
 import {createSpeechSynthesisPlan} from './generate-local-aec-speech-fixture.mjs';
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
@@ -16,6 +17,7 @@ const request=()=>createLocalSpeechRequest({executionId,outputDirectory:path.res
 const probe=()=>({schemaVersion:2,executionId,scope:'local-aec-speech-simulation',providerCalls:0,recognitionSenderAttached:false,releaseEligible:false,status:'completed',
  capture:{effectiveDeviceId:endpoint,countsFinal:true,framesCaptured:9000000,lastError:null,lastErrorCode:null},
  render:{effectiveDeviceId:endpoint,deviceId:endpoint,renderSessionId:101,ownerGeneration:1,rendererInstanceId:'renderer-inst-1'},
+ nativePumpDecisions:nativePumpDecisionFixture({renderSessionId:101,ownerGeneration:1,endpointId:endpoint,rendererInstanceId:'renderer-inst-1'}),
  mmcssAudio:{schemaVersion:1,taskName:'Audio',ownerThreadId:41,registrationAttempted:true,registrationSucceeded:true,taskIndex:0,registrationErrorCode:null,cleanupAttempted:true,revertAttempted:true,revertSucceeded:true,revertThreadId:41,revertErrorCode:null,restoreFailureKind:null,cleanupPath:'explicit',state:'restored'},
  mmcssAudioEvents:[
   {schemaVersion:1,taskName:'Audio',ownerThreadId:41,registrationAttempted:true,registrationSucceeded:true,taskIndex:0,registrationErrorCode:null,cleanupAttempted:false,revertAttempted:false,revertSucceeded:false,revertThreadId:null,revertErrorCode:null,restoreFailureKind:null,cleanupPath:null,state:'active'},
@@ -30,7 +32,7 @@ const probe=()=>({schemaVersion:2,executionId,scope:'local-aec-speech-simulation
    residualBytes:0,workPending:false,terminal:false,fault:null,latestQuery:{kind:'empty'},rawActivityGeneration:0,lastRawActivityAgeMs:null,emptyEpoch:1,progressEpoch:0,quiescenceEpoch:0,aecResetGeneration:0,
    latestPacket:{frames:480,deviceFrameIndex:95620,qpc100ns:123,silent:false,dataDiscontinuity:false,
     timestampError:false,rawEnergyDb:-90}}},
- streamEvidence:{streamStartCount:1,streamDrained:true,aborted:false,mediaEndVoicedPhysicalFrames:96000},sourceMediaComplete:{passed:true,endpointId:endpoint,mediaPlaybackComplete:true,
+ streamEvidence:{renderSessionId:101,streamStartCount:1,streamDrained:true,aborted:false,mediaEndVoicedPhysicalFrames:96000},sourceMediaComplete:{passed:true,endpointId:endpoint,mediaPlaybackComplete:true,
  sourceEvidenceValidationPassed:true,sourceEvidenceValidationError:null,exitCode:0,
  receipt:{passed:true,mediaPlaybackComplete:true,naturalRenderDrained:true,sourceClockValidationPassed:true,
  sourceClockValidationError:null,detail:null,diagnosticOnly:false}}});
@@ -685,4 +687,32 @@ test('real capture pump timing and its counterexamples are frozen, not render ti
   'apps/desktop/src-tauri/src/audio/engine/workers/capture_pump_timing_tests.rs']) {
   assert.ok(frozenRunner.LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file));
  }
+});
+
+for(const [name, mutate] of [
+ ['missing full-run decision counters', p=>{delete p.nativePumpDecisions.fullRunDecisionCounts;}],
+ ['overflowed full-run counters', p=>{p.nativePumpDecisions.fullRunDecisionCounts.counterOverflowed=true;}],
+ ['foreign full-run owner', p=>{p.nativePumpDecisions.ownerGeneration=999;}],
+ ['recorded early underrun evicted from recent decisions', p=>{p.nativePumpDecisions=nativePumpDecisionFixture(
+   {renderSessionId:101,ownerGeneration:1,endpointId:endpoint,rendererInstanceId:'renderer-inst-1'},
+   [{decision:'underrun',paddingFrames:0,stageIndex:0},...Array.from({length:700},()=>({decision:'device-full',stageIndex:2}))]);}],
+])test('operation rejects '+name,()=>{const p=probe();mutate(p);const result=inspectSpeechOperation(p,request());
+ assert.equal(result.passed,false);assert.equal(result.releaseEligible,false);assert.match(result.failures.join(';'),/full-run/u);});
+
+test('operation rejects a contradictory continuous stream session even if counter receipt matches render',()=>{
+ const p=probe();p.streamEvidence.renderSessionId=102;const r=inspectSpeechOperation(p,request());
+ assert.equal(r.passed,false);assert.match(r.failures.join(';'),/session identity/u);
+});
+
+test('operation rejects recorded decisions outside the three declared stages',()=>{
+ const p=probe();p.nativePumpDecisions=nativePumpDecisionFixture(
+  {renderSessionId:101,ownerGeneration:1,endpointId:endpoint,rendererInstanceId:'renderer-inst-1'},
+  [{decision:'physical-drained',paddingFrames:0,stageIndex:9}]);
+ const r=inspectSpeechOperation(p,request());assert.equal(r.passed,false);assert.match(r.failures.join(';'),/known stages/u);
+});
+test('full-run recorder, strict validator and counterexamples are frozen together',async()=>{
+ const {LOCAL_SPEECH_FROZEN_SOURCE_FILES}=await import('./run-local-aec-speech-simulation.mjs');
+ for(const file of ['apps/desktop/src-tauri/src/audio/speech/output/native_streaming/pump_diagnostic.rs',
+  'scripts/testing/local-aec-pump-decision-receipt.mjs','scripts/testing/local-aec-pump-decision-receipt.test.mjs',
+  'scripts/testing/fixtures/local-aec-pump-decision-receipt.mjs'])assert.ok(LOCAL_SPEECH_FROZEN_SOURCE_FILES.includes(file),file);
 });

@@ -335,3 +335,31 @@ bound to the actual capture owner. It records total observations and separate
 nonadvancing packet/query counts, explicitly granting no quiet-time or quality
 authority. Legacy absent fields retain diagnostic custody compatibility only.
 Malformed/foreign/authority-claiming receipts are rejected even after resealing.
+
+
+## Full-run recorded render-pump decisions
+
+The opt-in speech simulation records cumulative fixed-size counters before the
+512-row recent diagnostic buffer can evict entries. fullRunDecisionCounts v1
+covers all recorded decisions, not distinct polls or all physical-device events.
+The legacy observedPollCount name remains for diagnostic compatibility; its value
+is the count of recorded decisions. Global counts and zero-padding subsets bind
+to stage indices 0/1/2 and an explicit otherStage bucket, on the existing single
+render session/owner. Counters are checked and overflow is sticky/indeterminate.
+Only cold terminal receipt construction allocates keyed JSON; the pump performs
+no new device queries, serialization or persistence for these counters.
+
+Only the actual Underrun decision counts as a recorded underrun. Zero padding at
+startup, deliberate stage transitions or normal physical-drained is not itself
+an underrun. Conversely, no recorded underrun is not an independent proof of
+physical continuity or acoustic suppression; all clock/physical/quality gates
+remain in force. These statistics never authorize source-clock, acoustic,
+Provider, release or quiet-drain acceptance.
+
+New local collection and acoustic consumers require the full-run counters,
+matching render/stream/owner/endpoint identity, exact stage/global/zero-padding
+sums and recent-sequence lower bounds. Recorded underruns, overflow, missing or
+malformed counters block acceptance. Legacy recent-only reports cannot meet this
+new evidence contract; they remain retained diagnostic custody. All existing
+source-clock bounds and 20dB/3dB/95% targets are unchanged. No physical run can be
+qualified from unit-test fixture counters.

@@ -964,6 +964,8 @@ mod tests {
         let receipt=stream.pump_diagnostic.as_ref().unwrap().receipt(); let last=receipt["recentObservations"].as_array().unwrap().last().unwrap();
         assert_eq!(last["decision"],"underrun"); assert_eq!(last["paddingFrames"],0);
         assert!(last["referenceBufferedFrames"].as_u64().unwrap()>480);
+        assert_eq!(receipt["fullRunDecisionCounts"]["decisionCounts"]["underrun"],1);
+        assert_eq!(receipt["fullRunDecisionCounts"]["stages"][0]["decisionCounts"]["underrun"],1);
         assert!(!receipt["qualityAcceptance"].as_bool().unwrap()); assert_eq!(device.borrow().writes.len(),2);
         stream.abort(&mut |_|Ok(())).unwrap();
         assert!(stream.pump_diagnostic_receipt().is_some());

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { validateNativePumpDecisionReceipt } from './local-aec-pump-decision-receipt.mjs';
 import { AEC_TAP_FILES } from './watch-mode-aec-tap-evidence.mjs';
 import { verifyCaptureProcessingRecord } from './watch-mode-aec-capture-processing-evidence.mjs';
 import { AEC_CLOSED_LOOP_PROFILE, AEC_CLOSED_LOOP_THRESHOLDS, AEC_CLOSED_LOOP_METADATA_MAX_BYTES,
@@ -613,6 +614,18 @@ export function analyzeLocalAecSpeech(runDirectory, options = {}) {
       && receipt.render.sampleRateHz === RATE && receipt.render.channelCount === 2, 'capture/render endpoint ownership mismatch');
   });
   if (!root || !receipt) return result;
+  const pump = attempt('render-pump-full-run', () => {
+    check(receipt.render?.renderSessionId === receipt.streamEvidence?.renderSessionId, 'render/stream session identity mismatch');
+    const value = validateNativePumpDecisionReceipt(receipt.nativePumpDecisions, {
+      renderSessionId: receipt.streamEvidence?.renderSessionId, ownerGeneration: receipt.render?.ownerGeneration,
+      endpointId: options.expectedPhysicalDeviceId, rendererInstanceId: receipt.render?.rendererInstanceId,
+    });
+    check(value.valid, 'full-run render pump decision evidence: ' + (value.failures?.join('; ') ?? 'invalid'));
+    check(value.knownUnderrunDecisionCount === 0, 'recorded full-run render underrun');
+    check(value.otherStageDecisionCount === 0, 'full-run render decision outside known stages');
+    return value;
+  });
+  if (pump) result.renderPumpDecisionDiagnostic = pump;
   attempt('workspace-ownership', () => check(root.startsWith(path.resolve(options.analyzer?.workspaceRoot ?? '') + path.sep), 'run directory outside analyzer workspace'));
   const readiness = root && attempt('native-start-readiness', () => nativeStartReadiness(root, receipt, options.expectedPhysicalDeviceId));
   if (readiness) result.nativeStartReadiness = readiness;

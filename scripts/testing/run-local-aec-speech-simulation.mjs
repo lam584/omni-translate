@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { localAecProbeDesktopPowerShell, AEC_PROBE_JOB_HELPER, AEC_PROBE_CAPABILITY_ID } from './run-watch-mode-local-aec-probe.mjs';
+import { validateNativePumpDecisionReceipt } from './local-aec-pump-decision-receipt.mjs';
 import { analyzeLocalAecSpeech } from './local-aec-speech-analysis.mjs';
 import { verifyApiSpeechProvenance } from './local-aec-speech-provenance.mjs';
 import { windowsPowerShellEnvironment } from './run-watch-mode-live-production-coordinator.mjs';
@@ -76,6 +77,10 @@ export const LOCAL_SPEECH_FROZEN_SOURCE_FILES=Object.freeze(["apps/desktop/src-t
   'apps/desktop/src-tauri/src/audio/speech/output/native_streaming.rs',
   'apps/desktop/src-tauri/src/watch_mode_diagnostic/local_aec_probe/speech_simulation.rs',
   'apps/desktop/src-tauri/src/audio/omni/protocol/native_desktop_stream.rs',
+  'apps/desktop/src-tauri/src/audio/speech/output/native_streaming/pump_diagnostic.rs',
+  'scripts/testing/local-aec-pump-decision-receipt.mjs',
+  'scripts/testing/local-aec-pump-decision-receipt.test.mjs',
+  'scripts/testing/fixtures/local-aec-pump-decision-receipt.mjs',
   'scripts/testing/local-aec-speech-analysis.mjs',
   'scripts/testing/local-aec-speech-provenance.mjs','scripts/testing/generate-local-aec-speech-fixture.mjs','scripts/testing/fixtures/wav-fixture-utils.mjs',
   'scripts/testing/watch-mode-aec-tap-evidence.mjs','scripts/testing/watch-mode-aec-closed-loop-evidence.mjs',
@@ -172,6 +177,12 @@ export function inspectSpeechOperation(probe, request) {
  'source clock evidence rejected or failed injector receipt');
  check(probe.sourceEvidenceValidationPassed!==false&&!probe.sourceEvidenceValidationError,'retained source evidence rejection');
  check(!probe.failure&&!probe.primaryError&&!probe.cleanupError&&!probe.tapError&&!probe.streamEvidenceSealError&&!probe.sourceInjectorCleanupError&&!probe.streamAbortError,'native failure/custody/seal error');
+ check(probe.render?.renderSessionId===probe.streamEvidence?.renderSessionId,'render/stream session identity mismatch');
+ const pump=validateNativePumpDecisionReceipt(probe.nativePumpDecisions,{renderSessionId:probe.render?.renderSessionId,
+  ownerGeneration:probe.render?.ownerGeneration,endpointId:request.physicalDeviceId,rendererInstanceId:probe.render?.rendererInstanceId});
+ check(pump.valid,'full-run render pump decision evidence: '+(pump.failures?.join('; ')??'invalid'));
+ if(pump.valid){check(pump.knownUnderrunDecisionCount===0,'recorded full-run render underrun');
+  check(pump.otherStageDecisionCount===0,'full-run render decision outside known stages');}
  const mmcssVal=validateProbeMmcssAudio(probe,request);if(!mmcssVal.valid){for(const f of mmcssVal.failures)failures.push(f);}
  return {passed:failures.length===0,failures,scope:'local-aec-speech-simulation',releaseEligible:false};
 }

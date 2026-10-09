@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-import { readJson, writeJson } from '../lib/testing-common.mjs';
+import { copyDirectoryExcludingGenerated, readJson, writeJson } from '../lib/testing-common.mjs';
 import { archiveReleaseManualEvidence } from './archive-release-manual-evidence.mjs';
 import { assemblePerformanceBaseline } from './assemble-performance-baseline.mjs';
 import {
@@ -132,8 +132,8 @@ test('performance contract uses a finite evidence-driven terminal coverage thres
 
 const makeCleanGitWorkspace = () => {
   const workspaceRoot = makeTempDir();
-  fs.cpSync(path.resolve('scripts'), path.join(workspaceRoot, 'scripts'), { recursive: true });
-  fs.cpSync(path.resolve('contracts'), path.join(workspaceRoot, 'contracts'), { recursive: true });
+  copyDirectoryExcludingGenerated(path.resolve('scripts'), path.join(workspaceRoot, 'scripts'));
+  copyDirectoryExcludingGenerated(path.resolve('contracts'), path.join(workspaceRoot, 'contracts'));
   fs.writeFileSync(path.join(workspaceRoot, '.gitignore'), 'target/\n', 'utf8');
   fs.writeFileSync(path.join(workspaceRoot, 'tracked.txt'), 'release evidence CLI fixture\n', 'utf8');
   for (const args of [

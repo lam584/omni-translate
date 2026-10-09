@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 
 import { isMain, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
-import { createVm3TestEnvironment } from './run-with-vm3-test-environment.mjs';
+import { createVm3TestEnvironment, cleanVm3TemporaryRoot } from './run-with-vm3-test-environment.mjs';
 import { runDefaultLocalWatchDiskLifecycle } from './watch-mode-disk-lifecycle.mjs';
 import { buildStrictSshArgs, verifyPinnedKnownHost } from './watch-worker-bootstrap.mjs';
 import {
@@ -198,7 +198,7 @@ export function runFrozenFunnelStep(step, logPath, { workspaceRoot = repoRoot, t
       child.stdout.unpipe(output); child.stderr.unpipe(output);
       child.stdout.destroy(); child.stderr.destroy(); child.unref();
       if (discard) {
-        settled = true; clearTimeout(timer); output.destroy(); resolve(result);
+        settled = true; clearTimeout(timer); output.destroy(); try { cleanVm3TemporaryRoot(temporaryRoot); } catch {} resolve(result);
       } else if (!flushing) {
         flushing = true;
         // Keep the deadline armed while the final log bytes are flushing. A
@@ -206,6 +206,7 @@ export function runFrozenFunnelStep(step, logPath, { workspaceRoot = repoRoot, t
         output.end((error) => {
           if (settled) return;
           settled = true; clearTimeout(timer);
+          try { cleanVm3TemporaryRoot(temporaryRoot); } catch {}
           resolve(error ? failed('funnel.step.log-failed') : result);
         });
       }

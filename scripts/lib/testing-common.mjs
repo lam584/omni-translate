@@ -157,3 +157,33 @@ export const parseLooseArgs = (argv) => {
   }
   return args;
 };
+
+export const GENERATED_DIRECTORY_NAMES = Object.freeze([
+  "target",
+  "node_modules",
+  "artifacts",
+  "coverage",
+  "dist",
+  ".git",
+]);
+
+export function copyDirectoryExcludingGenerated(sourceDirectory, destinationDirectory, { extraExcludes = [] } = {}) {
+  const absoluteSource = path.resolve(sourceDirectory);
+  const absoluteDestination = path.resolve(destinationDirectory);
+  const excludeSet = new Set([...GENERATED_DIRECTORY_NAMES, ...extraExcludes]);
+
+  ensureDir(absoluteDestination);
+
+  fs.cpSync(absoluteSource, absoluteDestination, {
+    recursive: true,
+    filter: (sourcePath) => {
+      const relative = path.relative(absoluteSource, sourcePath);
+      if (!relative) return true;
+      const parts = relative.split(path.sep);
+      for (const part of parts) {
+        if (excludeSet.has(part)) return false;
+      }
+      return true;
+    },
+  });
+}

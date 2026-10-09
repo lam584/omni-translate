@@ -17,6 +17,8 @@ import {
   sortableTimestamp,
   writeJson,
   writeText,
+  copyDirectoryExcludingGenerated,
+  GENERATED_DIRECTORY_NAMES,
 } from './testing-common.mjs';
 
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'testing-common-'));
@@ -119,4 +121,36 @@ test('ensureDir returns the created path', () => {
 
 test('isMain is false for an imported module', () => {
   assert.equal(isMain(new URL('./testing-common.mjs', import.meta.url).href), false);
+});
+
+test('copyDirectoryExcludingGenerated copies source tree while excluding target, node_modules, artifacts, coverage, and .git', () => {
+  const sourceRoot = makeTempDir('copy-test-source-');
+  const destRoot = makeTempDir('copy-test-dest-');
+  try {
+    fs.mkdirSync(path.join(sourceRoot, 'src', 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'src', 'nested', 'index.ts'), 'export const a = 1;');
+    fs.mkdirSync(path.join(sourceRoot, 'target', 'debug'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'target', 'debug', 'binary.exe'), 'dummy binary');
+    fs.mkdirSync(path.join(sourceRoot, 'node_modules', 'package'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'node_modules', 'package', 'index.js'), 'module.exports = {};');
+    fs.mkdirSync(path.join(sourceRoot, 'artifacts', 'testing'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'artifacts', 'testing', 'report.json'), '{}');
+    fs.mkdirSync(path.join(sourceRoot, 'coverage'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'coverage', 'lcov.info'), 'TN:');
+    fs.mkdirSync(path.join(sourceRoot, '.git', 'objects'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, '.git', 'HEAD'), 'ref: refs/heads/main');
+
+    copyDirectoryExcludingGenerated(sourceRoot, destRoot);
+
+    assert.ok(fs.existsSync(path.join(destRoot, 'src', 'nested', 'index.ts')));
+    assert.equal(fs.readFileSync(path.join(destRoot, 'src', 'nested', 'index.ts'), 'utf8'), 'export const a = 1;');
+    assert.ok(!fs.existsSync(path.join(destRoot, 'target')));
+    assert.ok(!fs.existsSync(path.join(destRoot, 'node_modules')));
+    assert.ok(!fs.existsSync(path.join(destRoot, 'artifacts')));
+    assert.ok(!fs.existsSync(path.join(destRoot, 'coverage')));
+    assert.ok(!fs.existsSync(path.join(destRoot, '.git')));
+  } finally {
+    fs.rmSync(sourceRoot, { recursive: true, force: true });
+    fs.rmSync(destRoot, { recursive: true, force: true });
+  }
 });

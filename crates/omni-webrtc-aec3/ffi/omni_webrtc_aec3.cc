@@ -12,6 +12,7 @@
 #include "api/audio/audio_processing.h"
 #include "api/audio/audio_processing_statistics.h"
 #include "api/audio/builtin_audio_processing_builder.h"
+#include "api/audio/echo_canceller3_config.h"
 #include "api/audio/echo_detector_creator.h"
 #include "api/environment/environment_factory.h"
 
@@ -90,7 +91,17 @@ void* omni_webrtc_aec3_create() {
   config.echo_canceller.enabled = true;
   config.echo_canceller.export_linear_aec_output = false;
 
+  webrtc::EchoCanceller3Config aec_config;
+  // Compress initial convergence duration and accelerate initial coarse filter adaptation
+  aec_config.filter.initial_state_seconds = 1.2f;
+  aec_config.filter.coarse_initial.rate = 0.95f;
+  // Refine suppression and echo path strength progressively for ASR priority
+  aec_config.ep_strength.default_gain = 1.05f;
+  aec_config.suppressor.normal_tuning.mask_lf.enr_suppress = 0.45f;
+  webrtc::EchoCanceller3Config::Validate(&aec_config);
+
   webrtc::BuiltinAudioProcessingBuilder builder(config);
+  builder.SetEchoCancellerConfig(aec_config, std::nullopt);
   builder.SetEchoDetector(webrtc::CreateEchoDetector());
   auto apm = builder.Build(webrtc::CreateEnvironment());
   if (!apm || apm->Initialize() != webrtc::AudioProcessing::kNoError) {

@@ -1,4 +1,5 @@
 use super::*;
+use super::ducking_gate::{DuckingGateConfig, PostAecDuckingGate};
 #[cfg(feature = "webrtc-aec3")]
 use std::time::Duration;
 
@@ -7,6 +8,7 @@ use std::time::Duration;
 /// suppression decision can influence the ASR stream.
 pub(crate) struct ProductionEchoCanceller {
     engine: EchoCanceller,
+    ducking_gate: PostAecDuckingGate,
     // A partial calculation or a closed segment cannot share adaptation with
     // resumed capture. Only a successful native reset clears this real fence.
     partial_capture_boundary_pending: bool,
@@ -22,6 +24,7 @@ impl ProductionEchoCanceller {
         }
         Ok(Self {
             engine: EchoCanceller::from_engine(engine),
+            ducking_gate: PostAecDuckingGate::new(DuckingGateConfig::default()),
             partial_capture_boundary_pending: false,
         })
     }
@@ -47,12 +50,14 @@ impl ProductionEchoCanceller {
         if self.partial_capture_boundary_pending {
             return Err("capture resumed after a partial computational frame without a continuity reset".into());
         }
-        self.engine.process_capture_10ms_with_reference(
+        let mut result = self.engine.process_capture_10ms_with_reference(
             render,
             captured,
             delay_samples,
             capture_time,
-        )
+        )?;
+        self.ducking_gate.process_frame_in_place(render, &mut result.samples);
+        Ok(result)
     }
 
     /// Finish only the real suffix of a capture tail. Zeroes exist solely in
@@ -98,7 +103,9 @@ impl ProductionEchoCanceller {
             let render = reference_for_frame(index);
             let delay = delay_samples.saturating_sub(index * AEC_FRAME_SAMPLES);
             let result = if frame.len() == AEC_FRAME_SAMPLES {
-                self.engine.process_capture_10ms_with_reference(render.as_deref(), frame, delay, capture_time)?
+                let mut res = self.engine.process_capture_10ms_with_reference(render.as_deref(), frame, delay, capture_time)?;
+                self.ducking_gate.process_frame_in_place(render.as_deref(), &mut res.samples);
+                res
             } else {
                 self.process_partial_calculation(render.as_deref(), frame, delay, capture_time)?
             };
@@ -127,6 +134,7 @@ impl ProductionEchoCanceller {
             return Err("native AEC returned invalid partial computational frame output".into());
         }
         result.samples.truncate(captured.len());
+        self.ducking_gate.process_frame_in_place(render, &mut result.samples);
         Ok(result)
     }
 
@@ -148,6 +156,7 @@ impl ProductionEchoCanceller {
 
     pub(crate) fn reset(&mut self) -> Result<(), String> {
         self.engine.reset()?;
+        self.ducking_gate.reset();
         self.partial_capture_boundary_pending = false;
         Ok(())
     }
@@ -160,7 +169,9 @@ impl ProductionEchoCanceller {
     pub(super) fn from_verified_aec3_engine_for_test(
         engine: Box<dyn EchoCancellerEngine>,
     ) -> Result<Self, String> {
-        Self::from_verified_aec3_engine(engine)
+        let mut canceller = Self::from_verified_aec3_engine(engine)?;
+        canceller.ducking_gate = PostAecDuckingGate::passthrough();
+        Ok(canceller)
     }
 }
 

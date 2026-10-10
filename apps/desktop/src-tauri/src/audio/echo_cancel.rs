@@ -2,6 +2,7 @@ use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
 
+mod ducking_gate;
 mod production;
 #[cfg(test)]
 mod offline_benchmark;

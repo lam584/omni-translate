@@ -591,3 +591,19 @@ fn malformed_closed_segment_adapter_input_does_not_match_reference_or_admit_nati
         assert!(!adapter.partial_capture_boundary_pending());
     }
 }
+
+#[test]
+fn production_pipeline_exercises_ducking_gate_on_render_activity() {
+    let trace = Arc::new(Mutex::new(Trace::default()));
+    let mut adapter = ProductionEchoCanceller::from_verified_aec3_engine(
+        Box::new(TaggedEngine(trace.clone()))).unwrap();
+    let render = vec![0.5; AEC_FRAME_SAMPLES];
+    let captured = vec![0.0; AEC_FRAME_SAMPLES];
+    for _ in 0..5 {
+        let output = adapter.process_capture_10ms_with_reference(
+            Some(&render), &captured, 0, Instant::now()).unwrap();
+        assert_eq!(output.samples.len(), AEC_FRAME_SAMPLES);
+    }
+    assert!(adapter.ducking_gate.far_end_envelope_db() > -10.0);
+    assert!(adapter.ducking_gate.current_attenuation_db() < 0.0);
+}

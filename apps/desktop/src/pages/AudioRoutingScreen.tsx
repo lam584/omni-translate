@@ -359,7 +359,6 @@ function AudioRoutingPage() {
     const speechPatch: Partial<SpeechDraft> = {
       enabled,
       status: 'draft',
-      translationAudioSource: enabled ? 'subtitle-tts' : 'auto',
     };
     if (!enabled) speechPatch.dispatchState = 'idle';
     patchSpeechDraft(speechPatch);
@@ -398,14 +397,22 @@ function AudioRoutingPage() {
     });
   };
 
+  // The translated-audio master switch (devices.outputSpeechEnabled + speech.enabled) and the
+  // secondary-subtitle TTS source (speech.translationAudioSource) are independent settings.
+  const translatedAudioPlaybackEnabled = Boolean(configDraft.devices.outputSpeechEnabled || configDraft.speech.enabled);
+  const subtitleTtsAudioSourceEnabled = configDraft.speech.translationAudioSource === 'subtitle-tts';
+
   const handleSubtitleCardEnabledToggle = (enabled: boolean) => {
     handleSubtitleOutputToggle(enabled);
-    setSecondaryTranslationModeFromCards(enabled, configDraft.devices.outputSpeechEnabled);
+    setSecondaryTranslationModeFromCards(enabled, subtitleTtsAudioSourceEnabled);
   };
 
   const handleSecondaryAudioCardEnabledToggle = (enabled: boolean) => {
-    handleSpeechOutputToggle(enabled);
+    // Only switches the translated-audio source; never turns translated audio playback off.
     setSecondaryTranslationModeFromCards(configDraft.devices.outputSubtitlesEnabled, enabled);
+    patchSpeechDraft({
+      translationAudioSource: enabled ? 'subtitle-tts' : 'auto',
+    });
   };
 
   const handleInputDeviceChange = (deviceId: string) => {
@@ -579,6 +586,8 @@ function AudioRoutingPage() {
   const inboundScenarioCards: ScenarioCardProps[] = [
     {
       active: true, caption: tWithDefault(t, 'audioRouting.scenarioInboundCaption'), icon: 'headphones',
+      enableChecked: translatedAudioPlaybackEnabled, enableLabel: tWithDefault(t, 'audioRouting.playTranslatedAudioToggle'),
+      onEnabledChange: handleSpeechOutputToggle,
       modelName: inboundModelOption?.displayName ?? '—', modelOptions: inboundModelOptions, modelProvider: inboundModelOption?.description ?? '',
       onSelect: (modelId) => selectModel('inbound', modelId),
       tags: detectScenarioCapabilities(inboundModelOption, 'inbound'), title: tWithDefault(t, 'audioRouting.scenarioInboundTitle'), value: configDraft.devices.inboundVoiceModelId,
@@ -606,7 +615,7 @@ function AudioRoutingPage() {
       tags: detectScenarioCapabilities(subtitleModelOption, 'subtitle'), title: tWithDefault(t, 'audioRouting.scenarioSubtitleTitle'), value: configDraft.devices.subtitleTranslationModelId,
     },
     {
-      caption: tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption'), enabled: configDraft.devices.outputSpeechEnabled,
+      caption: tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption'), enabled: subtitleTtsAudioSourceEnabled,
       enableLabel: tWithDefault(t, 'audioRouting.secondaryAudioCardToggle'), icon: 'wave',
       modelName: inboundSecondaryModelOption?.displayName ?? '—', modelOptions: secondarySttModelOptions, modelProvider: inboundSecondaryModelOption?.description ?? '', mutedHint,
       onEnabledChange: handleSecondaryAudioCardEnabledToggle,

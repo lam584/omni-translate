@@ -379,6 +379,7 @@
     "translationAudioTts": "Subtitle translation TTS mode",
     "translationAudioSecondary": "📝 இரண்டாம் நிலை TTS (\"இரண்டாம் நிலை மொழிபெயர்ப்பு\" உடன் மூலத்தைப் பகிர்கிறது)",
     "secondaryAudioCardToggle": "மொழிபெயர்க்கப்பட்ட வசனங்களைப் பேசு",
+    "playTranslatedAudioToggle": "மொழிபெயர்க்கப்பட்ட ஆடியோவை இயக்கு",
     "subtitleTranslationCardToggle": "வசன மொழிபெயர்ப்பை இயக்கு",
     "cardDisabledHint": "இந்த அட்டை முடக்கப்பட்டுள்ளது · மாடலைத் திருத்த இதை இயக்கவும்",
     "unsupportedNativeAudio": "தற்போதைய மாடல் Omni இயல்பு ஒலியை ஆதரிக்கவில்லை; அமர்வு மூல ஒலியையும் வசனங்களையும் மட்டுமே வைத்திருக்கும்.",

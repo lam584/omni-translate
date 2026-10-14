@@ -379,6 +379,7 @@
     "translationAudioTts": "Dịch phụ đề TTS",
     "translationAudioSecondary": "📝 TTS thứ cấp (chia sẻ nguồn với \"Bản dịch thứ cấp\")",
     "secondaryAudioCardToggle": "Nói phụ đề đã dịch",
+    "playTranslatedAudioToggle": "Phát âm thanh đã dịch",
     "subtitleTranslationCardToggle": "Bật dịch phụ đề",
     "cardDisabledHint": "Thẻ này bị vô hiệu hóa · cho phép nó chỉnh sửa mô hình",
     "unsupportedNativeAudio": "Model hiện tại không hỗ trợ âm thanh gốc Omni; phiên sẽ chỉ giữ lại âm thanh và phụ đề nguồn.",

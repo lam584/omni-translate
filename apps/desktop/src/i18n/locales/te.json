@@ -379,6 +379,7 @@
     "translationAudioTts": "Subtitle translation TTS mode",
     "translationAudioSecondary": "📝 సెకండరీ TTS (\"సెకండరీ అనువాదం\"తో మూలాన్ని పంచుకుంటుంది)",
     "secondaryAudioCardToggle": "అనువదించిన సబ్‌టైటిల్స్‌ను చదివి వినిపించు",
+    "playTranslatedAudioToggle": "అనువదించిన ఆడియోను ప్లే చేయి",
     "subtitleTranslationCardToggle": "సబ్‌టైటిల్ అనువాదాన్ని ప్రారంభించు",
     "cardDisabledHint": "ఈ కార్డ్ నిలిపివేయబడింది · మోడల్‌ను సవరించడానికి దీన్ని ప్రారంభించండి",
     "unsupportedNativeAudio": "ప్రస్తుత మోడల్ Omni స్థానిక ఆడియోకు మద్దతు ఇవ్వదు; సెషన్ మూల ఆడియో మరియు సబ్‌టైటిల్స్ మాత్రమే ఉంచుతుంది.",

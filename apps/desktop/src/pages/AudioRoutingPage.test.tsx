@@ -94,6 +94,16 @@ async function chooseScenarioModel(container: HTMLElement, title: string, modelT
 }
 
 describe('AudioRoutingPage', () => {
+  const selectSubtitleTtsSource = () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        speech: { ...state.configDraft.speech, translationAudioSource: 'subtitle-tts' },
+      },
+    }));
+  };
+
   let view: TestRootHandle;
   let container: HTMLDivElement;
 
@@ -334,6 +344,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('writes independent selections to inbound, outbound, secondary, subtitle, and tts fields', async () => {
+    selectSubtitleTtsSource();
     await renderPage();
 
     await chooseScenarioModel(container, '听对方', 'STT Model');
@@ -416,6 +427,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('derives secondary translation mode from the two secondary card switches', async () => {
+    selectSubtitleTtsSource();
     await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
@@ -533,32 +545,71 @@ describe('AudioRoutingPage', () => {
     expect(owningSection).toBeInstanceOf(HTMLElement);
   });
 
-  it('toggles the secondary audio switch from the scenario card', async () => {
+  it('toggles the secondary audio switch without touching the translated audio master switch', async () => {
+    selectSubtitleTtsSource();
     await renderPage();
 
     const secondaryGroup = container.querySelector('.routing-secondary-group');
     const cardToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次语音识别').querySelector('input[type="checkbox"]'));
     expect(cardToggle.getAttribute('role')).toBe('switch');
     expect(cardToggle.checked).toBe(true);
+    const before = useAppStore.getState().configDraft;
 
     await act(async () => {
       cardToggle.click();
     });
 
-    expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
-    expect(useAppStore.getState().configDraft.devices.outputSpeechEnabled).toBe(false);
-    expect(useAppStore.getState().configDraft.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(false);
-    expect(useAppStore.getState().configDraft.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+    let after = useAppStore.getState().configDraft;
+    expect(after.speech.translationAudioSource).toBe('auto');
+    expect(after.devices.outputSpeechEnabled).toBe(before.devices.outputSpeechEnabled);
+    expect(after.speech.enabled).toBe(before.speech.enabled);
+    expect(after.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(before.devices.inboundRoute.mixControl.translatedAudioEnabled);
+    expect(after.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(before.devices.outboundRoute.mixControl.translatedAudioEnabled);
 
     await act(async () => {
       cardToggle.click();
     });
 
-    expect(useAppStore.getState().configDraft.devices.outputSpeechEnabled).toBe(true);
-    expect(useAppStore.getState().configDraft.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
-    expect(useAppStore.getState().configDraft.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(true);
+    after = useAppStore.getState().configDraft;
+    expect(after.speech.translationAudioSource).toBe('subtitle-tts');
+    expect(after.devices.outputSpeechEnabled).toBe(before.devices.outputSpeechEnabled);
     const secondaryCards = Array.from(secondaryGroup?.querySelectorAll('.scenario-card') ?? []);
     expect(secondaryCards).toHaveLength(2);
+  });
+
+  it('toggles translated audio playback from the listening card without changing the audio source', async () => {
+    await renderPage();
+
+    const playbackLabel = Array.from(container.querySelectorAll('label')).find((item) =>
+      item.textContent?.includes('播放译音'),
+    );
+    expect(playbackLabel).toBeInstanceOf(HTMLElement);
+    const playbackToggle = inputText(playbackLabel?.querySelector('input[type="checkbox"]') ?? null);
+    expect(playbackToggle.getAttribute('role')).toBe('switch');
+    expect(playbackToggle.checked).toBe(true);
+    const sourceBefore = useAppStore.getState().configDraft.speech.translationAudioSource;
+
+    await act(async () => {
+      playbackToggle.click();
+    });
+
+    let draft = useAppStore.getState().configDraft;
+    expect(draft.devices.outputSpeechEnabled).toBe(false);
+    expect(draft.speech.enabled).toBe(false);
+    expect(draft.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+    expect(draft.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+    expect(draft.speech.translationAudioSource).toBe(sourceBefore);
+
+    await act(async () => {
+      playbackToggle.click();
+    });
+
+    draft = useAppStore.getState().configDraft;
+    expect(draft.devices.outputSpeechEnabled).toBe(true);
+    expect(draft.speech.enabled).toBe(true);
+    expect(draft.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
+    expect(draft.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(true);
+    expect(draft.speech.translationAudioSource).toBe(sourceBefore);
   });
 
   it('places the subtitle translation card enable toggle inside the listening model panel', async () => {
@@ -1169,6 +1220,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('exposes scenario toggles as ARIA switches with aria-checked', async () => {
+    selectSubtitleTtsSource();
     await renderPage();
 
     const switches = Array.from(container.querySelectorAll('input[role="switch"]'));
@@ -1843,6 +1895,10 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
   });
 
   it('exposes feature toggles inside their owning scenario cards', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: { ...state.configDraft, speech: { ...state.configDraft.speech, translationAudioSource: 'subtitle-tts' } },
+    }));
     await act(async () => {
       host.root.render(
         <MemoryRouter>
@@ -1853,6 +1909,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
 
     const toggleLabels = Array.from(host.container.querySelectorAll('.scenario-card-head .scenario-card-toggle'));
     expect(toggleLabels.map((node) => node.textContent?.trim())).toEqual(expect.arrayContaining([
+      i18n.t('audioRouting.playTranslatedAudioToggle'),
       i18n.t('audioRouting.subtitleTranslationCardToggle'),
       i18n.t('audioRouting.secondaryAudioCardToggle'),
       i18n.t('audioRouting.sendVoiceToVirtualMic'),
@@ -1860,7 +1917,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     ]));
 
     const switches = toggleLabels.map((label) => label.querySelector('input[type="checkbox"]'));
-    expect(switches).toHaveLength(4);
+    expect(switches).toHaveLength(5);
     for (const node of switches) {
       expect(node?.getAttribute('role')).toBe('switch');
       expect(node?.getAttribute('aria-checked')).toBe('true');
@@ -1910,6 +1967,10 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
   });
 
   it('groups secondary translation cards under card-level switches', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: { ...state.configDraft, speech: { ...state.configDraft.speech, translationAudioSource: 'subtitle-tts' } },
+    }));
     await act(async () => {
       host.root.render(
         <MemoryRouter>

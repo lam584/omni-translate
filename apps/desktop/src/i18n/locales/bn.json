@@ -379,6 +379,7 @@
     "translationAudioTts": "সাবটাইটেল translation TTS",
     "translationAudioSecondary": "📝 Secondary TTS (source ভাগ করে \"Secondary translation\")",
     "secondaryAudioCardToggle": "অনূদিত সাবটাইটেল কণ্ঠে শোনান",
+    "playTranslatedAudioToggle": "অনুবাদিত অডিও চালান",
     "subtitleTranslationCardToggle": "সাবটাইটেল অনুবাদ সক্রিয় করুন",
     "cardDisabledHint": "এই কার্ডটি নিষ্ক্রিয় · মডেল সম্পাদনা করতে এটি সক্রিয় করুন",
     "unsupportedNativeAudio": "বর্তমান মডেল Omni নেটিভ অডিও সমর্থন করে না; সেশনে শুধু মূল অডিও ও সাবটাইটেল থাকবে।",

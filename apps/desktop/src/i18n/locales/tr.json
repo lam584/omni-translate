@@ -379,6 +379,7 @@
     "translationAudioTts": "Altyazı çevirisi TTS",
     "translationAudioSecondary": "📝 İkincil TTS (\"İkincil çeviri\" ile kaynağı paylaşır)",
     "secondaryAudioCardToggle": "Çevrilmiş altyazıları konuş",
+    "playTranslatedAudioToggle": "Çevrilmiş sesi oynat",
     "subtitleTranslationCardToggle": "Altyazı çevirisini etkinleştir",
     "cardDisabledHint": "Bu kart devre dışı bırakıldı · modeli düzenlemek için etkinleştirin",
     "unsupportedNativeAudio": "Mevcut model Omni yerel sesi desteklemiyor; oturum yalnızca kaynak sesi ve altyazıları koruyacaktır.",

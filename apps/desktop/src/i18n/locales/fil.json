@@ -379,6 +379,7 @@
     "translationAudioTts": "Pagsasalin ng subtitle TTS",
     "translationAudioSecondary": "📝 Pangalawang TTS (ibinabahagi ang pinagmulan sa \"Pangalawang pagsasalin\")",
     "secondaryAudioCardToggle": "Magsalita ng mga isinaling subtitle",
+    "playTranslatedAudioToggle": "I-play ang isinaling audio",
     "subtitleTranslationCardToggle": "Paganahin ang pagsasalin ng subtitle",
     "cardDisabledHint": "Ang card na ito ay hindi pinagana · paganahin itong i-edit ang modelo",
     "unsupportedNativeAudio": "Hindi sinusuportahan ng kasalukuyang modelo ang katutubong audio ng Omni; pananatilihin ng session ang pinagmulang audio at mga subtitle lamang.",

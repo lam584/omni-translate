@@ -379,6 +379,7 @@
     "translationAudioTts": "คำบรรยาย การแปล TTS",
     "translationAudioSecondary": "📝 TTS สำรอง (ใช้ต้นทางร่วมกับ \"การแปลสำรอง\")",
     "secondaryAudioCardToggle": "การกำหนดเส้นทางเสียง - เสียง",
+    "playTranslatedAudioToggle": "เล่นเสียงแปล",
     "subtitleTranslationCardToggle": "เปิดใช้การแปลคำบรรยาย",
     "cardDisabledHint": "การ์ดนี้ถูกปิดใช้งาน · เปิดใช้งานเพื่อแก้ไขโมเดล",
     "unsupportedNativeAudio": "ตรวจสอบการตั้งค่าและสถานะของการกำหนดเส้นทางเสียง",

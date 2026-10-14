@@ -379,6 +379,7 @@
     "translationAudioTts": "ترجمة الترجمة TTS",
     "translationAudioSecondary": "📝 ثانوي TTS (يشارك المصدر مع \"الترجمة الثانوية \")",
     "secondaryAudioCardToggle": "نطق الترجمات المترجمة",
+    "playTranslatedAudioToggle": "تشغيل الصوت المترجم",
     "subtitleTranslationCardToggle": "تمكين ترجمة الترجمة",
     "cardDisabledHint": "تم تعطيل هذه البطاقة · قم بتمكينها من تعديل النموذج",
     "unsupportedNativeAudio": "لا يدعم النموذج الحالي الصوت الأصلي Omni ؛ ستحتفظ الجلسة بالصوت المصدر والترجمة فقط.",

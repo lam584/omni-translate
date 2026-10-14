@@ -379,6 +379,7 @@
     "translationAudioTts": "TTS перевода субтитров",
     "translationAudioSecondary": "📝 Secondary TTS (общий источник с \"Secondary translation\")",
     "secondaryAudioCardToggle": "Озвучивать переведённые субтитры",
+    "playTranslatedAudioToggle": "Воспроизводить перевод",
     "subtitleTranslationCardToggle": "Включить перевод субтитров",
     "cardDisabledHint": "Эта карточка отключена · включите её, чтобы изменить модель",
     "unsupportedNativeAudio": "Текущая модель не поддерживает нативный звук Omni; сеанс сохранит только исходный звук и субтитры.",

@@ -379,6 +379,7 @@
     "translationAudioTts": "Traducción de subtítulos TTS",
     "translationAudioSecondary": "📝 Secundario TTS (comparte fuente con \"Traducción secundaria\")",
     "secondaryAudioCardToggle": "Hablar subtítulos traducidos.",
+    "playTranslatedAudioToggle": "Reproducir audio traducido",
     "subtitleTranslationCardToggle": "Habilitar la traducción de subtítulos",
     "cardDisabledHint": "Esta tarjeta está deshabilitada · habilítela para editar el modelo",
     "unsupportedNativeAudio": "El modelo actual no admite audio nativo Omni; La sesión mantendrá el audio original y los subtítulos únicamente.",

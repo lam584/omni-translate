@@ -379,6 +379,7 @@
     "translationAudioTts": "字幕 翻訳 TTS",
     "translationAudioSecondary": "音声ルーティング - 翻訳・音声",
     "secondaryAudioCardToggle": "音声ルーティング - 音声",
+    "playTranslatedAudioToggle": "翻訳音声を再生",
     "subtitleTranslationCardToggle": "音声ルーティング - 字幕・翻訳",
     "cardDisabledHint": "音声ルーティング - 無効・ヒント",
     "unsupportedNativeAudio": "音声ルーティングの設定と状態を確認してください。",

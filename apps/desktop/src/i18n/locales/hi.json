@@ -379,6 +379,7 @@
     "translationAudioTts": "Subtitle translation TTS mode",
     "translationAudioSecondary": "📝 Secondary TTS (source साझा करता है \"Secondary translation\")",
     "secondaryAudioCardToggle": "अनूदित उपशीर्षक बोलें",
+    "playTranslatedAudioToggle": "अनुवादित ऑडियो चलाएँ",
     "subtitleTranslationCardToggle": "उपशीर्षक अनुवाद सक्षम करें",
     "cardDisabledHint": "यह कार्ड अक्षम है · मॉडल संपादित करने के लिए इसे सक्षम करें",
     "unsupportedNativeAudio": "वर्तमान मॉडल Omni नेटिव ऑडियो का समर्थन नहीं करता; सत्र में केवल स्रोत ऑडियो और उपशीर्षक रहेंगे।",

@@ -379,6 +379,7 @@
     "translationAudioTts": "자막 번역 TTS",
     "translationAudioSecondary": "📝 보조 TTS (\"보조 번역\"과 소스 공유)",
     "secondaryAudioCardToggle": "오디오 라우팅 - 오디오",
+    "playTranslatedAudioToggle": "번역 오디오 재생",
     "subtitleTranslationCardToggle": "자막 번역 사용",
     "cardDisabledHint": "이 카드는 비활성화되어 있습니다 · 모델을 편집하려면 활성화하세요",
     "unsupportedNativeAudio": "오디오 라우팅 설정과 상태를 확인하세요.",

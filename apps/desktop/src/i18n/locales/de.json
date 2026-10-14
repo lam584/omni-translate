@@ -379,6 +379,7 @@
     "translationAudioTts": "Untertitelübersetzung TTS",
     "translationAudioSecondary": "📝 Sekundäres TTS (teilt die Quelle mit „Sekundäre Übersetzung“)",
     "secondaryAudioCardToggle": "Sprechen Sie übersetzte Untertitel",
+    "playTranslatedAudioToggle": "Übersetztes Audio abspielen",
     "subtitleTranslationCardToggle": "Untertitelübersetzung aktivieren",
     "cardDisabledHint": "Diese Karte ist deaktiviert. Aktivieren Sie sie, um das Modell zu bearbeiten",
     "unsupportedNativeAudio": "Das aktuelle Modell unterstützt kein natives Omni-Audio. In der Sitzung bleiben nur Quellaudio und Untertitel erhalten.",

@@ -366,6 +366,7 @@
     "translationAudioTts": "字幕二次 TTS",
     "translationAudioSecondary": "📝 二次字幕译音（使用「字幕翻译」结果做 TTS）",
     "secondaryAudioCardToggle": "用二次字幕生成译音",
+    "playTranslatedAudioToggle": "播放译音",
     "subtitleTranslationCardToggle": "启用字幕翻译",
     "cardDisabledHint": "此卡已停用 · 启用后可编辑模型",
     "unsupportedNativeAudio": "当前模型不支持 Omni 直接译音，会话将仅保留原声和字幕。",

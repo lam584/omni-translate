@@ -379,6 +379,7 @@
     "translationAudioTts": "Tradução de legendas TTS",
     "translationAudioSecondary": "📝 TTS secundário (compartilha a fonte com \"Tradução secundária\")",
     "secondaryAudioCardToggle": "Fale legendas traduzidas",
+    "playTranslatedAudioToggle": "Reproduzir áudio traduzido",
     "subtitleTranslationCardToggle": "Ativar tradução de legendas",
     "cardDisabledHint": "Este cartão está desabilitado · habilite-o para editar o modelo",
     "unsupportedNativeAudio": "O modelo atual não oferece suporte a áudio nativo Omni; sessão manterá apenas o áudio de origem e as legendas.",

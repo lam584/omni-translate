@@ -379,6 +379,7 @@
     "translationAudioTts": "Subtitel Terjemahan TTS",
     "translationAudioSecondary": "📝 Secondary TTS (shares Sumber with \"Secondary Terjemahan\")",
     "secondaryAudioCardToggle": "Speak translated Subtitel",
+    "playTranslatedAudioToggle": "Putar audio terjemahan",
     "subtitleTranslationCardToggle": "Enable Subtitel Terjemahan",
     "cardDisabledHint": "This card is Nonaktif · enable it to edit the Model",
     "unsupportedNativeAudio": "Saat ini Model does not support Omni native Audio; session will keep Sumber Audio and Subtitel only.",

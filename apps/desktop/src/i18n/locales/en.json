@@ -366,6 +366,7 @@
     "translationAudioTts": "Subtitle translation TTS",
     "translationAudioSecondary": "📝 Secondary TTS (shares source with \"Secondary translation\")",
     "secondaryAudioCardToggle": "Speak translated subtitles",
+    "playTranslatedAudioToggle": "Play translated audio",
     "subtitleTranslationCardToggle": "Enable subtitle translation",
     "cardDisabledHint": "This card is disabled · enable it to edit the model",
     "unsupportedNativeAudio": "Current model does not support Omni native audio; session will keep source audio and subtitles only.",

@@ -494,7 +494,9 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
             ));
         }
     }
-    if snapshot.process_status != "running" || snapshot.bridge_state != "running" {
+    if snapshot.process_status != "running"
+        || (!matches!(snapshot.bridge_state.as_str(), "running" | "degraded"))
+    {
         log_error!(
             app,
             "bridge",
@@ -558,22 +560,47 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     let header_bytes = serde_json::to_vec(&header).map_err(|error| {
         close_failed_translation_cue(app, cue_id, physical_owner.as_ref(), error.to_string())
     })?;
-    let mut audio_pipe = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&snapshot.audio_pipe_path)
-        .map_err(|error| {
-            close_failed_translation_cue(
-                app,
-                cue_id,
-                physical_owner.as_ref(),
-                translation_write_error_for_owner(
+    let mut audio_pipe = {
+        let mut last_error = None;
+        let mut opened = None;
+        for attempt in 0..10 {
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&snapshot.audio_pipe_path)
+            {
+                Ok(pipe) => {
+                    opened = Some(pipe);
+                    break;
+                }
+                Err(error) => {
+                    let is_retryable = error.kind() == std::io::ErrorKind::NotFound
+                        || error.raw_os_error() == Some(2);
+                    last_error = Some(error);
+                    if !is_retryable || attempt == 9 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+        match opened {
+            Some(pipe) => pipe,
+            None => {
+                let error = last_error.unwrap();
+                return Err(close_failed_translation_cue(
+                    app,
+                    cue_id,
                     physical_owner.as_ref(),
-                    &bridge_state.snapshot(),
-                    format!("Bridge audio pipe open failed: {}", error),
-                ),
-            )
-        })?;
+                    translation_write_error_for_owner(
+                        physical_owner.as_ref(),
+                        &bridge_state.snapshot(),
+                        format!("Bridge audio pipe open failed: {}", error),
+                    ),
+                ));
+            }
+        }
+    };
     audio_pipe
         .write_all(&(header_bytes.len() as u32).to_le_bytes())
         .and_then(|_| audio_pipe.write_all(&header_bytes))

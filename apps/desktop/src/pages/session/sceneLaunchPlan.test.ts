@@ -39,6 +39,7 @@ describe('buildSceneLaunchPlan', () => {
           virtualMicOutputEnabled: false,
         });
         expect(plan.config.speech.outputTarget).toBe('speaker');
+        expect(plan.config.speech.virtualMicOutputEnabled).toBe(false);
       }
     });
   }

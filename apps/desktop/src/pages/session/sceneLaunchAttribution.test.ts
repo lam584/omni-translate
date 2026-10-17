@@ -122,7 +122,7 @@ describe('describeSceneLaunchAttribution', () => {
   it.each([
     [null, ''],
     [{ message: ' object detail ' }, 'object detail'],
-    [{ code: 7 }, '[object Object]'],
+    [{ code: 7 }, '{"code":7}'],
     [42, '42'],
   ])('normalizes non-Error launch details from %o', (error, expected) => {
     const result = describeSceneLaunchAttribution({

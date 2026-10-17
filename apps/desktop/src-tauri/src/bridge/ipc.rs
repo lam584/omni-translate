@@ -150,15 +150,13 @@ pub(crate) fn initialize_bridge(
             } else {
                 "error".to_string()
             };
-            next.process_status = if next.bridge_state == "running" {
-                "running".to_string()
-            } else {
-                "error".to_string()
-            };
+            next.process_status = "running".to_string();
             next.install_phase = if next.bridge_state == "running" {
                 "ready".to_string()
+            } else if next.driver_health == "not-installed" {
+                "planned".to_string()
             } else {
-                "rollback-required".to_string()
+                "ready".to_string()
             };
             next.last_handshake_at = Some(crate::shared::time::now_unix_seconds_marker());
             if next.source_capture_mode == super::contracts::SourceCaptureMode::ProcessExclusion

@@ -566,38 +566,34 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', expect.stringContaining('refresh error'));
   });
 
-  it('installs a missing Bridge driver and publishes the returned runtime snapshot', async () => {
+  it('starts the Bridge service when driver is not installed without forcing driver install', async () => {
     mocks.watchNeedsBridge.mockReturnValue(true);
     const missing = readyRuntime({ driverHealth: 'not-installed', bridgeState: 'stopped' });
     mocks.refreshBridge.mockResolvedValue(missing);
-    const installed = readyRuntime();
-    mocks.installBridge.mockResolvedValue(installed);
+    const started = readyRuntime({ driverHealth: 'not-installed' });
+    mocks.startBridge.mockResolvedValue(started);
     const { api, controller } = makeHarness();
 
-    await expect(api.ensureBridgeReady('voice-room', structuredClone(appConfigDraftMock))).resolves.toBe(installed);
-    expect(mocks.installBridge).toHaveBeenCalledWith(expect.objectContaining({ devices: expect.any(Object) }));
-    expect(controller.setRuntimeSnapshot).toHaveBeenLastCalledWith(installed);
+    await expect(api.ensureBridgeReady('voice-room', structuredClone(appConfigDraftMock))).resolves.toBe(started);
+    expect(mocks.startBridge).toHaveBeenCalledWith(expect.objectContaining({ devices: expect.any(Object) }));
+    expect(mocks.installBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenLastCalledWith(started);
   });
 
-  it.each([
-    ['rollback-driver', 'rollback-driver'],
-    ['restart-bridge', 'restart-bridge'],
-    ['none', 'reinstall-driver'],
-  ] as const)('maps recommended action %s to repair IPC action %s', async (recommendedAction, expectedAction) => {
+  it('starts the Bridge service without blocking on driver repair when driver is damaged', async () => {
     mocks.watchNeedsBridge.mockReturnValue(true);
     const unhealthy = readyRuntime({
       driverHealth: 'damaged',
       bridgeState: 'stopped',
-      recommendedAction: recommendedAction === 'none' ? null : recommendedAction,
     });
     mocks.refreshBridge.mockResolvedValue(unhealthy);
-    const repaired = readyRuntime();
-    mocks.repairBridge.mockResolvedValue(repaired);
+    const started = readyRuntime({ driverHealth: 'damaged' });
+    mocks.startBridge.mockResolvedValue(started);
     const { api } = makeHarness();
 
-    await api.ensureBridgeReady('voice-room', structuredClone(appConfigDraftMock));
-    expect(mocks.repairBridge).toHaveBeenCalledWith(expectedAction, expect.any(Object));
-    expect(mocks.startBridge).not.toHaveBeenCalled();
+    await expect(api.ensureBridgeReady('voice-room', structuredClone(appConfigDraftMock))).resolves.toBe(started);
+    expect(mocks.startBridge).toHaveBeenCalledWith(expect.objectContaining({ devices: expect.any(Object) }));
+    expect(mocks.repairBridge).not.toHaveBeenCalled();
   });
 
   it('starts the Bridge service when the driver is healthy but the process is stopped', async () => {

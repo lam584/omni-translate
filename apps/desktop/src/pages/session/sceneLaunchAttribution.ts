@@ -1,3 +1,4 @@
+import { describeRuntimeError } from "../../utils/runtime-error-text";
 import i18n from "../../i18n/config";
 import type { AudioRuntimeSnapshot } from "../../schema/audio-runtime";
 import type { DiagnosticLogEntryRuntime } from "../../schema/runtime-core";
@@ -65,13 +66,8 @@ const STAGE_LABEL_KEYS: Record<SceneLaunchStage, string> = {
 };
 
 function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message.trim();
   if (error == null) return "";
-  if (typeof error === "object") {
-    const candidate = error as { message?: unknown };
-    if (typeof candidate.message === "string") return candidate.message.trim();
-  }
-  return String(error).trim();
+  return describeRuntimeError(error).trim();
 }
 
 function hasMarker(recentLogs: DiagnosticLogEntryRuntime[], markers: readonly string[]): boolean {

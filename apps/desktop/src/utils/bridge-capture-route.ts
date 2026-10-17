@@ -23,5 +23,5 @@ export function bridgeCaptureRouteMatches(
 }
 
 export function bridgeProcessIsRunning(bridge: RuntimeSnapshot['bridge']): boolean {
-  return bridge.processStatus === 'running' && bridge.bridgeState === 'running';
+  return bridge.processStatus === 'running' && bridge.bridgeState !== 'stopped';
 }

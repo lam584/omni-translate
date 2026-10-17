@@ -18,15 +18,14 @@ import {
   stopTranslateWorkerRuntime,
 } from '../../runtime/audio-runtime';
 import {
-  installDriverRuntime,
   refreshBridgeRuntime,
-  repairDriverRuntime,
   startBridgeServiceRuntime,
 } from '../../runtime/bridge-runtime';
 import { appendFrontendDiagnosticsLog, getRecentDiagnosticsLogsRuntime } from '../../runtime/diagnostics-runtime';
 import type { SceneMode } from '../../utils/scene-readiness';
 import type { ResolvedRealtimeProfile } from '../../utils/realtime-profile';
 import { watchModeNeedsBridge } from '../../utils/scene-readiness';
+import { describeRuntimeError } from '../../utils/runtime-error-text';
 import { stringifyRedacted } from '../../utils/redact-sensitive-data';
 import { extractSessionErrorCode } from '../../utils/session-error-presentation';
 import { resolveAecCapability } from '../../utils/aec-capability';
@@ -85,7 +84,7 @@ async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMs: numbe
   const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
   const timerId = setTimeout(() => {
     void onTimeout().catch((error) => {
-      appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] timeout cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] timeout cleanup failed: ${describeRuntimeError(error)}`);
     });
     rejectTimeout(sceneLaunchTimeoutError(timeoutMessage));
   }, timeoutMs);
@@ -237,24 +236,11 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       appendFrontendDiagnosticsLog(
         'runtime',
         'warning',
-        `[BridgeReady] refresh failed, proceeding with cached snapshot: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`,
+        `[BridgeReady] refresh failed, proceeding with cached snapshot: ${describeRuntimeError(refreshError)}`,
       );
       latestRuntime = currentRuntime;
     }
 
-    if (latestRuntime.bridge.driverHealth === 'not-installed') {
-      latestRuntime = await installDriverRuntime(nextConfig);
-      publishBridgeRuntime(latestRuntime);
-    }
-    if (latestRuntime.bridge.driverHealth !== 'running') {
-      const repairAction = latestRuntime.bridge.recommendedAction === 'rollback-driver'
-        ? 'rollback-driver' as const
-        : latestRuntime.bridge.recommendedAction === 'restart-bridge'
-          ? 'restart-bridge' as const
-          : 'reinstall-driver' as const;
-      latestRuntime = await repairDriverRuntime(repairAction, nextConfig);
-      publishBridgeRuntime(latestRuntime);
-    }
     if (!bridgeProcessIsRunning(latestRuntime.bridge)
       || !bridgeCaptureRouteMatches(latestRuntime.bridge, feedbackMode)) {
       const started = await startBridgeServiceRuntime(nextConfig);
@@ -284,7 +270,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         nativeSnapshot = await getAudioRuntimeSnapshotRuntime();
         setAudioSnapshot(nativeSnapshot);
       } catch (error) {
-        appendFrontendDiagnosticsLog('runtime', 'warning', `[StopAll] native snapshot refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+        appendFrontendDiagnosticsLog('runtime', 'warning', `[StopAll] native snapshot refresh failed: ${describeRuntimeError(error)}`);
       }
       // A route needs a native stop not only when its stream is bound, but for
       // the whole accepted-but-converging window (armed/buffering/…): native
@@ -315,7 +301,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         try {
           setAudioSnapshot(await action());
         } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
+          const detail = describeRuntimeError(error);
           appendFrontendDiagnosticsLog('runtime', 'error', `[StopAll] ${label} stop failed: ${detail}`);
           pushNotification({
             id: `stop-${label}-${Date.now()}`,
@@ -341,7 +327,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
   };
 
   const startWatchFallback = async (options: SceneLaunchOptions, fallback: 'subtitles-only' | 'aec', originalError: unknown) => {
-    const originalErrorMessage = originalError instanceof Error ? originalError.message : String(originalError);
+    const originalErrorMessage = describeRuntimeError(originalError);
     appendFrontendDiagnosticsLog('runtime', 'warning', `[WatchFallback] fallback strategy: ${fallback}`, stringifyRedacted({
       originalError: originalErrorMessage,
       bridge: runtimeSnapshot.bridge,
@@ -569,7 +555,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             controller.setAudioSnapshot(await cancelOmniPreconnectRuntime());
           },
           onPreconnectWarning: (error) => {
-            preconnectWarning = i18n.t('session.preconnectFailedFallback', { error: error instanceof Error ? error.message : String(error) });
+            preconnectWarning = i18n.t('session.preconnectFailedFallback', { error: describeRuntimeError(error) });
             appendFrontendDiagnosticsLog('runtime', 'warning', `[WatchPreconnect] ${preconnectWarning}`);
           },
           executeStage: async (stage) => {
@@ -713,17 +699,17 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           const typedFallbackError = fallbackError as SceneLaunchError & { fallbackStage: SceneLaunchStage | null };
           const fallbackCause = typedFallbackError.cause;
           appendFrontendDiagnosticsLog('runtime', 'error', '[WatchFallback] fallback failed', stringifyRedacted({
-            originalError: launchError instanceof Error ? launchError.message : String(launchError),
+            originalError: describeRuntimeError(launchError),
             fallback,
             fallbackStage: typedFallbackError.fallbackStage,
-            fallbackError: fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause),
+            fallbackError: describeRuntimeError(fallbackCause),
             nativeSnapshot,
           }));
           controller.pushNotification({
             id: `watch-fallback-failed-${Date.now()}`,
             level: 'error',
             source: 'session',
-            message: tagSceneLaunchError(i18n.t('session.watchFallbackFailed', { fallback, cause: fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause) }), 'session.launch-stage-failed'),
+            message: tagSceneLaunchError(i18n.t('session.watchFallbackFailed', { fallback, cause: describeRuntimeError(fallbackCause) }), 'session.launch-stage-failed'),
             emittedAt: new Date().toISOString(),
           });
         }
@@ -734,7 +720,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           id: `scene-overlay-${mode}-${Date.now()}`,
           level: 'error',
           source: 'session',
-          message: tagSceneLaunchError(i18n.t('session.overlayOpenFailed', { error: launchError instanceof Error ? launchError.message : String(launchError) }), 'session.launch-stage-failed'),
+          message: tagSceneLaunchError(i18n.t('session.overlayOpenFailed', { error: describeRuntimeError(launchError) }), 'session.launch-stage-failed'),
           emittedAt: new Date().toISOString(),
         });
       }

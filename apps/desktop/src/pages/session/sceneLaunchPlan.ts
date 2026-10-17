@@ -67,7 +67,7 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
     speech: {
       ...input.configDraft.speech,
       ...input.speechPatch,
-      ...(input.mode === 'watch' ? { outputTarget: 'speaker' as const } : {}),
+      ...(input.mode === 'watch' ? { outputTarget: 'speaker' as const, virtualMicOutputEnabled: false } : {}),
     },
   };
   // Every Watch launch converges the Bridge capture backend before binding the

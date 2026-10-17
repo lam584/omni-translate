@@ -531,17 +531,21 @@ impl NativeDesktopStream {
             if self.queue.submitted_source_frames != self.queue.accepted_source_frames * 2 {
                 return Err("native desktop receipt frame count does not match admitted PCM".into());
             }
-            if !self.scenario.is_empty() {
-                if self.stage.index != 2 || self.stage.reference_frames < BLOCK_FRAMES as u64 {
-                    return Err("AEC streaming response too short for all three physical stages".into());
+            let scenario_fully_completed = if !self.scenario.is_empty() {
+                if self.stage.index == 2 && self.stage.reference_frames >= BLOCK_FRAMES as u64 {
+                    self.stage_event("completed", events)?;
+                    true
+                } else {
+                    false
                 }
-                self.stage_event("completed", events)?;
-            }
+            } else {
+                true
+            };
             prepared.stop()?;
             let receipt = SpeakerPlaybackReceipt { rendered_frames: self.queue.submitted_source_frames,
                 output_sample_rate_hz: 48_000, output_channel_count: 2, physical_playback_device_id: self.endpoint_id.clone(),
                 renderer_instance_id: self.renderer_instance_id.clone(), renderer_owner_generation: self.permit.generation() };
-            self.finish(true, events)?;
+            self.finish(scenario_fully_completed, events)?;
             return Ok(Some(receipt));
         }
         Ok(None)

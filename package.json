@@ -126,7 +126,8 @@
     "test:watch-mode-aec-retained-correlation": "node --test ./scripts/testing/watch-mode-retained-pcm-correlation.test.mjs",
     "sync:bailian-models": "node ./scripts/release/sync-bailian-models.mjs",
     "verify:bailian-models": "node ./scripts/release/sync-bailian-models.mjs --check",
-    "test:bailian-models": "node --test ./scripts/testing/sync-bailian-models.test.mjs"
+    "test:bailian-models": "node --test ./scripts/testing/sync-bailian-models.test.mjs",
+    "build:installer": "node ./scripts/release/build-installer-gui.mjs"
   },
   "devDependencies": {
     "ajv": "^8.20.0"

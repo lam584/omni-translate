@@ -201,7 +201,7 @@ impl CapturePipeline {
 
     /// Shared production reset phase, called before new-packet clock preparation.
     /// No reset side effect is allowed while the retained prefix is still queued.
-    pub(super) fn reset_capture_boundary(&mut self, store: &AudioStateStore, direction: &str,
+    pub(super) fn reset_capture_boundary(&mut self, app: Option<&AppHandle>, store: &AudioStateStore, direction: &str,
         producer_guard: &crate::audio::state::NativeCaptureProducerGuard) -> Result<(), String> {
         if !(store.echo_partial_capture_boundary_pending()
             || self.time_segments.as_ref().is_some_and(CapturePacketSegments::reset_required)) {
@@ -219,6 +219,15 @@ impl CapturePipeline {
             self.record_aec_reset_receipt(store, direction, producer_guard,
                 reason, reset_before, &reset_result);
             reset_result?;
+            if let Some(app) = app {
+                diag_log_detail(
+                    app,
+                    "audio",
+                    ECHO_CANCEL_RESET_DIAGNOSTIC_LEVEL,
+                    "event=echo_cancel_reset",
+                    format!("direction={} reason={} renderDiscontinuityId={}", direction, reason, clock.discontinuity_count),
+                );
+            }
             if let Some(segments) = &mut self.time_segments { segments.acknowledge_reset()?; }
         Ok(())
     }
@@ -232,7 +241,7 @@ impl CapturePipeline {
         producer_guard: &crate::audio::state::NativeCaptureProducerGuard,
     ) -> Result<(), String> {
         if captured_frames > 0 && spec.echo_cancel_enabled() {
-            self.reset_capture_boundary(store, direction, producer_guard)?;
+            self.reset_capture_boundary(Some(app), store, direction, producer_guard)?;
         }
         if captured_frames > 0 && spec.echo_cancel_enabled()
         {

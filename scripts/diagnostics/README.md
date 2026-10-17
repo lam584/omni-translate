@@ -102,3 +102,49 @@ Benchmark JSON is local diagnostic output and can include input paths, credentia
 lookup names, provider errors, and raw model output. Keep `benchmark-report*.json`
 files local; the repository ignores them. If documentation needs an example, use
 a small hand-authored sample containing only synthetic paths, errors, and text.
+
+## AEC Benchmark (`aec` subcommand)
+
+The standalone benchmark tool includes a fully automated AEC (Acoustic Echo Cancellation) benchmark suite supporting both offline acoustic validation and online real-time LLM evaluation.
+
+### Offline Mode
+
+Evaluate ERLE echo attenuation, near-end double-talk preservation, energy coverage, and unexplained residual thresholds using the shared strict dual-reference closed-loop algorithm (`omni-benchmark-core::aec`).
+
+1. **Batch Manifest Suite** (runs all frozen acoustic cases: echo-only, source-only, double-talk, dynamic-80, nonlinear-160, tail-window, c03-three-stage, wrong-reference):
+   ```powershell
+   cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- aec --offline --manifest artifacts/testing/aec-offline-benchmark/v1/inputs/manifest.json
+   ```
+
+2. **Single Closed-Loop Case** (accepts 48 kHz mono `.wav` or `.f32le` files):
+   ```powershell
+   cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- aec --offline `
+     --pre <path/to/pre.pcm> `
+     --post <path/to/post.pcm> `
+     --source <path/to/source.pcm> `
+     --physical <path/to/physical.pcm>
+   ```
+
+### Online Mode (Real-Time LLM Streaming)
+
+Stream processed or reference audio through real-time LLM providers (e.g. DashScope / Bailian Realtime WebSocket API) to benchmark speech recognition and translation latency, TTFT, TTFC, and transcript fidelity. Supports model swapping via `--model`.
+
+1. **Online Benchmark with `qwen3.8-livetranslate-flash-realtime`**:
+   ```powershell
+   cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- aec --online `
+     --model qwen3.8-livetranslate-flash-realtime `
+     --protocol dashscope-livetranslate `
+     --base-url wss://llm-n2sq9uh7eu7ajw5f.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime `
+     --audio artifacts/testing/aec-offline-benchmark/v1/inputs/echo-only/render.wav `
+     --credential-ref credential://provider/dashscope/default `
+     --json
+   ```
+
+2. **Online Benchmark with `qwen3.5-livetranslate-flash-realtime`**:
+   ```powershell
+   cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- aec --online `
+     --model qwen3.5-livetranslate-flash-realtime `
+     --protocol dashscope-livetranslate `
+     --audio artifacts/testing/aec-offline-benchmark/v1/inputs/echo-only/render.wav `
+     --credential-ref credential://provider/dashscope/default
+   ```

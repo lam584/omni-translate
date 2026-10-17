@@ -39,9 +39,14 @@ pub fn read_audio_with_info(path: &PathBuf) -> Result<AudioDecodeResult, String>
             let s = read_pcm16_mono_samples(path)?;
             (s, 16_000u32, 1u16)
         }
+        "f32le" => {
+            let s = read_f32le_mono_samples(path)?;
+            let rate = 48_000u32;
+            (resample_to_16k(&s, rate), rate, 1u16)
+        }
         other => {
             return Err(format!(
-                "unsupported audio extension '{}'; expected .mp3, .wav, .pcm, .s16le, or .raw",
+                "unsupported audio extension '{}'; expected .mp3, .wav, .pcm, .s16le, .raw, or .f32le",
                 if other.is_empty() { "(none)" } else { other }
             ))
         }
@@ -118,13 +123,28 @@ fn read_pcm16_mono_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
         .collect())
 }
 
-struct WavAudio {
-    samples: Vec<f32>,
-    sample_rate: u32,
-    channels: u16,
+fn read_f32le_mono_samples(path: &PathBuf) -> Result<Vec<f32>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read f32le '{}': {e}", path.display()))?;
+    if bytes.len() % 4 != 0 {
+        return Err(format!(
+            "f32le file '{}' has invalid byte length {}; expected 4-byte aligned float32",
+            path.display(),
+            bytes.len()
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect())
 }
 
-fn parse_wav(bytes: &[u8]) -> Result<WavAudio, String> {
+pub(crate) struct WavAudio {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) channels: u16,
+}
+
+pub(crate) fn parse_wav(bytes: &[u8]) -> Result<WavAudio, String> {
     if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err("not a RIFF/WAVE file".to_string());
     }

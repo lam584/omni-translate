@@ -10,6 +10,20 @@
       "../../../target/release/omni-bridge-service.exe": "bridge-service-native/omni-bridge-service.exe",
       "../../../target/release/omni-driver-audio-probe.exe": "bridge-service-native/omni-driver-audio-probe.exe",
       "../../../target/release/omni-virtual-mic-target-capture.exe": "bridge-service-native/omni-virtual-mic-target-capture.exe"
+    },
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
     }
-  }
+  },
+  "mainBinaryName": "omni-desktop-shell"
 }

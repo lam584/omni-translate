@@ -179,7 +179,7 @@ fn parse_batch_args(args: &[String]) -> Result<BatchArgs, String> {
 
 // ──────────────────────────────── Single Parsing ───────────────────────────
 
-fn parse_single_args(args: &[String]) -> Result<Config, String> {
+pub(crate) fn parse_single_args(args: &[String]) -> Result<Config, String> {
     let mut audio_path: Option<PathBuf> = None;
     let mut model = DEFAULT_MODEL.to_string();
     let mut base_url: Option<String> = None;
@@ -375,3 +375,4 @@ mod tests {
     }
 
 }
+

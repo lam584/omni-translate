@@ -571,10 +571,6 @@ export function BenchmarkReportDetail({
           <BenchmarkMetric label={i18n.t('diagnostics.benchmark.vadSpeechStart')} value={isManualMode ? i18n.t('diagnostics.benchmark.notApplicable') : fmt(run.speechStartedMs)} />
           <BenchmarkMetric label={i18n.t('diagnostics.benchmark.vadSpeechEnd')} value={isManualMode ? i18n.t('diagnostics.benchmark.notApplicable') : fmt(run.speechStoppedMs)} />
           <BenchmarkMetric label={i18n.t('diagnostics.benchmark.streamingAsrEvents')} value={asrEventCount} />
-          <div className="benchmark-metric benchmark-metric-wide">
-            <span>{i18n.t('diagnostics.benchmark.asrFinalText')}</span>
-            <small className="benchmark-text-preview">{asrFinal || i18n.t('diagnostics.benchmark.none')}</small>
-          </div>
         </div>
       </div>
       <div className="benchmark-section">
@@ -607,12 +603,10 @@ export function BenchmarkReportDetail({
         <h4>{i18n.t('diagnostics.benchmark.liveAndFinalOutput', { count: translationChars })}</h4>
         <div className="benchmark-translation">{fullTranslation || i18n.t(benchmarkState === 'failed' ? 'diagnostics.benchmark.failedNoOutput' : benchmarkState === 'running' ? 'diagnostics.benchmark.waitingOutput' : 'diagnostics.benchmark.completedNoOutput')}</div>
       </div>
-      {outputSegments.length > 0 ? (
-        <div className="benchmark-section">
-          <h4>{i18n.t('diagnostics.benchmark.segmentedOutput', { count: outputSegments.length })}</h4>
-          <div className="benchmark-translation">{segmentedOutput}</div>
-        </div>
-      ) : null}
+      <div className="benchmark-section">
+        <h4>{i18n.t('diagnostics.benchmark.asrFinalText')}</h4>
+        <div className="benchmark-translation">{asrFinal || i18n.t('diagnostics.benchmark.none')}</div>
+      </div>
 
       {textOutputDeltas.length > 0 ? (
         <DeltaTableSection

@@ -299,11 +299,14 @@ function resolveSceneSpeechPatch(
     };
   }
 
+  const hasTtsOption = Boolean(configDraft.devices.textToSpeechModelId || configDraft.devices.inboundSecondaryAudioModelId);
+  const watchSpeechEnabled = speechEnabled && (realtimeProfile.speechDispatchPolicy === 'native-audio' || hasTtsOption);
+
   return {
-    enabled: realtimeProfile.speechDispatchPolicy === 'native-audio' ? speechEnabled : false,
-    outputTarget: configDraft.speech?.outputTarget ?? ('speaker' as const),
-    localPlaybackEnabled: configDraft.speech?.localPlaybackEnabled ?? true,
-    virtualMicOutputEnabled: configDraft.speech?.virtualMicOutputEnabled ?? false,
+    enabled: mode === 'watch' ? watchSpeechEnabled : (realtimeProfile.speechDispatchPolicy === 'native-audio' ? speechEnabled : false),
+    outputTarget: 'speaker' as const,
+    localPlaybackEnabled: true,
+    virtualMicOutputEnabled: false,
     status: 'ready' as const,
   };
 }

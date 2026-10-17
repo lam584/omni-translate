@@ -66,17 +66,14 @@ pub(crate) fn resolve_model_provider_from_config(
 }
 
 fn apply_strict_watch_endpoint_override(mut provider: ProviderDraftInput) -> ProviderDraftInput {
-    if std::env::var("OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY")
-        .ok()
-        .as_deref()
-        != Some("1")
-        || provider.model != "qwen3.8-livetranslate-flash-realtime"
+    if provider.model != "qwen3.8-livetranslate-flash-realtime"
         || provider.provider_id != "provider-dashscope"
         || provider.template_id != "template-dashscope-realtime"
     {
         return provider;
     }
-    let host = std::env::var("OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST").unwrap_or_default();
+    let host = std::env::var("OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST")
+        .unwrap_or_else(|_| "llm-n2sq9uh7eu7ajw5f.cn-beijing.maas.aliyuncs.com".to_string());
     let valid_host = host.ends_with(".cn-beijing.maas.aliyuncs.com")
         && !host.contains('/')
         && !host.contains(':')

@@ -238,6 +238,20 @@ pub(super) fn process_native_desktop_stream<R: tauri::Runtime>(
     })();
     match result {
         Ok(receipt) => {
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[AUDIO] speaker playback completed: cue_id={cue_id} frames={} sample_rate_hz={} channels={} physical_playback_device_id={} renderer_instance_id={} renderer_owner_generation={}",
+                    receipt.rendered_frames,
+                    receipt.output_sample_rate_hz,
+                    receipt.output_channel_count,
+                    receipt.physical_playback_device_id,
+                    receipt.renderer_instance_id,
+                    receipt.renderer_owner_generation,
+                ),
+            );
             { let mut current = timeline.borrow_mut(); current.accepted_source_frames = output_pcm.len() as u64;
                 current.rendered_frames = receipt.rendered_frames; }
             let render_attempt_id = format!("{}:{}:{}:{cue_id}:{created_at_ms}", receipt.renderer_instance_id,

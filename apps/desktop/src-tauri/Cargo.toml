@@ -2,6 +2,7 @@
 name = "omni-desktop-shell"
 version = "0.1.0"
 edition = "2021"
+default-run = "omni-desktop-shell"
 license = "Apache-2.0"
 
 [features]

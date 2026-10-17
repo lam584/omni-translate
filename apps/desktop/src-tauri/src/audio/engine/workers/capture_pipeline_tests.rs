@@ -308,14 +308,14 @@ fn production_time_boundary_remains_enabled_without_diagnostic_tap() {
     assert_eq!(receipt.old_segment_start_qpc_100ns, 1_000_000);
     assert_eq!(receipt.old_segment_end_device_frame_index, 2496);
     assert_eq!(receipt.next_packet_device_frame_index, 3360);
-    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+    assert!(pipeline.reset_capture_boundary(None, &store, "inbound", &guard).unwrap_err()
         .contains("retained prefix dequeue"));
     assert_eq!(guard.diagnostic_owner_identity().1, 0);
     let before = queue.len();
     let old = pipeline.take_boundary_prefix(&mut queue, permit).unwrap();
     assert_eq!(old, f32_stereo_to_bytes(&vec![0.25; 96 * 2]));
     assert_eq!(queue, VecDeque::from(f32_stereo_to_bytes(&vec![0.75; 480 * 2])));
-    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+    assert!(pipeline.reset_capture_boundary(None, &store, "inbound", &guard).unwrap_err()
         .contains("retained prefix dequeue"));
     assert!(pipeline.observe_dequeue(&store, "inbound", &guard, before, queue.len(),
         Some(old.len()), "packet-boundary", None, 1).unwrap().is_none());
@@ -347,13 +347,13 @@ fn production_boundary_reset_failure_cannot_authorize_new_segment_dequeue() {
     let dequeue = pipeline.observe_dequeue(&store, "inbound", &guard, before, queue.len(),
         Some(old.len()), "packet-boundary", None, 1).unwrap().unwrap();
     assert_eq!(dequeue.chunk_range(0, old.len()).unwrap().0.end, old.len() as u64);
-    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err().contains("AEC/dispatch completion"));
+    assert!(pipeline.reset_capture_boundary(None, &store, "inbound", &guard).unwrap_err().contains("AEC/dispatch completion"));
     // Unit fixture supplies a completed transaction to select the failed-reset
     // branch. This is not an end-to-end dispatch or acoustic acceptance test.
     pipeline.time_segments.as_mut().unwrap().complete_prefix_processing(proof.owner,
         proof.generation, proof.id, proof.frames).unwrap();
     // No engine is active: the actual reset fails, not merely the receipt check.
-    assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+    assert!(pipeline.reset_capture_boundary(None, &store, "inbound", &guard).unwrap_err()
         .contains("not active"));
     assert_eq!(guard.diagnostic_owner_identity().1, 0);
     assert!(pipeline.normal_dequeue_ready().is_err());
@@ -367,7 +367,7 @@ fn production_pipeline_partial_native_boundary_precedes_new_segment_reset() {
         let (mut pipeline, store, guard, mut queue, permit) = segmented_packet_fixture(diagnostics_enabled);
         store.activate_production_echo_canceller().unwrap();
         let resets = store.echo_canceller_stats().unwrap().reset_count;
-        assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).is_err());
+        assert!(pipeline.reset_capture_boundary(None, &store, "inbound", &guard).is_err());
         assert_eq!(store.echo_canceller_stats().unwrap().reset_count, resets);
         let metadata = pipeline.capture_metadata().unwrap();
         let receipt = boundary_receipt(permit.proof(), metadata).unwrap();
@@ -383,14 +383,14 @@ fn production_pipeline_partial_native_boundary_precedes_new_segment_reset() {
         assert_eq!(pipeline.capture_metadata().unwrap().queue_head_device_frame_index, 2496);
         assert_eq!(pipeline.capture_metadata().unwrap().queue_head_qpc_100ns, 1_020_000);
         assert!(pipeline.normal_dequeue_ready().is_err());
-        assert!(pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap_err()
+        assert!(pipeline.reset_capture_boundary(None, &store, "inbound", &guard).unwrap_err()
             .contains("AEC/dispatch completion"));
         assert_eq!(store.echo_canceller_stats().unwrap().reset_count, resets);
         // This component test acknowledges a simulated successful dispatch.
         // Only process_chunk issues this receipt after real dispatch in production.
         pipeline.time_segments.as_mut().unwrap().complete_prefix_processing(receipt.capture_owner_id,
             receipt.queue_generation, receipt.boundary_id, receipt.real_frames).unwrap();
-        pipeline.reset_capture_boundary(&store, "inbound", &guard).unwrap();
+        pipeline.reset_capture_boundary(None, &store, "inbound", &guard).unwrap();
         assert!(!store.echo_partial_capture_boundary_pending());
         assert_eq!(guard.diagnostic_owner_identity().1, 1);
         assert_eq!(store.echo_canceller_stats().unwrap().reset_count, resets + 1);

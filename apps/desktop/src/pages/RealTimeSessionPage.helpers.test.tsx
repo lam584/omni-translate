@@ -204,6 +204,13 @@ describe('realTimeSessionPageHelpers', () => {
       virtualMicOutputEnabled: false,
     });
     expect(resolveSceneSpeechPatch('watch', configDraft, classicProfile).enabled).toBe(false);
+    const configWithTts = { ...configDraft, devices: { ...configDraft.devices, textToSpeechModelId: 'tts-1', outputSpeechEnabled: true } };
+    expect(resolveSceneSpeechPatch('watch', configWithTts, classicProfile)).toMatchObject({
+      enabled: true,
+      outputTarget: 'speaker',
+      localPlaybackEnabled: true,
+      virtualMicOutputEnabled: false,
+    });
 
     const missingSpeech = { ...configDraft, speech: undefined } as unknown as AppConfigDraft;
     expect(resolveSceneSpeechPatch('watch', missingSpeech, nativeProfile)).toMatchObject({

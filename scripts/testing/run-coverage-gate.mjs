@@ -96,7 +96,7 @@ export const runCoverageGate = ({ outputRoot = defaultOutputRoot, full = false }
   runCoverageStep(
     outputDir,
     'native-bridge-rust',
-    `cargo +${nightlyToolchain} llvm-cov --manifest-path apps/bridge-service-native/Cargo.toml --branch --json --output-path "${nativeBridgeReport}"`,
+    `cargo +${nightlyToolchain} llvm-cov --manifest-path apps/bridge-service-native/Cargo.toml --lib --branch --json --output-path "${nativeBridgeReport}"`,
   );
   assertRustCoverage('native-bridge-rust', nativeBridgeReport, coverageBaseline['native-bridge-rust']);
 

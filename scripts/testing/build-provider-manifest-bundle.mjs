@@ -49,19 +49,19 @@ export function writeProviderManifestBundle() {
 
 export function verifyProviderManifestBundle() {
   for (const [relative, value] of projectBailianModule(repositoryRoot).files) {
-    if (fs.readFileSync(path.join(repositoryRoot, relative), 'utf8') !== JSON.stringify(value, null, 2) + '\n') {
+    if (fs.readFileSync(path.join(repositoryRoot, relative), 'utf8').replace(/\r\n/g, '\n') !== JSON.stringify(value, null, 2) + '\n') {
       throw new Error('generated Bailian module projection is stale: ' + relative);
     }
   }
   const compatibility = JSON.stringify(buildBailianCompatibilityRegistry(), null, 2) + '\n';
-  if (!fs.existsSync(compatibilityPath) || fs.readFileSync(compatibilityPath, 'utf8') !== compatibility) {
+  if (!fs.existsSync(compatibilityPath) || fs.readFileSync(compatibilityPath, 'utf8').replace(/\r\n/g, '\n') !== compatibility) {
     throw new Error('generated Bailian compatibility registry is stale; run node scripts/testing/build-provider-manifest-bundle.mjs');
   }
   const expected = `${JSON.stringify(buildProviderManifestBundle(), null, 2)}\n`;
   if (!fs.existsSync(outputPath)) {
     throw new Error(`generated provider manifest bundle is missing: ${path.relative(repositoryRoot, outputPath)}`);
   }
-  const actual = fs.readFileSync(outputPath, 'utf8').replace(/^\uFEFF/, '');
+  const actual = fs.readFileSync(outputPath, 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   if (actual !== expected) {
     throw new Error('generated provider manifest bundle is stale; run node scripts/testing/build-provider-manifest-bundle.mjs');
   }

@@ -34,7 +34,7 @@
     "verify:desktop": "npm run verify --workspace @omni/desktop",
     "check:bridge-service-native": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo check --manifest-path apps/bridge-service-native/Cargo.toml",
     "build:bridge-service-native": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo build --release --bins --manifest-path apps/bridge-service-native/Cargo.toml",
-    "test:bridge-service-native": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo test --manifest-path apps/bridge-service-native/Cargo.toml",
+    "test:bridge-service-native": "node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo test --manifest-path apps/bridge-service-native/Cargo.toml -- --test-threads 1",
     "coverage:tooling": "node ./scripts/testing/bootstrap-coverage-tooling.mjs",
     "coverage:gate": "node ./scripts/testing/run-coverage-gate.mjs --full",
     "coverage:gate:base": "node ./scripts/testing/run-coverage-gate.mjs",

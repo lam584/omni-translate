@@ -53,7 +53,7 @@ jobs:
       # so the gate could rot without anyone noticing. Same thresholds, now on
       # every PR.
       - name: Frontend and Rust coverage gate
-        run: npm run coverage:gate
+        run: npm run coverage:gate:base
 
       - name: Preserve coverage evidence
         if: always()

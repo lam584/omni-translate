@@ -132,3 +132,7 @@ scripts/testing/fixtures/watch-mode-live/
 
 .zcode/
 
+
+# Temporary watch-mode audio inputs/fixtures
+scripts/testing/fixtures/*.mp3
+scripts/testing/fixtures/multilingual/*.mp3

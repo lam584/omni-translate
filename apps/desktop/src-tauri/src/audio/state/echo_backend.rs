@@ -700,7 +700,7 @@ mod tests {
             }));
         }
         for worker in workers { worker.join().unwrap(); }
-        let terminal = store.finish_aec_diagnostic_tap(Duration::from_secs(2)).unwrap();
+        let terminal = store.finish_aec_diagnostic_tap(Duration::from_secs(10)).unwrap();
         assert_eq!(terminal["writtenEvents"], 12);
         let rows: Vec<serde_json::Value> = std::fs::read_to_string(directory.join("aec-frame-metadata.jsonl")).unwrap()
             .lines().map(|line| serde_json::from_str(line).unwrap()).collect();

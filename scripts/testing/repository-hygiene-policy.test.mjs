@@ -7,6 +7,8 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import {
   AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES,
   containsRetiredWorkspacePath,
+  AUTHORIZED_CJK_FONT_LIMIT_BYTES,
+  AUTHORIZED_CJK_FONTS,
   DEFAULT_TRACKED_FILE_LIMIT_BYTES,
   EXPECTED_WATCH_AUDIO_FIXTURE_COUNTS,
   loadWatchAudioFixtureInventory,
@@ -66,4 +68,15 @@ test('retired workspace detection ignores fictional lookalikes', () => {
   assert.equal(containsRetiredWorkspacePath(otherDrive), false);
   assert.equal(containsRetiredWorkspacePath(otherProject), false);
   assert.equal(containsRetiredWorkspacePath('The fixture uses a synthetic workspace path.'), false);
+});
+
+test("authorized CJK font assets allow files up to 20 MiB and match pinned sha256", () => {
+  for (const [fontPath, expectedSha256] of AUTHORIZED_CJK_FONTS) {
+    const absolutePath = path.join(repoRoot, ...fontPath.split("/"));
+    assert.equal(fs.existsSync(absolutePath), true);
+    const size = fs.statSync(absolutePath).size;
+    assert.equal(trackedFileSizeViolation(fontPath, size, new Map()), null);
+    assert.ok(size <= AUTHORIZED_CJK_FONT_LIMIT_BYTES);
+    assert.equal(sha256File(absolutePath), expectedSha256);
+  }
 });

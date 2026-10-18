@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {
   containsRetiredWorkspacePath,
   loadAuthorizedWatchAudioFixtures,
+  AUTHORIZED_CJK_FONTS,
   sha256File,
   trackedFileSizeViolation,
 } from './repository-hygiene-policy.mjs';
@@ -64,6 +65,12 @@ for (const file of trackedFiles) {
     const actualSha256 = sha256File(file);
     if (actualSha256 !== expectedSha256) {
       violations.push(`${file}: authorized Watch Mode audio fixture SHA256 does not match its manifest`);
+    }
+  } else if (AUTHORIZED_CJK_FONTS.has(file)) {
+    const expectedSha256 = AUTHORIZED_CJK_FONTS.get(file);
+    const actualSha256 = sha256File(file);
+    if (actualSha256 !== expectedSha256) {
+      violations.push(`${file}: authorized CJK font asset SHA256 does not match its manifest`);
     }
   }
   if (stat.size > 2 * 1024 * 1024 || /\.(wav|png|ico|mp3)$/i.test(file)) continue;

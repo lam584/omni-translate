@@ -503,6 +503,7 @@ fn run_single_benchmark(
         socket
             .send(Message::Text(finish.to_string().into()))
             .map_err(|error| format!("session.finish send: {error}"))?;
+        last_event = Instant::now();
         progress.emit(
             "running",
             "session-finish-sent",

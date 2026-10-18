@@ -4,6 +4,21 @@ import path from 'node:path';
 
 export const DEFAULT_TRACKED_FILE_LIMIT_BYTES = 5 * 1024 * 1024;
 export const AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES = 8 * 1024 * 1024;
+export const AUTHORIZED_CJK_FONT_LIMIT_BYTES = 20 * 1024 * 1024;
+export const AUTHORIZED_CJK_FONTS = Object.freeze(new Map([
+  [
+    "apps/desktop/src/assets/fonts/NotoSansSC[wght].ttf",
+    "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+  ],
+  [
+    "apps/desktop/src/assets/fonts/NotoSansJP[wght].ttf",
+    "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+  ],
+  [
+    "apps/desktop/src/assets/fonts/NotoSansKR[wght].ttf",
+    "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252",
+  ],
+]));
 export const EXPECTED_WATCH_AUDIO_FIXTURE_COUNTS = Object.freeze({
   total: 22,
   bundled: 1,
@@ -95,13 +110,26 @@ export function loadAuthorizedWatchAudioFixtures(options) {
   return loadWatchAudioFixtureInventory(options).authorized;
 }
 
-export function trackedFileSizeViolation(file, size, authorizedWatchAudio) {
+export function trackedFileSizeViolation(
+  file,
+  size,
+  authorizedWatchAudio,
+  authorizedCjkFonts = AUTHORIZED_CJK_FONTS,
+) {
   if (size <= DEFAULT_TRACKED_FILE_LIMIT_BYTES) return null;
-  if (!authorizedWatchAudio.has(file)) return `${file}: tracked file exceeds 5 MiB`;
-  if (size > AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES) {
-    return `${file}: authorized Watch Mode audio fixture exceeds 8 MiB`;
+  if (authorizedWatchAudio.has(file)) {
+    if (size > AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES) {
+      return `${file}: authorized Watch Mode audio fixture exceeds 8 MiB`;
+    }
+    return null;
   }
-  return null;
+  if (authorizedCjkFonts?.has(file)) {
+    if (size > AUTHORIZED_CJK_FONT_LIMIT_BYTES) {
+      return `${file}: authorized CJK font asset exceeds 20 MiB`;
+    }
+    return null;
+  }
+  return `${file}: tracked file exceeds 5 MiB`;
 }
 
 export function sha256File(filePath) {

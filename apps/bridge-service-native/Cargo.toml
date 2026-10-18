@@ -19,7 +19,7 @@ omni-logging = { path = "../../crates/omni-logging" }
 rodio = { version = "0.22.2", default-features = false, features = ["mp3", "playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 uuid = { version = "1", features = ["v4"] }
 wasapi = "0.24.0"
 # Match wasapi's native COM types without touching workspace-wide dependencies.

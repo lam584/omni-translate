@@ -89,8 +89,14 @@ jobs:
       # The gate/report tooling is executable code too; its own node:test
       # suites used to run only on developer machines. One step per suite so a
       # failing suite cannot be masked by a later command's exit code.
-      - name: Node tooling self-tests (watch-mode report)
-        run: npm run test:watch-mode-report
+      - name: Node tooling self-tests (watch-mode report fast)
+        run: npm run test:watch-mode-report:fast
+
+      - name: Node tooling self-tests (watch-mode report evidence)
+        run: npm run test:watch-mode-report:evidence
+
+      - name: Node tooling self-tests (watch-mode report live)
+        run: npm run test:watch-mode-report:live
 
       - name: Node tooling self-tests (release lib)
         run: npm run test:release-lib

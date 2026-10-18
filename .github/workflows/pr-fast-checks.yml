@@ -92,6 +92,9 @@ jobs:
       - name: Node tooling self-tests (watch-mode report fast)
         run: npm run test:watch-mode-report:fast
 
+      - name: Node tooling self-tests (watch-mode report loopback)
+        run: npm run test:watch-mode-report:loopback
+
       - name: Node tooling self-tests (watch-mode report evidence)
         run: npm run test:watch-mode-report:evidence
 

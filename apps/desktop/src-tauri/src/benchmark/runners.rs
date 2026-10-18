@@ -16,6 +16,86 @@ use livetranslate_plan::{
     with_prepared_livetranslate_plan, PreparedLiveTranslateBenchmarkPlan,
 };
 
+pub(crate) fn resolve_benchmark_audio_path(requested: &str) -> Result<PathBuf, String> {
+    let raw_path = PathBuf::from(requested);
+    if raw_path.is_absolute() && raw_path.exists() {
+        return Ok(raw_path);
+    }
+
+    let mut candidate_exts: Vec<Option<&str>> = vec![None];
+    if let Some(ext) = raw_path.extension().and_then(|s| s.to_str()) {
+        let ext_lower = ext.to_ascii_lowercase();
+        if ext_lower == "wav" {
+            candidate_exts.push(Some("mp3"));
+        } else if ext_lower == "mp3" {
+            candidate_exts.push(Some("wav"));
+        }
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    roots.push(crate::bridge::ipc::assets_root());
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            roots.push(exe_dir.join("resources"));
+            roots.push(exe_dir.to_path_buf());
+            if let Some(parent) = exe_dir.parent() {
+                roots.push(parent.join("resources"));
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    let clean_str = requested.replace('\\', "/");
+    let relative_str = clean_str
+        .strip_prefix("./")
+        .unwrap_or(&clean_str)
+        .strip_prefix("resources/")
+        .unwrap_or(&clean_str);
+
+    for root in &roots {
+        for alt_ext in &candidate_exts {
+            let mut sub = PathBuf::from(relative_str);
+            if let Some(ext) = alt_ext {
+                sub.set_extension(ext);
+            }
+
+            let candidate1 = root.join(&sub);
+            if candidate1.exists() {
+                return Ok(candidate1);
+            }
+
+            let candidate2 = root.join("resources").join(&sub);
+            if candidate2.exists() {
+                return Ok(candidate2);
+            }
+
+            if let Some(stripped_scripts) = relative_str.strip_prefix("scripts/testing/fixtures/") {
+                let mut stripped_sub = PathBuf::from(stripped_scripts);
+                if let Some(ext) = alt_ext {
+                    stripped_sub.set_extension(ext);
+                }
+                let candidate3 = root.join("resources").join("fixtures").join(&stripped_sub);
+                if candidate3.exists() {
+                    return Ok(candidate3);
+                }
+                let candidate4 = root.join("fixtures").join(&stripped_sub);
+                if candidate4.exists() {
+                    return Ok(candidate4);
+                }
+            }
+        }
+    }
+
+    if raw_path.exists() {
+        return Ok(raw_path);
+    }
+
+    Err(format!("Audio file not found: {}", requested))
+}
+
 pub(crate) async fn run_model_benchmark(
     app: AppHandle,
     model: String,
@@ -164,9 +244,11 @@ fn run_model_benchmark_with_sink(
         model_protocol_authority,
     };
 
-    if !config.mp3_path.exists() {
-        return Err(format!("Audio file not found: {}", config.mp3_path.display()));
-    }
+    let resolved_audio_path = resolve_benchmark_audio_path(&mp3_path)?;
+    let config = BenchmarkConfig {
+        mp3_path: resolved_audio_path,
+        ..config
+    };
 
     let decode_result = read_audio_samples_with_info(&config.mp3_path)?;
     let samples = decode_result.samples;

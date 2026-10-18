@@ -684,4 +684,33 @@ mod tests {
             "semantic_vad"
         );
     }
+
+    #[test]
+    fn resolve_benchmark_audio_path_resolves_and_falls_back_extension() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let mp3_file = dir.path().join("test-speech.mp3");
+        std::fs::write(&mp3_file, b"fake-audio").expect("file should write");
+
+        // Direct existing path
+        let resolved = resolve_benchmark_audio_path(mp3_file.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, mp3_file);
+
+        // Requested as .wav, but only .mp3 exists
+        let wav_path = dir.path().join("test-speech.wav");
+        let fallback = resolve_benchmark_audio_path(wav_path.to_str().unwrap()).unwrap();
+        assert_eq!(fallback, mp3_file);
+
+        // Canonical fixture exists
+        let canonical = resolve_benchmark_audio_path("scripts/testing/fixtures/watch-mode-en-original.wav");
+        assert!(canonical.is_ok());
+
+        // Canonical fixture requested as .mp3 also resolves (because .mp3 or .wav exists)
+        let canonical_mp3 = resolve_benchmark_audio_path("scripts/testing/fixtures/watch-mode-en-original.mp3");
+        assert!(canonical_mp3.is_ok());
+
+        // Non-existent path returns error
+        let non_existent = resolve_benchmark_audio_path("non/existent/path/sample.wav");
+        assert!(non_existent.is_err());
+    }
+
 }

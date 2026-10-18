@@ -67,7 +67,7 @@ function installInvokeBridge(installed: boolean) {
 }
 
 const providerSecretRef = appConfigDraftMock.providers[0]?.authRef?.reference ?? '';
-const defaultBenchmarkMp3Path = 'scripts/testing/fixtures/watch-mode-en-original.wav';
+const defaultBenchmarkMp3Path = 'scripts/testing/fixtures/watch-mode-en-original.mp3';
 
 function findButtonByText(container: HTMLElement, text: string) {
   return Array.from(container.querySelectorAll('button')).find((element) => element.textContent?.trim() === text) as

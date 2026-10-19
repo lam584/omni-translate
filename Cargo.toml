@@ -22,3 +22,9 @@ exclude = [
 # Same pinned upstream library with audited event ownership/status repairs.
 [patch.crates-io]
 wasapi = { path = "third-party/wasapi-0.24.0" }
+
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0

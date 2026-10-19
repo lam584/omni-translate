@@ -9,7 +9,7 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { LOCAL_ISOLATION_DISTRIBUTION_KIND } from './watch-mode-local-isolation-distributed.mjs';
 import { AEC_TAP_FILES, verifyAecTapEvidence } from './watch-mode-aec-tap-evidence.mjs';
-import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_INTERACTIVE_FILES, AEC_PROBE_JOB_HELPER, createLocalAecProbeRequest, isProviderCredentialEnvironmentName, localAecProbeDesktopPowerShell, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
+import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_INTERACTIVE_FILES, AEC_PROBE_JOB_HELPER, LOCAL_AEC_DESKTOP_ENV_ALLOWLIST, createLocalAecProbeRequest, isProviderCredentialEnvironmentName, localAecProbeDesktopPowerShell, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const canonicalize = (value) => Array.isArray(value) ? value.map(canonicalize)
@@ -533,8 +533,7 @@ test('desktop reporter runs as a real Node child and reports its inherited stati
 });
 
 test('minimal Desktop environment removes generic and provider credential names in a real child', () => {
-  const allowed = ['SystemRoot','windir','SystemDrive','ComSpec','PATH','PATHEXT','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','APPDATA','LOCALAPPDATA','PROGRAMDATA','PROGRAMFILES','PROGRAMFILES(X86)','PROGRAMW6432','COMMONPROGRAMFILES','COMMONPROGRAMFILES(X86)','COMMONPROGRAMW6432','USERNAME','USERDOMAIN','COMPUTERNAME','SESSIONNAME','PROCESSOR_ARCHITECTURE','NUMBER_OF_PROCESSORS'];
-  const command = `$allowed=@(${allowed.map((x)=>`'${x}'`).join(',')}); foreach($v in @(Get-ChildItem Env:)){if($allowed -cnotcontains $v.Name){[Environment]::SetEnvironmentVariable($v.Name,$null,'Process')}}; Get-ChildItem Env: | ForEach-Object {$_.Name} | ConvertTo-Json -Compress`;
+  const command = `$allowed=@(${LOCAL_AEC_DESKTOP_ENV_ALLOWLIST.map((x)=>`'${x}'`).join(',')}); foreach($v in @(Get-ChildItem Env:)){if($allowed -notcontains $v.Name){[Environment]::SetEnvironmentVariable($v.Name,$null,'Process')}}; Get-ChildItem Env: | ForEach-Object {$_.Name} | ConvertTo-Json -Compress`;
   const env = { ...process.env, API_KEY:'x', PRIVATE_GATEWAY_API_KEY:'x', CUSTOM_PROVIDER_API_KEY:'x', DASHSCOPE_API_KEY:'x', OMNI_TEST_DASHSCOPE_API_KEY:'x' };
   const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')],{encoding:'utf8',env,windowsHide:true});
   assert.equal(result.status,0,result.stderr); const names = JSON.parse(result.stdout.trim());

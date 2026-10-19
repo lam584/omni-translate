@@ -145,7 +145,7 @@ $helper=${quote(helperPath)}
 if((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne ${quote(helperSha256)}) {throw 'process-custody helper changed after preflight'}
 Import-Module $helper -Force
 $allowed=@(${LOCAL_AEC_DESKTOP_ENV_ALLOWLIST.map(quote).join(',')})
-foreach($variable in @(Get-ChildItem Env:)) { if($allowed -cnotcontains $variable.Name) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') } }
+foreach($variable in @(Get-ChildItem Env:)) { if($allowed -notcontains $variable.Name) { [Environment]::SetEnvironmentVariable($variable.Name,$null,'Process') } }
 $env:OMNI_WATCH_MODE_LOCAL_AEC_PROBE_REQUEST=${quote(requestPath)}
 $env:OMNI_WATCH_MODE_AEC_DIAGNOSTIC_TAP_DIRECTORY=${quote(outputDirectory)}
 ${hostScript}

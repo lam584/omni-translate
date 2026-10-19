@@ -13,6 +13,11 @@ import {
   buildProbePowerShell, executeProbePowerShell, parsePhysicalSourceProbeArgs,
   runPhysicalSourceProbe, verifyProbeRuntime, PHYSICAL_SOURCE_PROBE_SUPPORT_FILES,
 } from './watch-mode-physical-source-probe.mjs';
+import { checkWatchDiskSpace } from './watch-mode-disk-lifecycle.mjs';
+
+// The production C:/E: floor describes operator hosts; CI runners have no E:, so measure the output volume.
+const outputVolumeDiskCheck = (args) => checkWatchDiskSpace({ ...args, requiredVolumePaths: [path.parse(args.receiptPath).root] });
+const runProbe = (options, dependencies = {}) => runPhysicalSourceProbe(options, { checkDiskSpace: outputVolumeDiskCheck, ...dependencies });
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -198,7 +203,7 @@ if($errors.Count){exit 1}`;
 test('orchestration reports signed waveform diagnostics at 24.010s, never content/release approval', async (t) => {
   const f = fixture(t);
   for (const passed of [false, true]) {
-    const result = await runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+    const result = await runProbe(f.options, { allowNonWindows: true,
       executePowerShell: async (_script, options) => {
         assert.equal(options.deadlineSeconds, 180);
         writeObservation(f, options.outputDirectory); return successfulCustody();
@@ -236,7 +241,7 @@ test('route observations must actually match every c02 identity, gain and record
     (o) => { o.playback.mediaSha256 = 'f'.repeat(64); }, (o) => { o.recording.resolvedPhysicalPlaybackDeviceId = 'virtual-id'; },
     (o) => { o.recording.skipped = true; }, (o) => { o.recording.transcriptionPcmPath = f.canonical; },
   ]) {
-    await assert.rejects(runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+    await assert.rejects(runProbe(f.options, { allowNonWindows: true,
       executePowerShell: async (_script, options) => {
         const observation = writeObservation(f, options.outputDirectory); mutate(observation);
         json(path.join(options.outputDirectory, 'route-observation.json'), observation); return successfulCustody();
@@ -252,7 +257,7 @@ test('capture and no-build analysis share one absolute deadline without renewing
   t.mock.method(Date, 'now', () => now);
   let custodyDeadline;
   let analyses = 0;
-  const result = await runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+  const result = await runProbe(f.options, { allowNonWindows: true,
     executePowerShell: async (_script, options) => {
       custodyDeadline = options.deadlineUtcMs;
       assert.equal(custodyDeadline, started + f.options.deadlineSeconds * 1000);
@@ -289,7 +294,7 @@ test('pinned analyzer deadline failure remains failed without retrying capture o
   const f = fixture(t);
   let captures = 0;
   let analyses = 0;
-  await assert.rejects(runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+  await assert.rejects(runProbe(f.options, { allowNonWindows: true,
     executePowerShell: async (_script, options) => {
       captures += 1;
       writeObservation(f, options.outputDirectory);
@@ -323,7 +328,7 @@ function writeAccountingReceipts(f, outputDirectory) {
 for (const source of accountingReceiptFiles) {
   test(`accounting retains nonzero ${source} with its original source`, async (t) => {
     const f = fixture(t);
-    await assert.rejects(runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+    await assert.rejects(runProbe(f.options, { allowNonWindows: true,
       executePowerShell: async (_script, options) => {
         writeAccountingReceipts(f, options.outputDirectory);
         const file = path.join(options.outputDirectory, source);
@@ -349,7 +354,7 @@ for (const source of accountingReceiptFiles) {
 
 test('accounting stays unknown after a launch failure without any receipt', async (t) => {
   const f = fixture(t);
-  await assert.rejects(runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+  await assert.rejects(runProbe(f.options, { allowNonWindows: true,
     executePowerShell: async () => { throw new Error('launch failure sentinel'); },
     buildWaveformAuthority: () => assert.fail('launch failure must stop before analysis'),
   }), (error) => {
@@ -377,7 +382,7 @@ for (const [name, bodies, expected, status] of [
 ]) {
   test(`failed accounting preserves ${name} without repairs, sums or maxima`, async (t) => {
     const f = fixture(t);
-    await assert.rejects(runPhysicalSourceProbe(f.options, {
+    await assert.rejects(runProbe(f.options, {
       executePowerShell: async (_script, { outputDirectory }) => {
         fs.writeFileSync(path.join(outputDirectory, 'cleanup.json'), bodies[0]);
         fs.writeFileSync(path.join(outputDirectory, 'route-observation.json'), bodies[1]);
@@ -396,13 +401,13 @@ for (const [name, bodies, expected, status] of [
 
 test('prelaunch zero and completed receipt-validated zero have different accounting provenance', async (t) => {
   const f = fixture(t);
-  await assert.rejects(runPhysicalSourceProbe({ ...f.options, deadlineSeconds: 1 }, {
+  await assert.rejects(runProbe({ ...f.options, deadlineSeconds: 1 }, {
     executePowerShell: () => assert.fail('invalid deadline must not launch'),
   }), (error) => {
     const result = read(error.resultPath);
     assert.equal(result.providerCalls, 0); assert.equal(result.providerAccounting, 'not-launched'); return true;
   });
-  const result = await runPhysicalSourceProbe(f.options, {
+  const result = await runProbe(f.options, {
     executePowerShell: async (_script, { outputDirectory }) => { writeObservation(f, outputDirectory); return successfulCustody(); },
     buildWaveformAuthority: async () => ({ passed: true, candidates: [], sampleRateHz: 16000 }),
   });
@@ -412,7 +417,7 @@ test('prelaunch zero and completed receipt-validated zero have different account
 
 test('a later zero receipt cannot overwrite a nonzero launch-return observation', async (t) => {
   const f = fixture(t);
-  await assert.rejects(runPhysicalSourceProbe(f.options, {
+  await assert.rejects(runProbe(f.options, {
     executePowerShell: async (_script, { outputDirectory }) => {
       writeAccountingReceipts(f, outputDirectory);
       return { ...successfulCustody(), providerCalls: 2 };
@@ -431,7 +436,7 @@ test('missing native custody, cleanup errors and changed runtime prevent any wav
   const f = fixture(t);
   for (const kind of ['custody', 'cleanup', 'runtime']) {
     let output;
-    await assert.rejects(runPhysicalSourceProbe(f.options, { allowNonWindows: true,
+    await assert.rejects(runProbe(f.options, { allowNonWindows: true,
       executePowerShell: async (_script, options) => {
         output = options.outputDirectory; writeObservation(f, output);
         if (kind === 'custody') return undefined;
@@ -452,7 +457,7 @@ test('invalid media, endpoints and deadlines fail before any child launch; CLI r
   for (const change of [{ mediaPath: other }, { physicalPlaybackDeviceId: '' }, { physicalPlaybackDeviceId: 'virtual-id' },
     { virtualRenderEndpointId: ' virtual-id' }, { virtualRenderEndpointId: 'default' },
     { deadlineSeconds: 149 }, { deadlineSeconds: 301 }, { deadlineSeconds: 180.5 }]) {
-    await assert.rejects(runPhysicalSourceProbe({ ...f.options, ...change }, { allowNonWindows: true,
+    await assert.rejects(runProbe({ ...f.options, ...change }, { allowNonWindows: true,
       executePowerShell: () => assert.fail('preflight failure launched a process'),
     }), /canonical fixed media|endpoint identities|deadlineSeconds/);
   }

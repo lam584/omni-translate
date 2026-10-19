@@ -9,7 +9,12 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { LOCAL_ISOLATION_DISTRIBUTION_KIND } from './watch-mode-local-isolation-distributed.mjs';
 import { AEC_TAP_FILES, verifyAecTapEvidence } from './watch-mode-aec-tap-evidence.mjs';
+import { checkWatchDiskSpace } from './watch-mode-disk-lifecycle.mjs';
 import { AEC_PROBE_CAPABILITY_ID, AEC_PROBE_INTERACTIVE_FILES, AEC_PROBE_JOB_HELPER, LOCAL_AEC_DESKTOP_ENV_ALLOWLIST, createLocalAecProbeRequest, isProviderCredentialEnvironmentName, localAecProbeDesktopPowerShell, localAecProbePowerShell, parseLocalAecProbeArgs, runLocalAecProbe, verifyLocalAecProbeRuntime } from './run-watch-mode-local-aec-probe.mjs';
+
+// The production C:/E: floor describes operator hosts; CI runners have no E:, so measure the output volume.
+const outputVolumeDiskCheck = (args) => checkWatchDiskSpace({ ...args, requiredVolumePaths: [path.parse(args.receiptPath).root] });
+const runProbe = (options, dependencies = {}) => runLocalAecProbe(options, { checkDiskSpace: outputVolumeDiskCheck, ...dependencies });
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const canonicalize = (value) => Array.isArray(value) ? value.map(canonicalize)
@@ -323,7 +328,7 @@ test('interactive local AEC resolver carries a future control-plane deadline and
 test('producer failure keeps complete interactive descendant and task cleanup evidence', async (t) => {
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root));
-  await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => {
+  await assert.rejects(runProbe(options, { execute: (script, context) => {
     const result = fixtureExecute(script, context);
     const receiptPath = path.join(context.outputDirectory, 'local-aec-probe-result.json');
     const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
@@ -345,8 +350,8 @@ test('producer failure keeps complete interactive descendant and task cleanup ev
 test('runner binds stimulus, fresh execution, process custody and complete tap without authorizing release', async (t) => {
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root));
-  const first = await runLocalAecProbe(options, { execute: fixtureExecute });
-  const second = await runLocalAecProbe(options, { execute: fixtureExecute });
+  const first = await runProbe(options, { execute: fixtureExecute });
+  const second = await runProbe(options, { execute: fixtureExecute });
   const emittedRequest = JSON.parse(fs.readFileSync(path.join(first.outputDirectory, 'request.json'), 'utf8'));
   assert.deepEqual(Object.keys(emittedRequest).sort(), [
     'executionId', 'outputDirectory', 'physicalDeviceId', 'renderPcmPath', 'renderPcmSha256', 'schemaVersion',
@@ -366,7 +371,7 @@ test('runner always preserves failure JSON, including unknown custody, missing t
     [(s, c) => { const result = fixtureExecute(s, c); fs.appendFileSync(path.join(c.outputDirectory, AEC_TAP_FILES.post), 'tail'); return result; },
       0, 'unverified-producer-report', true],
   ]) {
-    await assert.rejects(runLocalAecProbe(options, { execute }), (error) => {
+    await assert.rejects(runProbe(options, { execute }), (error) => {
       const result = JSON.parse(fs.readFileSync(path.join(error.outputDirectory, 'result.json'), 'utf8'));
       assert.equal(result.status, 'failed'); assert.equal(result.releaseEligible, false);
       assert.equal(result.providerCalls, expectedCalls);
@@ -375,7 +380,7 @@ test('runner always preserves failure JSON, including unknown custody, missing t
       assert.ok(result.failure); return true;
     });
   }
-  await assert.rejects(runLocalAecProbe({ ...options, physicalDeviceId: 'default' }), /exact physical/u);
+  await assert.rejects(runProbe({ ...options, physicalDeviceId: 'default' }), /exact physical/u);
 });
 test('controller uses the existing InteractiveToken request and scheduler contracts', (t) => {
   const root = temporary(t);
@@ -449,7 +454,7 @@ test('interactive custody rejects failed collectors and every authority binding 
   ];
   for (const mutate of mutations) {
     const root = temporary(t); const options = probeOptions(root, runtimeFixture(root));
-    await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => { const result = fixtureExecute(script, context); mutate(result); return result; } }),
+    await assert.rejects(runProbe(options, { execute: (script, context) => { const result = fixtureExecute(script, context); mutate(result); return result; } }),
       /terminal is incomplete|identity, descendant authority, or cleanup is incomplete/u);
   }
 });
@@ -544,7 +549,7 @@ test('unsupported but hash-valid runtime is rejected before any normal launch', 
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root, Buffer.from('old-desktop-with-no-opt-in-support')));
   let launches = 0;
-  await assert.rejects(runLocalAecProbe(options, { execute: () => { launches += 1; } }), (error) => {
+  await assert.rejects(runProbe(options, { execute: () => { launches += 1; } }), (error) => {
     assert.match(error.message, /lacks the compiled zero-Provider/u);
     const receipt = JSON.parse(fs.readFileSync(path.join(error.outputDirectory, 'result.json'), 'utf8'));
     assert.equal(receipt.providerCalls, 0);
@@ -560,7 +565,7 @@ for (const [label, bytes] of [
   test(`runtime rejects ${label} without interrogating its executable`, async (t) => {
     const root = temporary(t);
     const options = probeOptions(root, runtimeFixture(root, bytes));
-    await assert.rejects(runLocalAecProbe(options, {
+    await assert.rejects(runProbe(options, {
       execute: () => assert.fail('unsupported capability must fail before executable launch'),
     }), (error) => {
       assert.match(error.message, /lacks the compiled zero-Provider/u);
@@ -576,7 +581,7 @@ test('disk floor failure happens before any probe launch and remains a recorded 
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root));
   let launches = 0;
-  await assert.rejects(runLocalAecProbe(options, { checkDiskSpace: () => { throw new Error('C: below 3 GiB'); },
+  await assert.rejects(runProbe(options, { checkDiskSpace: () => { throw new Error('C: below 3 GiB'); },
     execute: () => { launches += 1; } }), (error) => {
     const receipt = JSON.parse(fs.readFileSync(path.join(error.outputDirectory, 'result.json'), 'utf8'));
     assert.match(receipt.failure, /below 3 GiB/u);
@@ -589,7 +594,7 @@ test('disk floor failure happens before any probe launch and remains a recorded 
 test('failure preserves contradictory producer accounting instead of silently resetting it to zero', async (t) => {
   const root = temporary(t);
   const options = probeOptions(root, runtimeFixture(root));
-  await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => {
+  await assert.rejects(runProbe(options, { execute: (script, context) => {
     const result = fixtureExecute(script, context);
     const file = path.join(context.outputDirectory, 'local-aec-probe-result.json');
     const producer = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -614,7 +619,7 @@ for (const [label, change, expectedCalls, expectedObserved] of [
   test(`runner preserves unknown or nonzero accounting for ${label}`, async (t) => {
     const root = temporary(t);
     const options = probeOptions(root, runtimeFixture(root));
-    await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => {
+    await assert.rejects(runProbe(options, { execute: (script, context) => {
       fixtureExecute(script, context);
       const file = path.join(context.outputDirectory, 'local-aec-probe-result.json');
       const producer = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -640,7 +645,7 @@ for (const [label, change] of [
   test(`runner rejects ${label} despite otherwise consistent sealed evidence`, async (t) => {
     const root = temporary(t);
     const options = probeOptions(root, runtimeFixture(root));
-    await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => {
+    await assert.rejects(runProbe(options, { execute: (script, context) => {
       const result = fixtureExecute(script, context);
       const file = path.join(context.outputDirectory, 'local-aec-probe-result.json');
       const producer = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -674,7 +679,7 @@ for (const [label, change] of [
   test(`runner rejects ${label} despite sealed tap evidence`, async (t) => {
     const root = temporary(t);
     const options = probeOptions(root, runtimeFixture(root));
-    await assert.rejects(runLocalAecProbe(options, { execute: (script, context) => {
+    await assert.rejects(runProbe(options, { execute: (script, context) => {
       const result = fixtureExecute(script, context);
       const file = path.join(context.outputDirectory, 'local-aec-probe-result.json');
       const producer = JSON.parse(fs.readFileSync(file, 'utf8')); change(producer); json(file, producer);

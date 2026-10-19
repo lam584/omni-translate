@@ -5,6 +5,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: typescript
+        versions: ["7.x"]
     groups:
       tauri-frontend:
         patterns:
@@ -29,6 +32,8 @@ updates:
       # Breaking changes in sha2 0.11 (removes LowerHex trait for Array<u8, ...>)
       - dependency-name: sha2
         versions: ["0.11.x"]
+      - dependency-name: windows-core
+        versions: ["0.100.x"]
     groups:
       tauri-backend:
         patterns:
@@ -65,6 +70,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: actions/download-artifact
+        versions: ["8.x"]
     groups:
       actions:
         patterns:

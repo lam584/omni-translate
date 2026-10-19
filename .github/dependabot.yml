@@ -4,28 +4,68 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
+    groups:
+      tauri-frontend:
+        patterns:
+          - "@tauri-apps/*"
+      vitest:
+        patterns:
+          - "vitest*"
+          - "@vitest/*"
+      react-ecosystem:
+        patterns:
+          - "react*"
+          - "@types/react*"
 
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
+    ignore:
+      # Pinned upstream library with local patches and contract-bound invariants in third-party/wasapi-0.24.0
+      - dependency-name: wasapi
+      # Breaking changes in sha2 0.11 (removes LowerHex trait for Array<u8, ...>)
+      - dependency-name: sha2
+        versions: ["0.11.x"]
+    groups:
+      tauri-backend:
+        patterns:
+          - "tauri*"
+      serde:
+        patterns:
+          - "serde*"
+      windows-sys:
+        patterns:
+          - "windows*"
 
   - package-ecosystem: cargo
     directory: /scripts/diagnostics/omni-benchmark
     schedule:
       interval: weekly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
+    groups:
+      serde:
+        patterns:
+          - "serde*"
 
   - package-ecosystem: cargo
     directory: /scripts/diagnostics/omni-realtime
     schedule:
       interval: weekly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 5
+    groups:
+      serde:
+        patterns:
+          - "serde*"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "actions/*"

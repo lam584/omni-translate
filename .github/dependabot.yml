@@ -73,9 +73,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: actions/download-artifact
-        versions: ["8.x"]
     groups:
       actions:
         patterns:

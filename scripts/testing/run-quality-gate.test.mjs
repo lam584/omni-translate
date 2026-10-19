@@ -72,7 +72,8 @@ import {
   testPerformanceReport,
 } from './run-quality-gate.mjs';
 
-const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'quality-gate-test-'));
+// Runner TEMP is an 8.3 alias (RUNNER~1); evidence roots must be canonical or reparse checks reject them.
+const makeTempDir = () => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'quality-gate-test-')));
 
 test('published preflight output rejects source containment and Windows aliases before writes', (t) => {
   const root = fs.realpathSync.native(makeTempDir());

@@ -16,7 +16,7 @@ omni-logging = { path = "../../crates/omni-logging" }
 # accesses to the `.id()` accessor (windows/playback.rs x4,
 # tests/windows_sidecar.rs), keeping resolved IDs as bare WASAPI endpoint
 # strings — that form is the cross-process contract with the desktop shell.
-rodio = { version = "0.23.0", default-features = false, features = ["mp3", "playback"] }
+rodio = { version = "0.22.2", default-features = false, features = ["mp3", "playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

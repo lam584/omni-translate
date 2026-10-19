@@ -16,11 +16,27 @@ import {
   validateCanonicalReferencePcm,
   validateCanonicalSourceAuthority,
 } from './watch-mode-canonical-source-authority.mjs';
+import { ensureRustAudioAnalyzer } from './watch-mode-rust-audio-analysis.mjs';
 
 const workspaceRoot = path.resolve('.');
 
 function temporaryDirectory(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${label}-`));
+}
+
+// No CI step builds target/release, so pin the suite-built analyzer inside an isolated workspace.
+function pinnedAnalyzerWorkspace() {
+  const root = fs.realpathSync.native(temporaryDirectory('canonical-pinned-workspace'));
+  const fixtures = path.join(root, 'scripts', 'testing', 'fixtures');
+  fs.mkdirSync(fixtures, { recursive: true });
+  for (const name of ['watch-mode-en-original.wav', 'watch-mode-en-original.sha256', 'watch-mode-audio-fixtures.json',
+    'watch-mode-en-original.txt', 'watch-mode-en-original.zh-CN.txt']) {
+    fs.copyFileSync(path.join(workspaceRoot, 'scripts', 'testing', 'fixtures', name), path.join(fixtures, name));
+  }
+  const analyzer = ensureRustAudioAnalyzer({ workspaceRoot });
+  fs.mkdirSync(path.join(root, 'target', 'release'), { recursive: true });
+  fs.copyFileSync(analyzer, path.join(root, 'target', 'release', path.basename(analyzer)));
+  return root;
 }
 
 function pcmBuffer(samples) {
@@ -542,7 +558,8 @@ test('preserves complete waveform candidates when combined authority fails', () 
   fs.writeFileSync(sourceWindowPath, silentWindow);
   fs.writeFileSync(physicalRecordingPath, silentWindow);
 
-  const releaseExecutablePath = path.resolve('target/release/omni-benchmark.exe');
+  const pinnedRoot = pinnedAnalyzerWorkspace();
+  const releaseExecutablePath = path.join(pinnedRoot, 'target', 'release', path.basename(ensureRustAudioAnalyzer({ workspaceRoot })));
   const releaseExecutableSha256 = crypto.createHash('sha256')
     .update(fs.readFileSync(releaseExecutablePath)).digest('hex');
   const analyzerOptions = {
@@ -553,7 +570,7 @@ test('preserves complete waveform candidates when combined authority fails', () 
   };
   const combined = collectRunCanonicalSourceAuthority({
     runDirectory: directory,
-    workspaceRoot,
+    workspaceRoot: pinnedRoot,
     sourceAuthority: authority,
     ...analyzerOptions,
   });
@@ -570,7 +587,7 @@ test('preserves complete waveform candidates when combined authority fails', () 
   const cli = spawnSync(process.execPath, [
     path.resolve('scripts/testing/watch-mode-canonical-source-authority.mjs'),
     '--run-directory', directory,
-    '--workspace-root', workspaceRoot,
+    '--workspace-root', pinnedRoot,
     '--preserve-failure-evidence',
     '--no-build',
     '--release-executable-path', releaseExecutablePath,

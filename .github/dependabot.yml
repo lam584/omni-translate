@@ -34,6 +34,9 @@ updates:
         versions: ["0.11.x"]
       - dependency-name: windows-core
         versions: ["0.100.x"]
+      # Breaking cpal 0.18 change in rodio 0.23: DeviceId tuple field private
+      - dependency-name: rodio
+        versions: ["0.23.x"]
     groups:
       tauri-backend:
         patterns:

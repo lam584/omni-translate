@@ -91,31 +91,24 @@ jobs:
       # failing suite cannot be masked by a later command's exit code.
       - name: Node tooling self-tests (watch-mode report fast)
         run: npm run test:watch-mode-report:fast
-        continue-on-error: true
 
       - name: Node tooling self-tests (watch-mode report smoke)
         run: npm run test:watch-mode-report:smoke
-        continue-on-error: true
 
       - name: Node tooling self-tests (watch-mode report probe)
         run: npm run test:watch-mode-report:probe
-        continue-on-error: true
 
       - name: Node tooling self-tests (watch-mode report isolation)
         run: npm run test:watch-mode-report:isolation
-        continue-on-error: true
 
       - name: Node tooling self-tests (watch-mode report loopback)
         run: npm run test:watch-mode-report:loopback
-        continue-on-error: true
 
       - name: Node tooling self-tests (watch-mode report evidence)
         run: npm run test:watch-mode-report:evidence
-        continue-on-error: true
 
       - name: Node tooling self-tests (watch-mode report live)
         run: npm run test:watch-mode-report:live
-        continue-on-error: true
 
       - name: Node tooling self-tests (release lib)
         run: npm run test:release-lib

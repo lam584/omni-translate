@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import childProcess, { spawnSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -4495,11 +4496,18 @@ test('strict authority rejects reordered matrix budget cells after the ledger ha
   );
 });
 
-test('canonical strict authority round-trips the complete verifier receipt cell identity', () => {
+test('canonical strict authority round-trips the complete verifier receipt cell identity', (t) => {
   const root = makeTempRoot();
   let runDirectory = writeAuthorityRawCell(root, 'authority-canonical-round-trip');
   const { manifestPath, manifest, primaryRunDirectories } = writeAuthorityManifest(root, runDirectory);
   [runDirectory] = primaryRunDirectories;
+  const realSpawnSync = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', (command, ...args) => {
+    assert.doesNotMatch(path.basename(String(command)), /^cargo(?:\.exe)?$/iu, 'strict verification must not build an analyzer');
+    return realSpawnSync(command, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const verificationNow = new Date(Date.parse(manifest.generatedAt) + 2_000);
   const authority = verifyStrictMatrixAuthority({
     manifestPath,

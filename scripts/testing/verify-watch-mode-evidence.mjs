@@ -3236,6 +3236,7 @@ function verifyStrictManifestAuthority({
       const canonicalAuthority = validateRunCanonicalSourceAuthority({
         runDirectory,
         workspaceRoot,
+        ...analyzer,
       });
       assertPhysicalSourceWindowPrefix(runDirectory, canonicalAuthority, index);
     } catch (error) {

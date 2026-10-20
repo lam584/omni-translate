@@ -104,7 +104,12 @@ jobs:
       - name: Node tooling self-tests (watch-mode report loopback)
         run: npm run test:watch-mode-report:loopback
 
+      - name: Build release audio analyzer for fixtures
+        run: node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo build --locked --release --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml
+
       - name: Node tooling self-tests (watch-mode report evidence)
+        env:
+          OMNI_TEST_AUDIO_ANALYZER_PATH: ${{ github.workspace }}/target/release/omni-benchmark.exe
         run: npm run test:watch-mode-report:evidence
 
       - name: Node tooling self-tests (watch-mode report live)

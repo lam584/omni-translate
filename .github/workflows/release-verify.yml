@@ -93,7 +93,12 @@ jobs:
       - name: Test Bailian model metadata offline tooling
         run: npm run test:bailian-models
 
+      - name: Build release audio analyzer for fixtures
+        run: node ./scripts/testing/run-with-vm3-test-environment.mjs -- cargo build --locked --release --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml
+
       - name: Test watch-mode report tooling
+        env:
+          OMNI_TEST_AUDIO_ANALYZER_PATH: ${{ github.workspace }}/target/release/omni-benchmark.exe
         run: npm run test:watch-mode-report
 
       - name: Build, link, and run WebRTC AEC3 release fixtures
